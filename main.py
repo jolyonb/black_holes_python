@@ -111,7 +111,7 @@ elif result == 1 :
     newdata.initialize(data.integrator.t)
 
     # Set up starting tau and width for transition
-    
+
     # Find sound horizon
     sound = data.r[np.where(data.csp < 0)][-1]
 #    print(sound)
@@ -136,5 +136,3 @@ elif result == 1 :
 # Tidy up
 f.close()
 print("Done!")
-print('To plot, use gnuplot, like: plot "output.dat" i 1:50:1 u 1:(2*$7/$8) w l')
-# Also helpful to know "set log y"
