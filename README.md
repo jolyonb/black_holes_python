@@ -30,11 +30,15 @@ Creating primordial black holes using python!
 > splot 'outputrb.dat' i 400:600 u 2:14:4 w l, 'outputms.dat' i 400:600 u 2:14:4 w l
 
 * Countour Plotting for Aparrent horizon:
-> set contour
-> set cntrparam levels discrete 0
-> set view map
-> splot "< sed '/^#/ d' output.dat | cut -f2,11,14 | uniq" u 1:3:2 w l
+```
+set contour
+set cntrparam levels discrete 0
+set view map
+splot "< sed '/^#/ d' output.dat | cut -f2,11,14 | uniq" u 1:3:2 w l
+```
 
 * To remove coordinate grid on horizon plot:
-> unset surf
+```
+unset surf
+```
 
