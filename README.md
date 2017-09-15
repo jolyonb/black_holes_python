@@ -1,7 +1,24 @@
 # pbh-python
-Creating primordial black holes using python
+Creating primordial black holes using python!
 
-Here are a bunch of gnuplot commands that are helpful:
+## Plotting column numbers
+
+1. Grid point number
+2. \tilde{R}
+3. \tilde{U}
+4. \tilde{M}
+5. \tilde{\rho}
+6. R
+7. U
+8. M
+9. \rho
+10. 2M/R
+11. Characteristic speed c_s^+ (in \tilde{R})
+12. Characteristic speed c_s^- (in \tilde{R})
+13. Characteristic speed c_s^0 (in \tilde{R})
+14. \xi
+
+## Helpful gnuplot commands
 
 * General plotting of variables:
 > plot "output.dat" i 1:50:1 u 1:(2*$7/$8) w l
