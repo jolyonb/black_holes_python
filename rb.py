@@ -4,7 +4,7 @@
 Russel-Bloomfield Evolution
 """
 
-from finitediff import Derivative
+from fancyderivs import Derivative
 from scipy.integrate import ode
 from math import pi, tan, tanh, cosh, sin, sqrt
 import numpy as np

@@ -4,7 +4,7 @@
 Misner-Sharp Evolution
 """
 
-from finitediff import Derivative
+from fancyderivs import Derivative
 from scipy.integrate import ode
 from math import exp, pi, sqrt
 import numpy as np

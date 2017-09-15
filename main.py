@@ -7,7 +7,7 @@ Runs stuff
 import numpy as np
 from scipy.interpolate import InterpolatedUnivariateSpline
 import ms, rb
-from finitediff import Derivative
+from fancyderivs import Derivative
 
 # Set up the data object
 data = ms.Data()
