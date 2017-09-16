@@ -176,7 +176,8 @@ def derivs(xi, umr, data) :
     drho = data.diff.dydx(rho)
 
     # Compute the equations of motion
-    return compute_eoms(xi, u, m, r, rho, drho, ephi, gamma2, data.diff)
+    (udot, mdot, rdot) = compute_eoms(xi, u, m, r, rho, drho, ephi, gamma2, data.diff)
+    return np.concatenate((udot, mdot, rdot))
 
 def compute_eoms(xi, u, m, r, rho, drho, ephi, gamma2, diff):
     """Computes the equations of motion, given all of the data required to do so"""
@@ -197,7 +198,7 @@ def compute_eoms(xi, u, m, r, rho, drho, ephi, gamma2, diff):
 
     udot[-1] = -0.25 * deltam + (0.25 - c / (2 * r[-1])) * c * mprime + c * mdot[-1] / (2 * r[-1]) - c * uprime
 
-    return np.concatenate((udot, mdot, rdot))
+    return (udot, mdot, rdot)
 
 def bhcheck(xi, umr) :
     """Returns -1 if an apparent horizon is detected, 0 otherwise"""

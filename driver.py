@@ -31,13 +31,14 @@ class Driver(object):
     """
 
     def __init__(self, MSfile, RBfile,
-                 maxtime=7, timestep=0.1, bhcheck=True, runRB=True, jumptime=4.0):
+                 maxtime=7, MStimestep=0.1, RBtimestep=0.01, bhcheck=True, runRB=True, jumptime=4.0):
         """
         Set parameters for driving this run
         MSfile - file handle to write to in MS evolution
         RBfile - file handle to write to in RB evolution (can be same as MSfile)
         maxtime - Final time to run to
-        timestep - Step size at which we output data to file
+        MStimestep - Step size at which we output data to file (MS)
+        RBtimestep - Step size at which we output data to file (RB)
         bhcheck - Controls whether or not we check for black holes in MS
         runRB - Controls whether or not to go into RB evolution upon detection of a black hole
         jumptime - Time before which no writes take place
@@ -49,7 +50,8 @@ class Driver(object):
         self.MSfile = MSfile
         self.RBfile = RBfile
         self.maxtime = maxtime
-        self.timestep = timestep
+        self.MStimestep = MStimestep
+        self.RBtimestep = RBtimestep
         self.runRB = runRB
         self.bhcheck = bhcheck
         self.jumptime = jumptime
@@ -137,7 +139,7 @@ class Driver(object):
 
         while self.data.integrator.t < self.maxtime :
             # Construct the time to step to
-            newtime = self.data.integrator.t + self.timestep
+            newtime = self.data.integrator.t + self.MStimestep
             if newtime > self.maxtime :
                 newtime = self.maxtime
 
@@ -155,7 +157,7 @@ class Driver(object):
             # Write the data
             if self.data.integrator.t > self.jumptime:
                 self.data.write_data(self.MSfile)
-            print("MS Time:", self.data.integrator.t)
+            print("MS Time:", round(self.data.integrator.t, 5))
 
             # Get out if status is not OK
             if self.status != Status.OK:
@@ -172,7 +174,8 @@ class Driver(object):
         self.rbdata.initialize(self.data.integrator.t)
 
         # Set up the RB transition parameters
-        self.rbdata.transitionR = self.data.r[np.where(self.data.csp < 0)][-1]
+        self.rbdata.transitionR = self.data.r[np.where(self.data.csp < 0)[0][-1]]
+        print("Transition radius:", self.rbdata.transitionR)
         self.rbdata.xi0 = self.data.integrator.t
 
     def _run_RB(self):
@@ -184,7 +187,7 @@ class Driver(object):
 
         while self.rbdata.integrator.t < self.maxtime :
             # Construct the time to step to
-            newtime = self.rbdata.integrator.t + self.timestep
+            newtime = self.rbdata.integrator.t + self.RBtimestep
             if newtime > self.maxtime :
                 newtime = self.maxtime
 
@@ -200,7 +203,7 @@ class Driver(object):
             # Write the data
             if self.rbdata.integrator.t >= self.jumptime:
                 self.rbdata.write_data(self.RBfile)
-            print("RB Time:", self.rbdata.integrator.t)
+            print("RB Time:", round(self.rbdata.integrator.t, 5))
 
             # Get out if status is not BlackHoleFormed
             if self.status != Status.BlackHoleFormed:

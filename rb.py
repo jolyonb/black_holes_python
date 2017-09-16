@@ -8,7 +8,7 @@ from fancyderivs import Derivative
 from scipy.integrate import ode
 from math import pi, tan, tanh, cosh, sin, sqrt
 import numpy as np
-from ms import IntegrationError, ShellCrossing
+from ms import IntegrationError, ShellCrossing, compute_eoms
 
 class Data(object) :
     """Object to store all of the appropriate data"""
@@ -116,13 +116,11 @@ def compute_data(tau, umrrho, data) :
     # TODO Check for negative rho?
 
     # Compute xi
-    xi = np.array([ffunc(tau, ri, data) for ri in r])
-
-    # Set up for derivatives with respect to r
-    data.diff.set_x(r, 1)
+    xi = np.array([ffunc(tau, ri, data.transitionR, data.xi0) for ri in r])
 
     # Compute various auxiliary variables
     ephi = np.power(rho, -1/4)
+    # TODO Check for negative rho?
     gamma2 = np.exp(xi) + r*r*(u*u-m)
 
     # Return the results
@@ -133,22 +131,56 @@ def derivs(tau, umrrho, data) :
     # Compute all the information about the present state
     u, m, r, rho, ephi, gamma2, xi = compute_data(tau, umrrho, data)
 
+    # Find the index at which the split into RB and MS occurs
+    transindex = np.where(r <= data.transitionR)[0][-1] + 1
+
+    # Extract the MS values
+    MSu = u[transindex:]
+    MSm = m[transindex:]
+    MSr = r[transindex:]
+    MSrho = rho[transindex:]
+    MSephi = ephi[transindex:]
+    MSgamma2 = gamma2[transindex:]
+    # Compute MS drho and du, using no boundary at the leftmost index
+    data.diff.set_x(MSr, 0)
+    MSdrho = data.diff.dydx(MSrho)
+    MSdu = data.diff.dydx(MSu)
+    # Compute the MS EOMs
+    MSudot, MSmdot, MSrdot = compute_eoms(tau, MSu, MSm, MSr, MSrho, MSdrho, MSephi, MSgamma2, data.diff)
+    # Also need to compute MSrhodot
+    MSrhodot =2*MSrho*(1 - MSephi * (MSu + MSr*MSdu/3))
+
+    # Extract the RB values
+    RBm = m[0:transindex]
+    RBu = u[0:transindex + 2]
+    RBr = r[0:transindex + 2]
+    RBrho = rho[0:transindex + 2]
+    RBephi = ephi[0:transindex]
+    RBgamma2 = gamma2[0:transindex]
+    # Compute RB derivatives (carefully - using two extra gridpoints for best derivatives)
+    data.diff.set_x(RBr, 1)
+    RBdu = data.diff.dydx(RBu)
+    RBdrho = data.diff.dydx(RBrho)
+    # Now lop off the last two datapoints that are now unnecessary
+    RBdu = RBdu[0:-2]
+    RBdrho = RBdrho[0:-2]
+    RBu = RBu[0:-2]
+    RBr = RBr[0:-2]
+    RBrho = RBrho[0:-2]
+
+    # Now compute the RB equations of motion
     # Compute derivatives of f
-    dfdr = np.array([fprimefunc(tau, ri, data) for ri in r])
-    partialdfdtau = np.array([fdotfunc(tau, ri, data) for ri in r])
-    temp = r * (u * ephi - 1) / 2
+    dfdr = np.array([fprimefunc(tau, ri, data.transitionR, data.xi0) for ri in RBr])
+    partialdfdtau = np.array([fdotfunc(tau, ri, data.transitionR, data.xi0) for ri in RBr])
+    temp = RBr * (RBu * RBephi - 1) / 2
     chunk = 1 - dfdr * temp
     dfdtau = partialdfdtau / chunk
 
-    # Compute derivatives
-    du = data.diff.dydx(u)
-    drho = data.diff.dydx(rho)
-
     # Compute the pieces of the equations of motion for u and rho
-    A = dfdtau * (u - 0.25 * ephi * (2*u*u+m+rho))
-    B = -dfdtau * ephi * gamma2 / chunk / r / rho / 8
-    C = 2*dfdtau*rho*(1-ephi*u)
-    D = - 2 * dfdtau * rho * ephi * r / 3 / chunk
+    A = dfdtau * (RBu - 0.25 * RBephi * (2*RBu*RBu+RBm+RBrho))
+    B = -dfdtau * RBephi * RBgamma2 / chunk / RBr / RBrho / 8
+    C = 2*dfdtau*RBrho*(1-RBephi*RBu)
+    D = - 2 * dfdtau * RBrho * RBephi * RBr / 3 / chunk
     newchunk = dfdtau * dfdtau - B * D * dfdr * dfdr
 
     # TODO Write chunk and newchunk in terms of conditions on characteristics
@@ -168,16 +200,13 @@ def derivs(tau, umrrho, data) :
             break
 
     # Compute the equations of motion for everything
-    rdot = dfdtau*temp
-    mdot = dfdtau*(2*m - 1.5*u*ephi*(rho/3 + m))
-    udot = dfdtau / newchunk * (A*dfdtau - B*C*dfdr - B*D*du*dfdr + B*dfdtau*drho)
-    rhodot = dfdtau / newchunk * (C*dfdtau - A*D*dfdr - B*D*drho*dfdr + D*dfdtau*du)
+    RBrdot = dfdtau*temp
+    RBmdot = dfdtau*(2*RBm - 1.5*RBu*RBephi*(RBrho/3 + RBm))
+    RBudot = dfdtau / newchunk * (A*dfdtau - B*C*dfdr - B*D*RBdu*dfdr + B*dfdtau*RBdrho)
+    RBrhodot = dfdtau / newchunk * (C*dfdtau - A*D*dfdr - B*D*RBdrho*dfdr + D*dfdtau*RBdu)
 
-    # Basic reflecting boundary condition
-    mdot[-1] = 0
-    rhodot[-1] = 0
-
-    return np.concatenate((udot, mdot, rdot, rhodot))
+    # Combine the results to give the full vector of derivatives
+    return np.concatenate((RBudot, MSudot, RBmdot, MSmdot, RBrdot, MSrdot, RBrhodot, MSrhodot))
 
 def csc(val) :
     """Returns cosec of the value"""
@@ -194,21 +223,17 @@ def sech(val) :
     except OverflowError :
         return 0.0
 
-def ffunc(tau, r, data) :
+def ffunc(tau, r, transitionR, xi0) :
     """Computes xi = f(tau, r)"""
-    if r >= data.transitionR :
+    if r >= transitionR :
         return tau
-    return data.xi0 + 0.5 * (tau - data.xi0) * (tanh(tan(pi*(r/data.transitionR - 0.5))) + 1)
+    return xi0 + 0.5 * (tau - xi0) * (tanh(tan(pi*(r / transitionR - 0.5))) + 1)
 
-def fprimefunc(tau, r, data) :
-    """Computes df/dr"""
-    if r >= data.transitionR :
-        return 0.0
-    val = pi * r / data.transitionR
-    return 0.5 * (tau - data.xi0) * pi / data.transitionR * csc(val)**2 * sech(cot(val))**2
+def fprimefunc(tau, r, transitionR, xi0) :
+    """Computes df/dr inside the transition"""
+    val = pi * r / transitionR
+    return 0.5 * (tau - xi0) * pi / transitionR * csc(val)**2 * sech(cot(val))**2
 
-def fdotfunc(tau, r, data) :
-    """Computes df/dtau (partial derivatives)"""
-    if r >= data.transitionR :
-        return 1.0
-    return 0.5 * (tanh(tan(pi*(r / data.transitionR - 0.5))) + 1)
+def fdotfunc(tau, r, transitionR, xi0) :
+    """Computes df/dtau (partial derivatives) inside the transition"""
+    return 0.5 * (tanh(tan(pi*(r / transitionR - 0.5))) + 1)
