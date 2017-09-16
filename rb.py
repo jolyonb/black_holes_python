@@ -8,7 +8,7 @@ from fancyderivs import Derivative
 from scipy.integrate import ode
 from math import pi, tan, tanh, cosh, sin, sqrt
 import numpy as np
-from ms import IntegrationError, ShellCrossing, compute_eoms
+from ms import IntegrationError, ShellCrossing, NegativeDensity, compute_eoms
 
 class Data(object) :
     """Object to store all of the appropriate data"""
@@ -95,7 +95,6 @@ class Data(object) :
                   ]
             file.write("\t".join(map(str,dat)) + "\n")
         file.write("\n\n")
-        # TODO Also want to output the various denominators that are used in our computations
 
 def get_umrrho(umrrho) :
     """Separates u, m, r and rho from the composite umrrho object"""
@@ -113,14 +112,16 @@ def compute_data(tau, umrrho, data) :
     """
     # Start by separating u, m, r and rho
     u, m, r, rho = get_umrrho(umrrho)
-    # TODO Check for negative rho?
+
+    # Check for negative rho
+    if np.any(rho < 0):
+        raise NegativeDensity()
 
     # Compute xi
     xi = np.array([ffunc(tau, ri, data.transitionR, data.xi0) for ri in r])
 
     # Compute various auxiliary variables
     ephi = np.power(rho, -1/4)
-    # TODO Check for negative rho?
     gamma2 = np.exp(xi) + r*r*(u*u-m)
 
     # Return the results

@@ -6,7 +6,7 @@ Containts the class that drives the evolution
 from enum import Enum
 import numpy as np
 import ms, rb
-from ms import IntegrationError, BlackHoleFormed, ShellCrossing
+from ms import IntegrationError, BlackHoleFormed, ShellCrossing, NegativeDensity
 from fancyderivs import Derivative
 
 class Status(Enum):
@@ -19,6 +19,8 @@ class Status(Enum):
     RB_IntegrationError = -2
     MS_ShellCrossing = -3
     RB_ShellCrossing = -4
+    MS_NegativeDensity = -5
+    RB_NegativeDensity = -6
 
 class Driver(object):
     """
@@ -111,6 +113,12 @@ class Driver(object):
         elif self.status == Status.MS_MaxTimeReached:
             print("Maximum time reached")
             return
+        elif self.status == Status.MS_ShellCrossing:
+            print("Shell crossing detected")
+            return
+        elif self.status == Status.MS_NegativeDensity:
+            print("Negative density detected")
+            return
         elif self.status == Status.OK:
             print("Not sure how we got here...")
             return
@@ -126,6 +134,12 @@ class Driver(object):
                 return
             elif self.status == Status.RB_MaxTimeReached:
                 print("Maximum time reached")
+                return
+            elif self.status == Status.RB_ShellCrossing:
+                print("Shell crossing detected")
+                return
+            elif self.status == Status.RB_NegativeDensity:
+                print("Negative density detected")
                 return
             elif self.status == Status.MassExtracted:
                 print("Mass computed!")
@@ -153,6 +167,9 @@ class Driver(object):
                 self.status = Status.BlackHoleFormed
             except ShellCrossing:
                 self.status = Status.MS_ShellCrossing
+            except NegativeDensity:
+                self.status = Status.MS_NegativeDensity
+                return
 
             # Write the data
             if self.data.integrator.t > self.jumptime:
@@ -199,6 +216,9 @@ class Driver(object):
                 return
             except ShellCrossing:
                 self.status = Status.RB_ShellCrossing
+            except NegativeDensity:
+                self.status = Status.RB_NegativeDensity
+                return
 
             # Write the data
             if self.rbdata.integrator.t >= self.jumptime:
