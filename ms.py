@@ -21,6 +21,9 @@ class BlackHoleFormed(Exception):
 class ShellCrossing(Exception):
     pass
 
+class NegativeDensity(Exception):
+    pass
+
 class Data(object) :
     """Object to store all of the appropriate data"""
 
@@ -159,7 +162,8 @@ def compute_data(xi, umr, data) :
 
     # Compute various auxiliary variables
     rho = m + r * dm / 3
-    # TODO Check for negative rho
+    if np.any(rho < 0):
+        raise NegativeDensity()
     ephi = np.power(rho, -1/4)
     gamma2 = exp(xi) + r*r*(u*u-m)
 
