@@ -8,6 +8,7 @@ from fancyderivs import Derivative
 from scipy.integrate import ode
 from math import pi, tan, tanh, cosh, sin, sqrt
 import numpy as np
+from ms import IntegrationError
 
 class Data(object) :
     """Object to store all of the appropriate data"""
@@ -68,9 +69,8 @@ class Data(object) :
         if self.integrator.successful() :
             self.umrrho = result
             # TODO shell crossing check
-            return 0 # Success
         else :
-            return -1 # Failure
+            raise IntegrationError
 
     def write_data(self, file) :
         """Writes data to an open file handle"""
