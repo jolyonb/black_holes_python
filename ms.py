@@ -18,6 +18,9 @@ class IntegrationError(Exception):
 class BlackHoleFormed(Exception):
     pass
 
+class ShellCrossing(Exception):
+    pass
+
 class Data(object) :
     """Object to store all of the appropriate data"""
 
@@ -172,6 +175,12 @@ def derivs(xi, umr, data) :
     # Note that compute_data already set_x for the derivative
     drho = data.diff.dydx(rho)
 
+    # Compute the equations of motion
+    return compute_eoms(xi, u, m, r, rho, drho, ephi, gamma2, data.diff)
+
+def compute_eoms(xi, u, m, r, rho, drho, ephi, gamma2, diff):
+    """Computes the equations of motion, given all of the data required to do so"""
+
     # Compute the time derivatives
     mdot = 2*m - 1.5*u*ephi*(rho/3 + m)
     rdot = r*(u*ephi-1)/2
@@ -183,8 +192,8 @@ def derivs(xi, umr, data) :
     # better boundary condition
     c = exp(0.5 * xi) / np.sqrt(12)
     deltam = m[-1] - 1
-    uprime = data.diff.rightdydx(u)
-    mprime = data.diff.rightdydx(m)
+    uprime = diff.rightdydx(u)
+    mprime = diff.rightdydx(m)
 
     udot[-1] = -0.25 * deltam + (0.25 - c / (2 * r[-1])) * c * mprime + c * mdot[-1] / (2 * r[-1]) - c * uprime
 
