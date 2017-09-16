@@ -12,6 +12,12 @@ import numpy as np
 oldtime = 0
 newtime = 0
 
+class IntegrationError(Exception):
+    pass
+
+class BlackHoleFormed(Exception):
+    pass
+
 class Data(object) :
     """Object to store all of the appropriate data"""
 
@@ -74,10 +80,9 @@ class Data(object) :
         if self.integrator.successful() :
             self.umr = result # Store result
             if self.bhcheck and bhcheck(self.integrator.t, self.umr) == -1 :
-                return 1 # Black hole!
-            return 0 # Successful step, no black hole
+                raise BlackHoleFormed
         else :
-            return -1 # Could not step
+            raise IntegrationError
 
     def write_data(self, file) :
         """Writes data to an open file handle"""
@@ -151,6 +156,7 @@ def compute_data(xi, umr, data) :
 
     # Compute various auxiliary variables
     rho = m + r * dm / 3
+    # TODO Check for negative rho
     ephi = np.power(rho, -1/4)
     gamma2 = exp(xi) + r*r*(u*u-m)
 
@@ -179,7 +185,7 @@ def derivs(xi, umr, data) :
     deltam = m[-1] - 1
     uprime = data.diff.rightdydx(u)
     mprime = data.diff.rightdydx(m)
-    
+
     udot[-1] = -0.25 * deltam + (0.25 - c / (2 * r[-1])) * c * mprime + c * mdot[-1] / (2 * r[-1]) - c * uprime
 
     return np.concatenate((udot, mdot, rdot))
@@ -188,7 +194,7 @@ def bhcheck(xi, umr) :
     """Returns -1 if an apparent horizon is detected, 0 otherwise"""
     global oldtime, newtime
 #    print(oldtime, newtime)
-    
+
     if xi > newtime:
         oldtime = newtime
         newtime = xi
