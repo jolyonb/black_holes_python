@@ -15,8 +15,8 @@ grid = np.arange(delta/2, Amax, delta)
 #grid = Amax * np.sinh(4*gridi/Amax)/np.sinh(4)
 
 # Compute deltam0 on our grid
-sigma = 0.2
-amplitude = 0.178
+sigma = 2
+amplitude = 0.1737 # 0.1737 < criticality in here somewhere? < 0.173711
 deltam0 = amplitude * np.exp(- grid * grid / 2 / sigma / sigma)
 
 # Set up the output file
@@ -25,11 +25,11 @@ f = open("output.dat", "w")
 # Set up the driver
 mydriver = Driver(MSfile=f,
                   RBfile=f,
-                  maxtime=6,
-                  timestep=0.1,
+                  maxtime=6.5,
+                  timestep=0.05,
                   bhcheck=True,
-                  runRB=True,
-                  jumptime=4.0)
+                  runRB=False,
+                  jumptime=5.0)
 mydriver.construct_init_data(deltam0, grid)
 
 # Run everything

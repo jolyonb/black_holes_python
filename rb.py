@@ -8,7 +8,7 @@ from fancyderivs import Derivative
 from scipy.integrate import ode
 from math import pi, tan, tanh, cosh, sin, sqrt
 import numpy as np
-from ms import IntegrationError
+from ms import IntegrationError, ShellCrossing
 
 class Data(object) :
     """Object to store all of the appropriate data"""
@@ -113,6 +113,7 @@ def compute_data(tau, umrrho, data) :
     """
     # Start by separating u, m, r and rho
     u, m, r, rho = get_umrrho(umrrho)
+    # TODO Check for negative rho?
 
     # Compute xi
     xi = np.array([ffunc(tau, ri, data) for ri in r])
@@ -195,28 +196,19 @@ def sech(val) :
 
 def ffunc(tau, r, data) :
     """Computes xi = f(tau, r)"""
-    #return tau # Uncomment to use MS evolution (and in fprimefunc, fdotfunc)
-    if r >= data.A1 :
+    if r >= data.transitionR :
         return tau
-    if r <= data.A0 :
-        return data.xi0
-    return data.xi0 + 0.5 * (tau - data.xi0) * (tanh(tan(pi*((r - data.A0)/(data.A1 - data.A0) - 0.5))) + 1)
+    return data.xi0 + 0.5 * (tau - data.xi0) * (tanh(tan(pi*(r/data.transitionR - 0.5))) + 1)
 
 def fprimefunc(tau, r, data) :
     """Computes df/dr"""
-    #return 0.0 # Uncomment to use MS evolution
-    if r >= data.A1 :
+    if r >= data.transitionR :
         return 0.0
-    if r <= data.A0 :
-        return 0.0
-    val = pi * (r - data.A0) / (data.A1 - data.A0)
-    return 0.5 * (tau - data.xi0) * pi / (data.A1 - data.A0) * csc(val)**2 * sech(cot(val))**2
+    val = pi * r / data.transitionR
+    return 0.5 * (tau - data.xi0) * pi / data.transitionR * csc(val)**2 * sech(cot(val))**2
 
 def fdotfunc(tau, r, data) :
     """Computes df/dtau (partial derivatives)"""
-    #return 1.0 # Uncomment to use MS evolution
-    if r >= data.A1 :
+    if r >= data.transitionR :
         return 1.0
-    if r <= data.A0 :
-        return 0.0
-    return 0.5 * (tanh(tan(pi*((r - data.A0)/(data.A1 - data.A0) - 0.5))) + 1)
+    return 0.5 * (tanh(tan(pi*(r / data.transitionR - 0.5))) + 1)

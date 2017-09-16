@@ -6,7 +6,7 @@ Containts the class that drives the evolution
 from enum import Enum
 import numpy as np
 import ms, rb
-from ms import IntegrationError, BlackHoleFormed
+from ms import IntegrationError, BlackHoleFormed, ShellCrossing
 from fancyderivs import Derivative
 
 class Status(Enum):
@@ -17,6 +17,8 @@ class Status(Enum):
     RB_MaxTimeReached = 4
     MS_IntegrationError = -1
     RB_IntegrationError = -2
+    MS_ShellCrossing = -3
+    RB_ShellCrossing = -4
 
 class Driver(object):
     """
@@ -147,14 +149,16 @@ class Driver(object):
                 return
             except BlackHoleFormed:
                 self.status = Status.BlackHoleFormed
+            except ShellCrossing:
+                self.status = Status.MS_ShellCrossing
 
             # Write the data
             if self.data.integrator.t > self.jumptime:
                 self.data.write_data(self.MSfile)
             print("MS Time:", self.data.integrator.t)
 
-            # Get out if there's a black hole
-            if self.status == Status.BlackHoleFormed:
+            # Get out if status is not OK
+            if self.status != Status.OK:
                 return
 
         # If we got here, we ran out of time
@@ -168,8 +172,7 @@ class Driver(object):
         self.rbdata.initialize(self.data.integrator.t)
 
         # Set up the RB transition parameters
-        self.rbdata.A1 = self.data.r[np.where(self.data.csp < 0)][-1]
-        self.rbdata.A0 = 0.0
+        self.rbdata.transitionR = self.data.r[np.where(self.data.csp < 0)][-1]
         self.rbdata.xi0 = self.data.integrator.t
 
     def _run_RB(self):
@@ -191,11 +194,17 @@ class Driver(object):
             except IntegrationError:
                 self.status = Status.RB_IntegrationError
                 return
+            except ShellCrossing:
+                self.status = Status.RB_ShellCrossing
 
             # Write the data
             if self.rbdata.integrator.t >= self.jumptime:
                 self.rbdata.write_data(self.RBfile)
             print("RB Time:", self.rbdata.integrator.t)
+
+            # Get out if status is not BlackHoleFormed
+            if self.status != Status.BlackHoleFormed:
+                return
 
         # If we got here, we ran out of time
         self.status = Status.RB_MaxTimeReached
