@@ -8,14 +8,14 @@ import numpy as np
 from driver import Driver
 
 # Set up our gridpoints in A
-gridpoints = 750
-Amax = 20
+gridpoints = 500
+Amax = 14
 delta = Amax / gridpoints
 grid = np.arange(delta/2, Amax, delta)
 #grid = Amax * np.sinh(4*gridi/Amax)/np.sinh(4)
 
 # Compute deltam0 on our grid
-sigma = Amax / 10
+sigma = 0.2
 amplitude = 0.178
 deltam0 = amplitude * np.exp(- grid * grid / 2 / sigma / sigma)
 
@@ -23,7 +23,13 @@ deltam0 = amplitude * np.exp(- grid * grid / 2 / sigma / sigma)
 f = open("output.dat", "w")
 
 # Set up the driver
-mydriver = Driver(MSfile=f, RBfile=f, maxtime=6, timestep=0.1, bhcheck=True, runRB=True)
+mydriver = Driver(MSfile=f,
+                  RBfile=f,
+                  maxtime=6,
+                  timestep=0.1,
+                  bhcheck=True,
+                  runRB=True,
+                  jumptime=4.0)
 mydriver.construct_init_data(deltam0, grid)
 
 # Run everything
