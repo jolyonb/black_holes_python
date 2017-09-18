@@ -153,6 +153,10 @@ def compute_data(xi, umr, data) :
     """
     # Start by separating u, m and r
     u, m, r = get_umr(umr)
+    
+    # Check monotonicity of r (shell crossing)
+    if np.any(np.diff(r) < 0):
+        raise ShellCrossing()
 
     # Set up for derivatives with respect to r
     data.diff.set_x(r, 1)
