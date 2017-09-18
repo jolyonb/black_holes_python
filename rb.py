@@ -113,6 +113,10 @@ def compute_data(tau, umrrho, data) :
     # Start by separating u, m, r and rho
     u, m, r, rho = get_umrrho(umrrho)
 
+    # Check monotonicity of r (shell crossing)
+    if np.any(np.diff(r) < 0):
+        raise ShellCrossing()
+
     # Check for negative rho
     if np.any(rho < 0):
         raise NegativeDensity()
