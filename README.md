@@ -20,30 +20,32 @@ Creating primordial black holes using python!
 
 ## Helpful gnuplot commands
 
+Data units are delimited by "\t", records by "\n", groups by "\n\n". Note the change from "\n\n\n". Time slices are separate data blocks rather than separate data sets, so they are addressed using `plot every` rather than `plot index`. This makes 3D plotting nicer. Also columns may be identified by name.
+
 * General plotting of variables:
-```gnuplot
-plot "output.dat" i 1:50:1 u 1:(2*$7/$8) w l
-```
+  ```gnuplot
+  plot "output.dat" ev :::1::45 u "r":(2*column('M')/column('R')) w l
+  ```
 
 * Plot characteristics in \tilde{R}:
-```gnuplot
-plot "output.dat" i 0:45:1 ev 3 u 2:14:($11*0.04):(0.01) w vec
-```
+  ```gnuplot
+  plot "output.dat" ev 3 u 2:14:(column('csp')*0.04):(0.01) w vec
+  ```
 
 * 3D Plot Misner-Sharp and Russel-Bloomfield evolutions on top of each other:
-```gnuplot
-splot 'outputrb.dat' i 400:600 u 2:14:4 w l, 'outputms.dat' i 400:600 u 2:14:4 w l
-```
+  ```gnuplot
+  splot 'outputrb.dat' u 2:14:4 w l, 'outputms.dat' u 2:14:4 w l
+  ```
 
 * Countour Plotting for apparent horizon:
-```gnuplot
-set contour
-set cntrparam levels discrete 0
-set view map
-splot "< sed '/^#/ d' output.dat | cut -f2,11,14 | uniq" u 1:3:2 w l
-```
+  ```gnuplot
+  set contour
+  set cntrparam levels discrete 0
+  set view map
+  splot "output.dat" u 2:14:"csp" w l
+  ```
 
 * To remove coordinate grid on horizon plot:
-```gnuplot
-unset surf
-```
+  ```gnuplot
+  unset surf
+  ```
