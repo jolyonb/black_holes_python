@@ -96,7 +96,7 @@ class Data(object) :
 
         self.get_info()
 
-        file.write("# A\tr\tu\tm\trho\tR\tU\tM\tRho\tHorizon\tcsp\tcsm\tcs0\txi\n")
+        file.write("A\tr\tu\tm\trho\tR\tU\tM\tRho\tHorizon\tcsp\tcsm\tcs0\txi\n")
         for i in range(len(self.r)) :
             if i == 0:
                 dat = [i, #1
@@ -136,7 +136,7 @@ class Data(object) :
                         self.r[i] - self.r[i-1] #16
                         ]
             file.write("\t".join(map(str,dat)) + "\n")
-        file.write("\n\n")
+        file.write("\n")
 
 def get_umr(umr) :
     """Separates u, m and r from the composite umr object"""
