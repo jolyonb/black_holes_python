@@ -26,11 +26,11 @@ f = open("output.dat", "w")
 mydriver = Driver(MSfile=f,
                   RBfile=f,
                   maxtime=6.5,
-                  MStimestep=0.1,
+                  MStimestep=0.01,
                   RBtimestep=0.01,
-                  bhcheck=True,
-                  runRB=True,
-                  jumptime=4.0)
+                  bhcheck=False,
+                  runRB=False,
+                  jumptime=5.0)
 mydriver.construct_init_data(deltam0, grid)
 
 # Run everything

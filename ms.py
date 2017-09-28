@@ -153,7 +153,7 @@ def compute_data(xi, umr, data) :
     """
     # Start by separating u, m and r
     u, m, r = get_umr(umr)
-    
+
     # Check monotonicity of r (shell crossing)
     if np.any(np.diff(r) < 0):
         raise ShellCrossing()
@@ -194,6 +194,14 @@ def compute_eoms(xi, u, m, r, rho, drho, ephi, gamma2, diff):
     mdot = 2*m - 1.5*u*ephi*(rho/3 + m)
     rdot = r*(u*ephi-1)/2
     udot = u - 0.5*ephi*(0.5*(2*u*u+m+rho) + gamma2*drho/4/rho/r)
+
+    # EULER
+    dmdr = diff.dydx(m)
+    dudr = diff.dydx(u)
+
+    mdot = mdot - dmdr * rdot
+    udot = udot - dudr * rdot
+    rdot = rdot * 0
 
     # Basic reflecting boundary condition
     #mdot[-1] = 0
