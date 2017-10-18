@@ -38,7 +38,7 @@ class Data(object) :
         """
         # Compute all the variables we need
         xi = self.integrator.t
-        u, m, r, rho, ephi, gamma2 = compute_data(xi, self.umr, self)
+        u, m, r, rho, ephi, gamma2 = compute_data(xi, self.um, self)
         gamma = np.sqrt(gamma2)
 
         # Save variables to the class
@@ -72,10 +72,10 @@ class Data(object) :
         """Initialize integrator and derivatives"""
         # Set up the integrator
         self.integrator = ode(derivs).set_integrator('dopri5', nsteps=10000, rtol=1e-8, atol=1e-8)
-        self.integrator.set_initial_value(self.umr, xi0).set_f_params(self)
+        self.integrator.set_initial_value(self.um, xi0).set_f_params(self)
         if self.bhcheck :
             # Check for a black hole after every internal step
-            self.integrator.set_solout(bhcheck)
+            self.integrator.set_solout(bhcheck_r(self.r))
 
         # Set up the differentiator
         self.diff = Derivative(4)
@@ -84,8 +84,8 @@ class Data(object) :
         """Takes a step forwards in time"""
         result = self.integrator.integrate(newtime)
         if self.integrator.successful() :
-            self.umr = result # Store result
-            if self.bhcheck and bhcheck(self.integrator.t, self.umr) == -1 :
+            self.um = result # Store result
+            if self.bhcheck and bhcheck(self.integrator.t, self.r, self.um) == -1 :
                 raise BlackHoleFormed
         else :
             raise IntegrationError
@@ -138,21 +138,24 @@ class Data(object) :
             file.write("\t".join(map(str,dat)) + "\n")
         file.write("\n")
 
-def get_umr(umr) :
-    """Separates u, m and r from the composite umr object"""
-    gridpoints = int(len(umr) / 3)
-    u = umr[0:gridpoints]
-    m = umr[gridpoints:2*gridpoints]
-    r = umr[2*gridpoints:]
-    return u, m, r
+def get_um(um) :
+    """Separates u, m from the composite um object"""
+    gridpoints = int(len(um) / 2)
+    u = um[0:gridpoints]
+    m = um[gridpoints:2*gridpoints]
+#    r = umr[2*gridpoints:]
+    return u, m
 
-def compute_data(xi, umr, data) :
+def compute_data(xi, um, data) :
     """
     Computes u, m, r, rho, ephi and gamma2
     Initializes derivatives with respect to r in data.diff
     """
-    # Start by separating u, m and r
-    u, m, r = get_umr(umr)
+    # Start by separating u, m
+    u, m = get_um(um)
+
+    # Get R
+    r = data.r
 
     # Check monotonicity of r (shell crossing)
     if np.any(np.diff(r) < 0):
@@ -174,18 +177,18 @@ def compute_data(xi, umr, data) :
     # Return the results
     return u, m, r, rho, ephi, gamma2
 
-def derivs(xi, umr, data) :
+def derivs(xi, um, data) :
     """Computes derivatives for evolution"""
     # Compute all the variables about the present state
-    u, m, r, rho, ephi, gamma2 = compute_data(xi, umr, data)
+    u, m, r, rho, ephi, gamma2 = compute_data(xi, um, data)
 
     # Compute drho/dr
     # Note that compute_data already set_x for the derivative
     drho = data.diff.dydx(rho)
 
     # Compute the equations of motion
-    (udot, mdot, rdot) = compute_eoms(xi, u, m, r, rho, drho, ephi, gamma2, data.diff)
-    return np.concatenate((udot, mdot, rdot))
+    (udot, mdot) = compute_eoms(xi, u, m, r, rho, drho, ephi, gamma2, data.diff)
+    return np.concatenate((udot, mdot))
 
 def compute_eoms(xi, u, m, r, rho, drho, ephi, gamma2, diff):
     """Computes the equations of motion, given all of the data required to do so"""
@@ -214,9 +217,9 @@ def compute_eoms(xi, u, m, r, rho, drho, ephi, gamma2, diff):
 
     udot[-1] = -0.25 * deltam + (0.25 - c / (2 * r[-1])) * c * mprime + c * mdot[-1] / (2 * r[-1]) - c * uprime
 
-    return (udot, mdot, rdot)
+    return (udot, mdot)
 
-def bhcheck(xi, umr) :
+def bhcheck(xi, r, um) :
     """Returns -1 if an apparent horizon is detected, 0 otherwise"""
     global oldtime, newtime
 #    print(oldtime, newtime)
@@ -225,8 +228,8 @@ def bhcheck(xi, umr) :
         oldtime = newtime
         newtime = xi
 
-    # Grab u, m and r
-    u, m, r = get_umr(umr)
+    # Grab u, m
+    u, m = get_um(um)
 
     # Horizon condition
     horizon = r*r*m*exp(-xi)
@@ -239,3 +242,6 @@ def bhcheck(xi, umr) :
 
     # All clear
     return 0
+
+def bhcheck_r(r):
+    return (lambda x,y: bhcheck(x,r,y))

@@ -96,7 +96,8 @@ class Driver(object):
 
         # Construct the data object
         self.data = ms.Data()
-        self.data.umr = np.concatenate((u, m, r))
+        self.data.r = r
+        self.data.um = np.concatenate((u, m))
         self.data.bhcheck = self.bhcheck
         self.data.initialize(0.0)
 
@@ -187,7 +188,8 @@ class Driver(object):
         """Initialize the Russel-Bloomfield evolution"""
         # Initialize the RB data object
         self.rbdata = rb.Data()
-        self.rbdata.umrrho = np.concatenate((self.data.u, self.data.m, self.data.r, self.data.rho))
+        self.rbdata.umrho = np.concatenate((self.data.u, self.data.m, self.data.rho))
+        self.rbdata.r = self.data.r
         self.rbdata.initialize(self.data.integrator.t)
 
         # Set up the RB transition parameters
