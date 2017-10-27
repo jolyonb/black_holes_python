@@ -5,12 +5,10 @@ Misner-Sharp Evolution
 """
 
 from fancyderivs import Derivative
-from scipy.integrate import ode
+from dopri5 import DOPRI5, DopriIntegrationError
 from math import exp, pi, sqrt
 import numpy as np
-
-oldtime = 0
-newtime = 0
+import random
 
 class IntegrationError(Exception):
     pass
@@ -24,10 +22,10 @@ class ShellCrossing(Exception):
 class NegativeDensity(Exception):
     pass
 
-class Data(object) :
+class Data(object):
     """Object to store all of the appropriate data"""
 
-    def get_info(self) :
+    def get_info(self):
         """
         Computes everything about the present state:
         xi
@@ -64,81 +62,112 @@ class Data(object) :
 
         # Three speeds of characteristics (note - these are in (xi, R))
         adot = 0.5 / sqrt(3) * ephi * gamma
-        self.cs0 = r*(u*ephi-1)/2 # rdot
+        self.cs0 = r*(u*ephi-1)/2  # rdot
         self.csp = self.cs0 + adot
         self.csm = self.cs0 - adot
 
-    def initialize(self, xi0) :
+    def initialize(self, xi0):
         """Initialize integrator and derivatives"""
         # Set up the integrator
-        self.integrator = ode(derivs).set_integrator('dopri5', nsteps=10000, rtol=1e-8, atol=1e-8)
-        self.integrator.set_initial_value(self.um, xi0).set_f_params(self)
-        if self.bhcheck :
-            # Check for a black hole after every internal step
-            self.integrator.set_solout(bhcheck_r(self.r))
+        self.integrator = DOPRI5(t0=xi0, init_values=self.um, derivs=derivs,
+                                 rtol=1e-8, atol=1e-8, params=self)
 
         # Set up the differentiator
         self.diff = Derivative(4)
+        self.newdiff = Derivative(6)
+        # Set up for derivatives with respect to r
+        self.diff.set_x(self.r, 1)
+        self.newdiff.set_x(self.r, 1)
 
-    def step(self, newtime) :
+        # Set up for CFL checks
+        firstpoint = np.array([self.r[0] * 2])
+        self.rdiff = np.concatenate((firstpoint, np.diff(self.r)))
+
+    def step(self, newtime):
         """Takes a step forwards in time"""
-        result = self.integrator.integrate(newtime)
-        if self.integrator.successful() :
-            self.um = result # Store result
-            if self.bhcheck and bhcheck(self.integrator.t, self.r, self.um) == -1 :
+        count = 0
+        while self.integrator.t < newtime:
+            count += 1
+            try:
+                self.integrator.step()
+            except DopriIntegrationError as err:
+                raise IntegrationError(err.args[0])
+
+            # Store result
+            self.um = self.integrator.values
+
+            # Check if a black hole is present
+            if self.blackholecheck() == -1:
                 raise BlackHoleFormed
-        else :
-            raise IntegrationError
 
-    def write_data(self, file) :
+            # Change CFL condition
+            self.integrator.update_max_h(self.cfl_check())
+
+        print(count, self.integrator.hdid)
+
+    def cfl_check(self):
+        """Check the CFL condition and return the max step size allowed"""
+        xi = self.integrator.t
+        u, m, r, rho, ephi, gamma2 = compute_data(xi, self.um, self)
+        gamma = np.sqrt(gamma2)
+
+        adot = 0.5 / sqrt(3) * ephi * gamma
+        cs0 = r*(u*ephi-1)/2  # rdot
+
+        # These are the speeds
+        csp = cs0 + adot
+        csm = cs0 - adot
+
+        s1 = np.min(self.rdiff / np.abs(csp))
+        s2 = np.min(self.rdiff / np.abs(csm))
+
+        return min(s1, s2) * 0.05
+
+    def blackholecheck(self):
+        """Returns -1 if an apparent horizon is detected, 0 otherwise"""
+        if not self.bhcheck:
+            return 0
+
+        # Grab u, m
+        u, m = get_um(self.um)
+
+        # Horizon condition
+        horizon = self.r*self.r*m*exp(-self.xi)
+
+        # Go and check everything
+        for i, val in enumerate(horizon):
+            if val >= 1 and u[i] < 0:
+                # Apparent horizon detected
+                return -1
+
+        # All clear
+        return 0
+
+    def write_data(self, file):
         """Writes data to an open file handle"""
-        global oldtime, newtime
-
         self.get_info()
 
         file.write("A\tr\tu\tm\trho\tR\tU\tM\tRho\tHorizon\tcsp\tcsm\tcs0\txi\n")
-        for i in range(len(self.r)) :
-            if i == 0:
-                dat = [i, #1
-                        self.r[i], #2
-                        self.u[i], #3
-                        self.m[i], #4
-                        self.rho[i], #5
-                        self.rfull[i], #6
-                        self.ufull[i], #7
-                        self.mfull[i], #8
-                        self.rhofull[i], #9
-                        self.horizon[i], #10
-                        self.csp[i], #11
-                        self.csm[i], #12
-                        self.cs0[i], #13
-                        self.xi, #14
-                        newtime - oldtime, #15
-                        2 * self.r[i] #16
-                        ]
-
-            else:
-                dat = [i, #1
-                        self.r[i], #2
-                        self.u[i], #3
-                        self.m[i], #4
-                        self.rho[i], #5
-                        self.rfull[i], #6
-                        self.ufull[i], #7
-                        self.mfull[i], #8
-                        self.rhofull[i], #9
-                        self.horizon[i], #10
-                        self.csp[i], #11
-                        self.csm[i], #12
-                        self.cs0[i], #13
-                        self.xi, #14
-                        newtime - oldtime, #15
-                        self.r[i] - self.r[i-1] #16
-                        ]
-            file.write("\t".join(map(str,dat)) + "\n")
+        for i in range(len(self.r)):
+            dat = [i,  # 1
+                   self.r[i],  # 2
+                   self.u[i],  # 3
+                   self.m[i],  # 4
+                   self.rho[i],  # 5
+                   self.rfull[i],  # 6
+                   self.ufull[i],  # 7
+                   self.mfull[i],  # 8
+                   self.rhofull[i],  # 9
+                   self.horizon[i],  # 10
+                   self.csp[i],  # 11
+                   self.csm[i],  # 12
+                   self.cs0[i],  # 13
+                   self.xi,  # 14
+                   ]
+            file.write("\t".join(map(str, dat)) + "\n")
         file.write("\n")
 
-def get_um(um) :
+def get_um(um):
     """Separates u, m from the composite um object"""
     gridpoints = int(len(um) / 2)
     u = um[0:gridpoints]
@@ -146,7 +175,7 @@ def get_um(um) :
 #    r = umr[2*gridpoints:]
     return u, m
 
-def compute_data(xi, um, data) :
+def compute_data(xi, um, data):
     """
     Computes u, m, r, rho, ephi and gamma2
     Initializes derivatives with respect to r in data.diff
@@ -161,9 +190,6 @@ def compute_data(xi, um, data) :
     if np.any(np.diff(r) < 0):
         raise ShellCrossing()
 
-    # Set up for derivatives with respect to r
-    data.diff.set_x(r, 1)
-
     # Compute dm/dr
     dm = data.diff.dydx(m)
 
@@ -177,14 +203,16 @@ def compute_data(xi, um, data) :
     # Return the results
     return u, m, r, rho, ephi, gamma2
 
-def derivs(xi, um, data) :
+def derivs(um, xi, data):
     """Computes derivatives for evolution"""
     # Compute all the variables about the present state
     u, m, r, rho, ephi, gamma2 = compute_data(xi, um, data)
 
     # Compute drho/dr
-    # Note that compute_data already set_x for the derivative
     drho = data.diff.dydx(rho)
+    # drho2 = data.newdiff.dydx(rho)
+    # if random.random() < 0.01:
+    #     print((drho2[0] - drho[0])/rho[0], (drho2[20] - drho[20])/rho[20])
 
     # Compute the equations of motion
     (udot, mdot) = compute_eoms(xi, u, m, r, rho, drho, ephi, gamma2, data.diff)
@@ -206,42 +234,13 @@ def compute_eoms(xi, u, m, r, rho, drho, ephi, gamma2, diff):
     udot = udot - dudr * rdot
     rdot = rdot * 0
 
-    # Basic reflecting boundary condition
-    #mdot[-1] = 0
-
-    # better boundary condition
+    # Better boundary condition
     c = exp(0.5 * xi) / np.sqrt(12)
     deltam = m[-1] - 1
     uprime = diff.rightdydx(u)
     mprime = diff.rightdydx(m)
 
     udot[-1] = -0.25 * deltam + (0.25 - c / (2 * r[-1])) * c * mprime + c * mdot[-1] / (2 * r[-1]) - c * uprime
+    udot[-1] = 0
 
     return (udot, mdot)
-
-def bhcheck(xi, r, um) :
-    """Returns -1 if an apparent horizon is detected, 0 otherwise"""
-    global oldtime, newtime
-#    print(oldtime, newtime)
-
-    if xi > newtime:
-        oldtime = newtime
-        newtime = xi
-
-    # Grab u, m
-    u, m = get_um(um)
-
-    # Horizon condition
-    horizon = r*r*m*exp(-xi)
-
-    # Go and check everything
-    for i, val in enumerate(horizon) :
-        if val >= 1 and u[i] < 0 :
-            # Apparent horizon detected
-            return -1
-
-    # All clear
-    return 0
-
-def bhcheck_r(r):
-    return (lambda x,y: bhcheck(x,r,y))

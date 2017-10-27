@@ -8,7 +8,7 @@ import numpy as np
 from driver import Driver
 
 # Set up our gridpoints in A
-gridpoints = 500
+gridpoints = 1000
 Amax = 14
 delta = Amax / gridpoints
 grid = np.arange(delta/2, Amax, delta)
@@ -17,7 +17,7 @@ grid = Amax * np.sinh(squeeze*grid/Amax)/np.sinh(squeeze)
 
 # Compute deltam0 on our grid
 sigma = 2
-amplitude = 0.177 # 0.1737 < criticality in here somewhere? < 0.173711
+amplitude = 0.160  # 0.1737 < criticality in here somewhere? < 0.173711
 deltam0 = amplitude * np.exp(- grid * grid / 2 / sigma / sigma)
 
 # Set up the output file

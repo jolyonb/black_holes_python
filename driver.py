@@ -80,7 +80,7 @@ class Driver(object):
         ddeltarho1 = diff.dydx(deltarho1)
         ddeltar1 = diff.dydx(deltar1)
 
-        deltam2 = deltau1/5*(2*deltau1 -6*deltam1 -deltarho1) + deltarho1/40*(10*deltam1-3*deltarho1) + ddeltarho1/10/grid
+        deltam2 = deltau1/5*(2*deltau1 -6*deltam1 - deltarho1) + deltarho1/40*(10*deltam1-3*deltarho1) + ddeltarho1/10/grid
         ddeltam2 = diff.dydx(deltam2)
 
         deltau2 = 3/20*(deltau1 * (deltam1 + deltarho1 - 2 * deltau1) - deltarho1 * deltarho1 / 4 - ddeltarho1/2/grid)
