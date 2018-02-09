@@ -4,26 +4,75 @@
 Misner-Sharp Evolution
 """
 
-from fancyderivs import Derivative
-from dopri5 import DOPRI5, DopriIntegrationError
 from math import exp, pi, sqrt
 import numpy as np
-import random
+from fancyderivs import Derivative
+from dopri5 import DOPRI5, DopriIntegrationError
 
 class IntegrationError(Exception):
+    """An integration error occurred when evolving"""
     pass
 
 class BlackHoleFormed(Exception):
-    pass
-
-class ShellCrossing(Exception):
+    """A black hole was detected"""
     pass
 
 class NegativeDensity(Exception):
+    """A negative energy density was detected"""
     pass
 
-class Data(object):
+class MSData(object):
     """Object to store all of the appropriate data"""
+
+    def __init__(self, r, u, m, xi0=0.0, debug=False):
+        """
+        Initialize the data object with the given grid, \tilde{U} and \tilde{m} values
+        Also sets up the integrator and differentiator
+        """
+        self.debug = debug
+
+        # Store the grid and initial data
+        self.r = r
+        self.um = np.concatenate((u, m))
+        self.gridpoints = len(r)
+        self.computed_data = {"xi": -1, "index": np.array([i for i in range(self.gridpoints)])}
+
+        # Set up the integrator
+        self.integrator = DOPRI5(t0=xi0, init_values=self.um, derivs=self.derivs,
+                                 rtol=1e-8, atol=1e-8)
+
+        # Set up the differentiator for derivatives with respect to r
+        self.diff = Derivative(2)
+        self.diff.set_x(self.r, 1)
+
+        # Compute the grid spacing (used for CFL checks)
+        self.rdiff = np.concatenate((np.array([self.r[0] * 2]), np.diff(self.r)))
+
+    def step(self, newtime, bhcheck=True, safety=0.40):
+        """Takes a step forwards in time"""
+        stepcount = 0
+        while self.integrator.t < newtime:
+            stepcount += 1
+            try:
+                self.integrator.step()
+            except DopriIntegrationError as err:
+                raise IntegrationError(err.args[0])
+
+            # Store result
+            self.um = self.integrator.values
+
+            # Check if a black hole is present
+            if bhcheck and self.hasblackhole():
+                raise BlackHoleFormed()
+
+            # Change CFL condition
+            self.integrator.update_max_h(self.cfl_check(safety))
+
+        if self.debug:
+            msg = "MS: Stepped to xi = {} in {} steps, last stepsize was {}"
+            print(msg.format(round(self.integrator.t, 5),
+                             stepcount,
+                             round(self.integrator.hdid, 5)))
 
     def get_info(self):
         """
@@ -34,213 +83,148 @@ class Data(object):
         horizon (condition)
         cs0, csp, csm (speed of characteristics)
         """
-        # Compute all the variables we need
+        # Check to see if everything has already been computed
         xi = self.integrator.t
-        u, m, r, rho, ephi, gamma2 = compute_data(xi, self.um, self)
-        gamma = np.sqrt(gamma2)
+        if self.computed_data["xi"] == xi:
+            return
 
-        # Save variables to the class
-        self.u = u
-        self.r = r
-        self.m = m
-        self.rho = rho
-        self.xi = xi
+        # Compute all the variables we need
+        u, m, r, rho, ephi, gamma2 = self.compute_data(xi, self.um)
+        self.computed_data["xi"] = xi
+        self.computed_data["u"] = u
+        self.computed_data["m"] = m
+        self.computed_data["r"] = r
+        self.computed_data["rho"] = rho
+        self.computed_data["gamma"] = gamma = np.sqrt(gamma2)
+        self.computed_data["ephi"] = ephi
 
         # Background evolution
-        a = exp(xi / 2)
-        H = exp(-xi)
-        rhob = 3 * H * H / 8 / pi
+        self.computed_data["a"] = a = exp(xi / 2)
+        self.computed_data["H"] = H = 1/(a*a)
+        self.computed_data["rhob"] = rhob = 3 * H * H / 8 / pi
 
         # Now compute the non-tilded versions
-        self.rfull = a * r
-        self.rhofull = rho * rhob
-        self.ufull = self.rfull * H * u
-        self.mfull = 4 * pi / 3 * rhob * np.power(self.rfull, 3) * m
+        self.computed_data["rfull"] = rfull = a * r
+        self.computed_data["rhofull"] = rho * rhob
+        self.computed_data["ufull"] = rfull * H * u
+        self.computed_data["mfull"] = 4 * pi / 3 * rhob * np.power(rfull, 3) * m
 
         # Horizon condition
-        self.horizon = r * r * m * H
+        self.computed_data["horizon"] = r * r * m * H
 
         # Three speeds of characteristics (note - these are in (xi, R))
         adot = 0.5 / sqrt(3) * ephi * gamma
-        self.cs0 = r*(u*ephi-1)/2  # rdot
-        self.csp = self.cs0 + adot
-        self.csm = self.cs0 - adot
+        self.computed_data["cs0"] = cs0 = r*(u*ephi-1)/2  # rdot
+        self.computed_data["csp"] = cs0 + adot
+        self.computed_data["csm"] = cs0 - adot
 
-    def initialize(self, xi0):
-        """Initialize integrator and derivatives"""
-        # Set up the integrator
-        self.integrator = DOPRI5(t0=xi0, init_values=self.um, derivs=derivs,
-                                 rtol=1e-8, atol=1e-8, params=self)
-
-        # Set up the differentiator
-        self.diff = Derivative(4)
-        self.newdiff = Derivative(6)
-        # Set up for derivatives with respect to r
-        self.diff.set_x(self.r, 1)
-        self.newdiff.set_x(self.r, 1)
-
-        # Set up for CFL checks
-        firstpoint = np.array([self.r[0] * 2])
-        self.rdiff = np.concatenate((firstpoint, np.diff(self.r)))
-
-    def step(self, newtime):
-        """Takes a step forwards in time"""
-        count = 0
-        while self.integrator.t < newtime:
-            count += 1
-            try:
-                self.integrator.step()
-            except DopriIntegrationError as err:
-                raise IntegrationError(err.args[0])
-
-            # Store result
-            self.um = self.integrator.values
-
-            # Check if a black hole is present
-            if self.blackholecheck() == -1:
-                raise BlackHoleFormed
-
-            # Change CFL condition
-            self.integrator.update_max_h(self.cfl_check())
-
-        print(count, self.integrator.hdid)
-
-    def cfl_check(self):
+    def cfl_check(self, safety):
         """Check the CFL condition and return the max step size allowed"""
-        xi = self.integrator.t
-        u, m, r, rho, ephi, gamma2 = compute_data(xi, self.um, self)
-        gamma = np.sqrt(gamma2)
+        # Get the propagation speeds
+        self.get_info()
+        csp = np.abs(self.computed_data["csp"])
+        csm = np.abs(self.computed_data["csm"])
 
-        adot = 0.5 / sqrt(3) * ephi * gamma
-        cs0 = r*(u*ephi-1)/2  # rdot
+        # Find the maximum timesteps for left/right movers
+        sm = np.min(self.rdiff / csp)
+        sp = np.min(self.rdiff / csm)
 
-        # These are the speeds
-        csp = cs0 + adot
-        csm = cs0 - adot
+        # Compute the maximum timestep
+        return min(sm, sp) * safety
 
-        s1 = np.min(self.rdiff / np.abs(csp))
-        s2 = np.min(self.rdiff / np.abs(csm))
-
-        return min(s1, s2) * 0.05
-
-    def blackholecheck(self):
-        """Returns -1 if an apparent horizon is detected, 0 otherwise"""
-        if not self.bhcheck:
-            return 0
-
-        # Grab u, m
-        u, m = get_um(self.um)
-
-        # Horizon condition
-        horizon = self.r*self.r*m*exp(-self.xi)
+    def hasblackhole(self):
+        """Returns True if an apparent horizon is detected else False"""
+        # Get the horizon condition and u
+        self.get_info()
+        horizon = self.computed_data["horizon"]
+        u = self.computed_data["u"]
 
         # Go and check everything
         for i, val in enumerate(horizon):
             if val >= 1 and u[i] < 0:
                 # Apparent horizon detected
-                return -1
+                return True
 
         # All clear
-        return 0
+        return False
+
+    def compute_data(self, xi, um):
+        """
+        Computes u, m, r, rho, ephi and gamma2
+        Initializes derivatives with respect to r in data.diff
+        """
+        # Get R, u and m
+        r = self.r
+        u = um[0:self.gridpoints]
+        m = um[self.gridpoints:]
+
+        # Compute dm/dr
+        dm = self.diff.dydx(m)
+
+        # Compute various auxiliary variables
+        rho = m + r * dm / 3
+        if np.any(rho < 0):
+            raise NegativeDensity()
+        ephi = np.power(rho, -1/4)
+        gamma2 = exp(xi) + r*r*(u*u-m)
+
+        # Return the results
+        return u, m, r, rho, ephi, gamma2
+
+    def derivs(self, um, xi, params):
+        """Computes derivatives for evolution"""
+        # Compute all the variables about the present state
+        u, m, r, rho, ephi, gamma2 = self.compute_data(xi, um)
+
+        # Compute drho/dr
+        drho = self.diff.dydx(rho)
+
+        # Compute the time derivatives
+        mdot = 2*m - 1.5*u*ephi*(rho/3 + m)
+        rdot = r*(u*ephi-1)/2
+        udot = u - 0.5*ephi*(0.5*(2*u*u+m+rho) + gamma2*drho/4/rho/r)
+
+        # Convert to Eulerian coordinates
+        dmdr = self.diff.dydx(m)
+        dudr = self.diff.dydx(u)
+        mdot -= dmdr * rdot
+        udot -= dudr * rdot
+
+        # Dirichlet boundary condition
+        udot[-1] = 0
+
+        # TODO: Better boundary condition
+        # c = exp(0.5 * xi) / np.sqrt(12)
+        # uprime = diff.rightdydx(u)
+        # mprime = diff.rightdydx(m)
+
+        return np.concatenate((udot, mdot))
 
     def write_data(self, file):
         """Writes data to an open file handle"""
+        # Extract all the data we want
         self.get_info()
+        datanames = [   # gnuplot index
+            "index",    # 1
+            "r",        # 2
+            "u",        # 3
+            "m",        # 4
+            "rho",      # 5
+            "rfull",    # 6
+            "ufull",    # 7
+            "mfull",    # 8
+            "rhofull",  # 9
+            "horizon",  # 10
+            "csp",      # 11
+            "csm",      # 12
+            "cs0",      # 13
+            "xi"        # 14
+        ]
+        fulldata = [self.computed_data[name] for name in datanames]
+        file.write("\t".join(map(str, datanames)) + "\n")
 
-        file.write("A\tr\tu\tm\trho\tR\tU\tM\tRho\tHorizon\tcsp\tcsm\tcs0\txi\n")
-        for i in range(len(self.r)):
-            dat = [i,  # 1
-                   self.r[i],  # 2
-                   self.u[i],  # 3
-                   self.m[i],  # 4
-                   self.rho[i],  # 5
-                   self.rfull[i],  # 6
-                   self.ufull[i],  # 7
-                   self.mfull[i],  # 8
-                   self.rhofull[i],  # 9
-                   self.horizon[i],  # 10
-                   self.csp[i],  # 11
-                   self.csm[i],  # 12
-                   self.cs0[i],  # 13
-                   self.xi,  # 14
-                   ]
+        # Go and write the block of data
+        for i in range(self.gridpoints):
+            dat = [data[i] if isinstance(data, np.ndarray) else data for data in fulldata]
             file.write("\t".join(map(str, dat)) + "\n")
         file.write("\n")
-
-def get_um(um):
-    """Separates u, m from the composite um object"""
-    gridpoints = int(len(um) / 2)
-    u = um[0:gridpoints]
-    m = um[gridpoints:2*gridpoints]
-#    r = umr[2*gridpoints:]
-    return u, m
-
-def compute_data(xi, um, data):
-    """
-    Computes u, m, r, rho, ephi and gamma2
-    Initializes derivatives with respect to r in data.diff
-    """
-    # Start by separating u, m
-    u, m = get_um(um)
-
-    # Get R
-    r = data.r
-
-    # Check monotonicity of r (shell crossing)
-    if np.any(np.diff(r) < 0):
-        raise ShellCrossing()
-
-    # Compute dm/dr
-    dm = data.diff.dydx(m)
-
-    # Compute various auxiliary variables
-    rho = m + r * dm / 3
-    if np.any(rho < 0):
-        raise NegativeDensity()
-    ephi = np.power(rho, -1/4)
-    gamma2 = exp(xi) + r*r*(u*u-m)
-
-    # Return the results
-    return u, m, r, rho, ephi, gamma2
-
-def derivs(um, xi, data):
-    """Computes derivatives for evolution"""
-    # Compute all the variables about the present state
-    u, m, r, rho, ephi, gamma2 = compute_data(xi, um, data)
-
-    # Compute drho/dr
-    drho = data.diff.dydx(rho)
-    # drho2 = data.newdiff.dydx(rho)
-    # if random.random() < 0.01:
-    #     print((drho2[0] - drho[0])/rho[0], (drho2[20] - drho[20])/rho[20])
-
-    # Compute the equations of motion
-    (udot, mdot) = compute_eoms(xi, u, m, r, rho, drho, ephi, gamma2, data.diff)
-    return np.concatenate((udot, mdot))
-
-def compute_eoms(xi, u, m, r, rho, drho, ephi, gamma2, diff):
-    """Computes the equations of motion, given all of the data required to do so"""
-
-    # Compute the time derivatives
-    mdot = 2*m - 1.5*u*ephi*(rho/3 + m)
-    rdot = r*(u*ephi-1)/2
-    udot = u - 0.5*ephi*(0.5*(2*u*u+m+rho) + gamma2*drho/4/rho/r)
-
-    # EULER
-    dmdr = diff.dydx(m)
-    dudr = diff.dydx(u)
-
-    mdot = mdot - dmdr * rdot
-    udot = udot - dudr * rdot
-    rdot = rdot * 0
-
-    # Better boundary condition
-    c = exp(0.5 * xi) / np.sqrt(12)
-    deltam = m[-1] - 1
-    uprime = diff.rightdydx(u)
-    mprime = diff.rightdydx(m)
-
-    udot[-1] = -0.25 * deltam + (0.25 - c / (2 * r[-1])) * c * mprime + c * mdot[-1] / (2 * r[-1]) - c * uprime
-    udot[-1] = 0
-
-    return (udot, mdot)

@@ -4,29 +4,42 @@
 Russel-Bloomfield Evolution
 """
 
-from fancyderivs import Derivative
-from dopri5 import DOPRI5, DopriIntegrationError
 from math import pi, tan, tanh, cosh, sin, sqrt, exp
 import numpy as np
-from ms import IntegrationError, ShellCrossing, NegativeDensity
+from ms import IntegrationError, NegativeDensity
+from fancyderivs import Derivative
+from dopri5 import DOPRI5, DopriIntegrationError
 
-class Data(object):
+
+class RBData(object):
     """Object to store all of the appropriate data"""
 
-    def initialize(self, tau0):
+    def __init__(self, MSdata, debug=False):
         """Initialize integrator and derivatives"""
+        self.debug = debug
+
+        # Grab the initial data
+        self.xi0 = MSdata.integrator.t
+        self.r = MSdata.r
+        self.umrho = np.concatenate((MSdata.u, MSdata.m, MSdata.rho))
+
+        # Set up the RB transition parameters
+        self.transitionR = self.r[np.where(MSdata.csp < 0)[0][-1]]
+
         # Set up the integrator
-        self.integrator = DOPRI5(t0=tau0, init_values=self.umrho, derivs=derivs,
+        self.integrator = DOPRI5(t0=self.xi0, init_values=self.umrho, derivs=derivs,
                                  rtol=1e-8, atol=1e-8, params=self)
 
-        # Set up the differentiator
-        self.diff = Derivative(4)
         # Set up for derivatives with respect to r
+        self.diff = Derivative(4)
         self.diff.set_x(self.r, 1)
 
         # Set up for CFL checks
         firstpoint = np.array([self.r[0] * 2])
         self.rdiff = np.concatenate((firstpoint, np.diff(self.r)))
+
+        if self.debug:
+            print("Transition radius:", self.transitionR)
 
     def get_info(self):
         """
