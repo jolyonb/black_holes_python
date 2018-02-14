@@ -19,7 +19,7 @@ class DOPRI5(object):
                  init_values,       # Starting values
                  derivs,            # Derivative function
                  init_h=0.01,       # Initial step size
-                 min_h=1e-7,        # Minimum step size
+                 min_h=5e-8,        # Minimum step size
                  max_h=1.0,         # Maximum step size
                  rtol=1e-7,         # Relative tolerance
                  atol=1e-7,         # Absolute tolerance

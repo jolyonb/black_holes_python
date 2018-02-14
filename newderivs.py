@@ -105,7 +105,7 @@ class Derivative(object):
         """
         Pass in a vector of y values
         Returns a vector of (x d^2y/dx^2 + 4 dy/dx)/3 values
-        Note that the this is not computed for the last gridpoint
+        Note that the this is not computed for the last gridpoint; instead, 0 is returned
         """
         return self._compute_deriv(yvals, self._rhostencil)
 
@@ -117,7 +117,7 @@ class Derivative(object):
         if self.length != len(yvals):
             raise DerivativeError("xvals and yvals have different dimensions")
 
-        derivatives = np.zeros(len(stencil))
+        derivatives = np.zeros(len(yvals))
         for pos in range(len(stencil)):
             derivatives[pos] = np.dot(stencil[pos], yvals[self.seqs[pos]])
         return derivatives

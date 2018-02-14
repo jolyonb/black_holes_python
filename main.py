@@ -3,14 +3,14 @@
 """
 Main routine that runs the program
 """
-
+import sys
 import numpy as np
 from driver import Driver, Status
 from fancyderivs import Derivative
 
-def makegrid(gridpoints, squeeze=1):
+def makegrid(gridpoints, squeeze=2):
     """Creates a grid"""
-    Amax = 14
+    Amax = 12
     delta = Amax / gridpoints
     grid = np.arange(delta / 2, Amax, delta)
     if squeeze == 0:
@@ -21,7 +21,7 @@ def makegrid(gridpoints, squeeze=1):
 def compute_deltam0(grid):
     """Constructs deltam0 based on a given grid"""
     sigma = 2
-    amplitude = 0.160  # 0.1737 < criticality in here somewhere? < 0.173711
+    amplitude = 0.174  # 0.1737 < criticality in here somewhere? < 0.173711
     return amplitude * np.exp(- grid * grid / 2 / sigma / sigma)
 
 def growingmode(grid, deltam0):
@@ -63,20 +63,43 @@ def growingmode(grid, deltam0):
 f = open("output.dat", "w")
 
 # Make the grid and initial data
-grid = makegrid(1000)
-deltam0 = compute_deltam0(grid)
-r, u, m = growingmode(grid, deltam0)
+if len(sys.argv) == 1:
+    grid = makegrid(800)
+    deltam0 = compute_deltam0(grid)
+    r, u, m = growingmode(grid, deltam0)
+    xi0 = 0.0
+else:
+    # Read in from the data file
+    print("Loading data from {}".format(sys.argv[1]))
+    with open(sys.argv[1]) as infile:
+        data = infile.readlines()
+    xi0 = float(data[0])
+    r = np.zeros(len(data) - 1)
+    u = np.zeros(len(data) - 1)
+    m = np.zeros(len(data) - 1)
+    for idx, line in enumerate(data[1:]):
+        rval, uval, mval = line.split("\t")
+        r[idx] = float(rval)
+        u[idx] = float(uval)
+        m[idx] = float(mval)
+    print("Grid size is {}".format(len(r)))
+    print("Starting evolution at xi = {}".format(xi0))
 
 # Construct the driver
-mydriver = Driver(r, u, m, debug=True)
+mydriver = Driver(r, u, m, jumptime=0, debug=True, xi0=xi0)
 
 # Start by performing the MS evolution
 print("Beginning MS evolution")
-mydriver.runMS(f)
+mydriver.runMS(f, timestep=0.1)
 
 # Check to see what our status is
 if mydriver.status == Status.MS_IntegrationError:
-    print("Unable to integrate further")
+    print("Unable to integrate further: {}".format(mydriver.msg))
+    if mydriver.hit50:
+        print("Central density hit 50x background density")
+        if mydriver.stalled:
+            print("However, it appears that the collapse stalled, with central density falling")
+            print("Integration error likely due to shocks or bad derivatives")
 elif mydriver.status == Status.MS_MaxTimeReached:
     print("Maximum time reached")
 elif mydriver.status == Status.MS_NegativeDensity:

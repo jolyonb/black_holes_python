@@ -6,8 +6,8 @@ Misner-Sharp Evolution
 
 from math import exp, pi, sqrt
 import numpy as np
-from fancyderivs import Derivative
 from dopri5 import DOPRI5, DopriIntegrationError
+from newderivs import Derivative
 
 class IntegrationError(Exception):
     """An integration error occurred when evolving"""
@@ -42,15 +42,20 @@ class MSData(object):
                                  rtol=1e-8, atol=1e-8)
 
         # Set up the differentiator for derivatives with respect to r
-        self.diff = Derivative(2)
-        self.diff.set_x(self.r, 1)
+        self.diff = Derivative(self.r)
 
         # Compute the grid spacing (used for CFL checks)
         self.rdiff = np.concatenate((np.array([self.r[0] * 2]), np.diff(self.r)))
 
-    def step(self, newtime, bhcheck=True, safety=0.40):
+        # Did the central density ever hit 50?
+        self.hit50 = False
+        # Has formation stalled? This is set when central density decreases after hitting 50
+        self.stalled = False
+
+    def step(self, newtime, bhcheck=True, safety=0.75):
         """Takes a step forwards in time"""
         stepcount = 0
+        lastrho = 0
         while self.integrator.t < newtime:
             stepcount += 1
             try:
@@ -67,6 +72,14 @@ class MSData(object):
 
             # Change CFL condition
             self.integrator.update_max_h(self.cfl_check(safety))
+
+            # Check for hit50 and stalling
+            rhocheck = self.computed_data["rho"][0]
+            if rhocheck > 50:
+                self.hit50 = True
+                if rhocheck < lastrho:
+                    self.stalled = True
+            lastrho = rhocheck
 
         if self.debug:
             msg = "MS: Stepped to xi = {} in {} steps, last stepsize was {}"
@@ -89,7 +102,7 @@ class MSData(object):
             return
 
         # Compute all the variables we need
-        u, m, r, rho, ephi, gamma2 = self.compute_data(xi, self.um)
+        u, m, r, rho, ephi, gamma2, _, cs0 = self.compute_data(xi, self.um)
         self.computed_data["xi"] = xi
         self.computed_data["u"] = u
         self.computed_data["m"] = m
@@ -114,7 +127,7 @@ class MSData(object):
 
         # Three speeds of characteristics (note - these are in (xi, R))
         adot = 0.5 / sqrt(3) * ephi * gamma
-        self.computed_data["cs0"] = cs0 = r*(u*ephi-1)/2  # rdot
+        self.computed_data["cs0"] = cs0  # rdot
         self.computed_data["csp"] = cs0 + adot
         self.computed_data["csm"] = cs0 - adot
 
@@ -150,8 +163,7 @@ class MSData(object):
 
     def compute_data(self, xi, um):
         """
-        Computes u, m, r, rho, ephi and gamma2
-        Initializes derivatives with respect to r in data.diff
+        Computes u, m, r, rho, ephi, gamma2, dmdr and rdot
         """
         # Get R, u and m
         r = self.r
@@ -159,38 +171,42 @@ class MSData(object):
         m = um[self.gridpoints:]
 
         # Compute dm/dr
-        dm = self.diff.dydx(m)
+        dmdr = self.diff.dydx(m)
 
         # Compute various auxiliary variables
-        rho = m + r * dm / 3
+        rho = m + r * dmdr / 3
         if np.any(rho < 0):
             raise NegativeDensity()
         ephi = np.power(rho, -1/4)
         gamma2 = exp(xi) + r*r*(u*u-m)
 
+        # Compute rdot, which is needed for the characteristic speeds
+        rdot = r*(u*ephi-1)/2
+
         # Return the results
-        return u, m, r, rho, ephi, gamma2
+        return u, m, r, rho, ephi, gamma2, dmdr, rdot
 
     def derivs(self, um, xi, params):
         """Computes derivatives for evolution"""
         # Compute all the variables about the present state
-        u, m, r, rho, ephi, gamma2 = self.compute_data(xi, um)
+        u, m, r, rho, ephi, gamma2, dmdr, rdot = self.compute_data(xi, um)
 
         # Compute drho/dr
-        drho = self.diff.dydx(rho)
+        # Note that as this involves a second derivative, it can't be evaluated at
+        # the end of the domain, which must be fixed by a boundary condition
+        # The last element of drho is zero.
+        drho = self.diff.rhoderiv(m)
 
-        # Compute the time derivatives
+        # These are the equations of motion (time derivatives of m, u)
         mdot = 2*m - 1.5*u*ephi*(rho/3 + m)
-        rdot = r*(u*ephi-1)/2
         udot = u - 0.5*ephi*(0.5*(2*u*u+m+rho) + gamma2*drho/4/rho/r)
 
         # Convert to Eulerian coordinates
-        dmdr = self.diff.dydx(m)
         dudr = self.diff.dydx(u)
         mdot -= dmdr * rdot
         udot -= dudr * rdot
 
-        # Dirichlet boundary condition
+        # Apply a Dirichlet boundary condition
         udot[-1] = 0
 
         # TODO: Better boundary condition
@@ -221,7 +237,7 @@ class MSData(object):
             "xi"        # 14
         ]
         fulldata = [self.computed_data[name] for name in datanames]
-        file.write("\t".join(map(str, datanames)) + "\n")
+        file.write("# " + "\t".join(map(str, datanames)) + "\n")
 
         # Go and write the block of data
         for i in range(self.gridpoints):

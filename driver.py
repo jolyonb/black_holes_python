@@ -27,7 +27,7 @@ class Driver(object):
     Sets up and runs the entire black hole evolution
     """
 
-    def __init__(self, r, u, m,
+    def __init__(self, r, u, m, xi0=0.0,
                  maxtime=7, jumptime=0, debug=False):
         """
         Set parameters for driving this run
@@ -46,9 +46,12 @@ class Driver(object):
         self.debug = debug
 
         # Initialize the data objects
-        self.MSdata = MSData(r, u, m, debug=debug)
+        self.MSdata = MSData(r, u, m, debug=debug, xi0=xi0)
         self.RBdata = None
         self.status = Status.MS_OK
+        self.msg = ""
+        self.hit50 = False
+        self.stalled = False
 
     def runMS(self, outfile, bhcheck=True, timestep=0.1):
         """
@@ -78,11 +81,15 @@ class Driver(object):
             # Take a step
             try:
                 self.MSdata.step(newtime, bhcheck)
+                # Record how things are going
+                self.hit50 = self.MSdata.hit50
+                self.stalled = self.MSdata.stalled
             except BlackHoleFormed:
                 # Don't exit at this stage; we want to record the data
                 self.status = Status.BlackHoleFormed
-            except IntegrationError:
+            except IntegrationError as e:
                 self.status = Status.MS_IntegrationError
+                self.msg = e.args[0]
                 return
             except NegativeDensity:
                 self.status = Status.MS_NegativeDensity
