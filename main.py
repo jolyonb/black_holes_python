@@ -21,7 +21,7 @@ def makegrid(gridpoints, squeeze=2):
 def compute_deltam0(grid):
     """Constructs deltam0 based on a given grid"""
     sigma = 2
-    amplitude = 0.174  # 0.1737 < criticality in here somewhere? < 0.173711
+    amplitude = 0.173  # 0.1737 < criticality in here somewhere? < 0.173711
     return amplitude * np.exp(- grid * grid / 2 / sigma / sigma)
 
 def growingmode(grid, deltam0):

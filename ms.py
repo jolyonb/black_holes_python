@@ -103,6 +103,10 @@ class MSData(object):
 
         # Compute all the variables we need
         u, m, r, rho, ephi, gamma2, _, cs0 = self.compute_data(xi, self.um)
+
+        if np.any(gamma2 < 0):
+            raise IntegrationError("Gamma^2 went negative")
+
         self.computed_data["xi"] = xi
         self.computed_data["u"] = u
         self.computed_data["m"] = m
@@ -186,7 +190,7 @@ class MSData(object):
         # Return the results
         return u, m, r, rho, ephi, gamma2, dmdr, rdot
 
-    def derivs(self, um, xi, params):
+    def derivs(self, um, xi, params=None):
         """Computes derivatives for evolution"""
         # Compute all the variables about the present state
         u, m, r, rho, ephi, gamma2, dmdr, rdot = self.compute_data(xi, um)
