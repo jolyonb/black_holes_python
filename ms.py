@@ -24,12 +24,13 @@ class NegativeDensity(Exception):
 class MSData(object):
     """Object to store all of the appropriate data"""
 
-    def __init__(self, r, u, m, xi0=0.0, debug=False):
+    def __init__(self, r, u, m, xi0=0.0, viscosity=2.0, debug=False):
         """
         Initialize the data object with the given grid, \tilde{U} and \tilde{m} values
         Also sets up the integrator and differentiator
         """
         self.debug = debug
+        self.viscosity = viscosity
 
         # Store the grid and initial data
         self.r = r
@@ -102,7 +103,8 @@ class MSData(object):
             return
 
         # Compute all the variables we need
-        u, m, r, rho, ephi, gamma2, _, cs0 = self.compute_data(xi, self.um)
+        u, m, r, rho, ephi, gamma2, _, cs0, P, drho = self.compute_data(xi, self.um)
+        # gamma2 is \bar{\gamma}^2
 
         if np.any(gamma2 < 0):
             raise IntegrationError("Gamma^2 went negative")
@@ -130,7 +132,7 @@ class MSData(object):
         self.computed_data["horizon"] = r * r * m * H
 
         # Three speeds of characteristics (note - these are in (xi, R))
-        adot = 0.5 / sqrt(3) * ephi * gamma
+        adot = 0.5 / sqrt(3) * ephi * gamma  # Note that this is the linearized speed of sound
         self.computed_data["cs0"] = cs0  # rdot
         self.computed_data["csp"] = cs0 + adot
         self.computed_data["csm"] = cs0 - adot
@@ -167,7 +169,7 @@ class MSData(object):
 
     def compute_data(self, xi, um):
         """
-        Computes u, m, r, rho, ephi, gamma2, dmdr and rdot
+        Computes u, m, r, rho, ephi, gamma2, dmdr, rdot, P and drho
         """
         # Get R, u and m
         r = self.r
@@ -187,13 +189,8 @@ class MSData(object):
         # Compute rdot, which is needed for the characteristic speeds
         rdot = r*(u*ephi-1)/2
 
-        # Return the results
-        return u, m, r, rho, ephi, gamma2, dmdr, rdot
-
-    def derivs(self, um, xi, params=None):
-        """Computes derivatives for evolution"""
-        # Compute all the variables about the present state
-        u, m, r, rho, ephi, gamma2, dmdr, rdot = self.compute_data(xi, um)
+        # Compute P
+        P = rho / 3
 
         # Compute drho/dr
         # Note that as this involves a second derivative, it can't be evaluated at
@@ -201,22 +198,29 @@ class MSData(object):
         # The last element of drho is zero.
         drho = self.diff.rhoderiv(m)
 
+        # Return the results
+        return u, m, r, rho, ephi, gamma2, dmdr, rdot, P, drho
+
+    def derivs(self, um, xi, params=None):
+        """Computes derivatives for evolution"""
+        # Compute all the variables about the present state
+        u, m, r, rho, ephi, gamma2, dmdr, rdot, P, drho = self.compute_data(xi, um)
+
         # These are the equations of motion (time derivatives of m, u)
-        mdot = 2*m - 1.5*u*ephi*(rho/3 + m)
-        udot = u - 0.5*ephi*(0.5*(2*u*u+m+rho) + gamma2*drho/4/rho/r)
+        mdot = 2*m - 1.5*u*ephi*(P + m)
+        udot = u - 0.5*ephi*(0.5*(2*u*u+m+3*P) + gamma2*drho/3/(rho+P)/r)
 
         # Convert to Eulerian coordinates
         dudr = self.diff.dydx(u)
         mdot -= dmdr * rdot
         udot -= dudr * rdot
 
-        # Apply a Dirichlet boundary condition
-        udot[-1] = 0
-
-        # TODO: Better boundary condition
-        # c = exp(0.5 * xi) / np.sqrt(12)
-        # uprime = diff.rightdydx(u)
-        # mprime = diff.rightdydx(m)
+        # Boundary condition on U:
+        # \dot{U} = - c_s U' + (1/2 - 2 c_s/R) (U - 1)
+        uprime = self.diff.rightdydx(u)
+        # cs = exp(0.5 * xi) / sqrt(12)  # This is the linear speed of sound
+        cs = 0.5 / sqrt(3) * ephi[-1] * sqrt(gamma2[-1])  # This is the nonlinear speed of sound
+        udot[-1] = - cs * uprime + (0.5 - 2*cs/r[-1]) * (u[-1]-1)
 
         return np.concatenate((udot, mdot))
 
@@ -248,3 +252,4 @@ class MSData(object):
             dat = [data[i] if isinstance(data, np.ndarray) else data for data in fulldata]
             file.write("\t".join(map(str, dat)) + "\n")
         file.write("\n")
+        file.flush()

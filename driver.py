@@ -28,7 +28,8 @@ class Driver(object):
     """
 
     def __init__(self, r, u, m, xi0=0.0,
-                 maxtime=7, jumptime=0, debug=False):
+                 maxtime=7, jumptime=0,
+                 viscosity=2.0, debug=False):
         """
         Set parameters for driving this run
 
@@ -46,7 +47,7 @@ class Driver(object):
         self.debug = debug
 
         # Initialize the data objects
-        self.MSdata = MSData(r, u, m, debug=debug, xi0=xi0)
+        self.MSdata = MSData(r, u, m, debug=debug, xi0=xi0, viscosity=viscosity)
         self.RBdata = None
         self.status = Status.MS_OK
         self.msg = ""

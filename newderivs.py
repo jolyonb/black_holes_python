@@ -127,7 +127,7 @@ class Derivative(object):
         Pass in a vector of y values
         Returns the derivative at the last position
         """
-        if len(self._xvals) != len(yvals):
+        if self.length != len(yvals):
             raise DerivativeError("xvals and yvals have different dimensions")
         return np.dot(self._dydxstencil[-1], yvals[self.length-3:])
 

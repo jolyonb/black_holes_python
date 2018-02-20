@@ -40,6 +40,7 @@ class RBData(object):
         rho = MSdata.computed_data["rho"]
         self.umrho = np.concatenate((u, m, rho))
         self.gridpoints = len(self.r)
+        self.viscosity = MSdata.viscosity
 
         # Set up the computed data
         self.computed_data = {"tau": -1, "index": np.array([i for i in range(self.gridpoints)])}
@@ -172,6 +173,7 @@ class RBData(object):
             dat = [data[i] if isinstance(data, np.ndarray) else data for data in fulldata]
             file.write("\t".join(map(str, dat)) + "\n")
         file.write("\n")
+        file.flush()
 
     def compute_data(self, tau, umrho):
         """
