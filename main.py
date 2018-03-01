@@ -8,9 +8,8 @@ import numpy as np
 from driver import Driver, Status
 from fancyderivs import Derivative
 
-def makegrid(gridpoints, squeeze=2):
+def makegrid(gridpoints, squeeze=2, Amax=14):
     """Creates a grid"""
-    Amax = 40
     delta = Amax / gridpoints
     grid = np.arange(delta / 2, Amax, delta)
     if squeeze == 0:
@@ -18,10 +17,10 @@ def makegrid(gridpoints, squeeze=2):
     grid = Amax * np.sinh(squeeze * grid / Amax) / np.sinh(squeeze)
     return grid
 
-def compute_deltam0(grid):
+def compute_deltam0(grid, amplitude=0.17):
     """Constructs deltam0 based on a given grid"""
     sigma = 2
-    amplitude = 0.12  # 0.1737 < criticality in here somewhere? < 0.173711
+    # amplitude = 0.16  # 0.1737 < criticality in here somewhere? < 0.173711
     return amplitude * np.exp(- grid * grid / 2 / sigma / sigma)
 
 def growingmode(grid, deltam0):
@@ -64,8 +63,8 @@ f = open("output.dat", "w")
 
 # Make the grid and initial data
 if len(sys.argv) == 1:
-    grid = makegrid(1600, squeeze=0)
-    deltam0 = compute_deltam0(grid)
+    grid = makegrid(1000, squeeze=3, Amax=14)
+    deltam0 = compute_deltam0(grid, amplitude=0.15)
     r, u, m = growingmode(grid, deltam0)
     xi0 = 0.0
 else:
@@ -86,11 +85,11 @@ else:
     print("Starting evolution at xi = {}".format(xi0))
 
 # Construct the driver
-mydriver = Driver(r, u, m, jumptime=0, debug=True, xi0=xi0, maxtime=8.5)
+mydriver = Driver(r, u, m, jumptime=0, debug=True, xi0=xi0, viscosity=2, timeout=False)
 
 # Start by performing the MS evolution
 print("Beginning MS evolution")
-mydriver.runMS(f, timestep=0.05)
+mydriver.runMS(f, timestep=0.001)
 
 # Check to see what our status is
 if mydriver.status == Status.MS_IntegrationError:
@@ -100,12 +99,12 @@ if mydriver.status == Status.MS_IntegrationError:
         if mydriver.stalled:
             print("However, it appears that the collapse stalled, with central density falling")
             print("Integration error likely due to shocks or bad derivatives")
-elif mydriver.status == Status.MS_MaxTimeReached:
-    print("Maximum time reached")
+elif mydriver.status == Status.NoBlackHole:
+    print("No black hole forms")
 elif mydriver.status == Status.MS_NegativeDensity:
     print("Negative density detected")
 elif mydriver.status == Status.BlackHoleFormed:
-    print("Black hole detected!")
+    print("Black hole formed!")
 
 # Tidy up
 f.close()

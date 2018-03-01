@@ -4,7 +4,7 @@
 Misner-Sharp Evolution
 """
 
-from math import exp, pi, sqrt
+from math import exp, pi, sqrt, log
 import numpy as np
 from dopri5 import DOPRI5, DopriIntegrationError
 from newderivs import Derivative
@@ -36,7 +36,10 @@ class MSData(object):
         self.r = r
         self.um = np.concatenate((u, m))
         self.gridpoints = len(r)
-        self.computed_data = {"xi": -1, "index": np.array([i for i in range(self.gridpoints)])}
+        self.computed_data = {
+            "xi": -1,
+            "index": np.array([i for i in range(self.gridpoints)]),
+        }
 
         # Set up the integrator
         self.integrator = DOPRI5(t0=xi0, init_values=self.um, derivs=self.derivs,
@@ -103,7 +106,7 @@ class MSData(object):
             return
 
         # Compute all the variables we need
-        u, m, r, rho, ephi, gamma2, _, cs0, P, drho = self.compute_data(xi, self.um)
+        u, m, r, rho, ephi, gamma2, _, _, cs0, Q, _, _ = self.compute_data(xi, self.um)
         # gamma2 is \bar{\gamma}^2
 
         if np.any(gamma2 < 0):
@@ -137,6 +140,9 @@ class MSData(object):
         self.computed_data["csp"] = cs0 + adot
         self.computed_data["csm"] = cs0 - adot
 
+        # For help with artificial viscosity
+        self.computed_data["Q"] = Q
+
     def cfl_check(self, safety):
         """Check the CFL condition and return the max step size allowed"""
         # Get the propagation speeds
@@ -169,28 +175,22 @@ class MSData(object):
 
     def compute_data(self, xi, um):
         """
-        Computes u, m, r, rho, ephi, gamma2, dmdr, rdot, P and drho
+        Computes u, m, r, rho, ephi, gamma2, dmdr, dudr, rdot, Q, P and dP
         """
         # Get R, u and m
         r = self.r
         u = um[0:self.gridpoints]
         m = um[self.gridpoints:]
 
-        # Compute dm/dr
+        # Compute derivatives
         dmdr = self.diff.dydx(m)
+        dudr = self.diff.dydx(u)
 
         # Compute various auxiliary variables
         rho = m + r * dmdr / 3
         if np.any(rho < 0):
             raise NegativeDensity()
-        ephi = np.power(rho, -1/4)
         gamma2 = exp(xi) + r*r*(u*u-m)
-
-        # Compute rdot, which is needed for the characteristic speeds
-        rdot = r*(u*ephi-1)/2
-
-        # Compute P
-        P = rho / 3
 
         # Compute drho/dr
         # Note that as this involves a second derivative, it can't be evaluated at
@@ -198,29 +198,91 @@ class MSData(object):
         # The last element of drho is zero.
         drho = self.diff.rhoderiv(m)
 
+        # Deal with artificial viscosity: compute Q
+        triggered = False
+        Q = np.zeros_like(rho)
+        if self.viscosity:
+            # Construct the triggering condition
+            # R' U < - R U'
+            # or
+            # U + R dU/dR < 0
+            dru = u + r * dudr
+            test = dru < 0
+            if np.any(dru < 0):
+                triggered = True
+                Q = 1.0 * test  # This converts from true/false to 1/0
+                # This is slow, but probably still better than a for loop on true values...
+                Q *= self.viscosity * exp(-xi)
+                Q *= dru * dru * self.rdiff * self.rdiff
+
+                # We now want to smooth Q a bit, using a haystack filter
+                actualQ = Q.copy()
+                actualQ *= 10/16
+                actualQ[:-1] += Q[1:] * 5/16
+                actualQ[1:] += Q[:-1] * 5/16
+                actualQ[:-2] += Q[2:]/16
+                actualQ[2:] += Q[:-2]/16
+                Q = actualQ
+
+                P = rho * (1/3 + Q)
+                dQ = self.diff.dydx(Q)
+                dP = drho * (1/3 + Q) + rho * dQ
+                # Now compute phi
+                dphi = - dP / (rho + P)
+                phi = np.zeros_like(rho)
+                phi[-1] = - 0.25 * log(rho[-1])  # Outer boundary condition
+                # And integrate
+                # Currently, a stupid trapezoid. Can improve later.
+                for i in range(self.gridpoints - 2, -1, -1):
+                    phi[i] = phi[i+1] - (dphi[i] + dphi[i + 1]) * self.rdiff[i + 1] / 2
+                ephi = np.exp(phi)
+
+        if not triggered:
+            # We can use P = w rho
+            P = rho / 3
+            dP = drho / 3
+            ephi = np.power(rho, -1/4)
+
+        # Compute rdot, which is needed for the characteristic speeds
+        rdot = r*(u*ephi-1)/2
+
         # Return the results
-        return u, m, r, rho, ephi, gamma2, dmdr, rdot, P, drho
+        return u, m, r, rho, ephi, gamma2, dmdr, dudr, rdot, Q, P, dP
 
     def derivs(self, um, xi, params=None):
         """Computes derivatives for evolution"""
         # Compute all the variables about the present state
-        u, m, r, rho, ephi, gamma2, dmdr, rdot, P, drho = self.compute_data(xi, um)
+        u, m, r, rho, ephi, gamma2, dmdr, dudr, rdot, Q, P, dP = self.compute_data(xi, um)
 
         # These are the equations of motion (time derivatives of m, u)
         mdot = 2*m - 1.5*u*ephi*(P + m)
-        udot = u - 0.5*ephi*(0.5*(2*u*u+m+3*P) + gamma2*drho/3/(rho+P)/r)
+        udot = u - 0.5*ephi*(0.5*(2*u*u+m+3*P) + gamma2*dP/(rho+P)/r)
 
         # Convert to Eulerian coordinates
-        dudr = self.diff.dydx(u)
         mdot -= dmdr * rdot
         udot -= dudr * rdot
 
+        # Hack for the origin
+        alpha = 0.1
+        udot[0] += alpha * ((m[0]-1)/2 - 2 * (u[0] - 1))
+
         # Boundary condition on U:
         # \dot{U} = - c_s U' + (1/2 - 2 c_s/R) (U - 1)
-        uprime = self.diff.rightdydx(u)
         # cs = exp(0.5 * xi) / sqrt(12)  # This is the linear speed of sound
         cs = 0.5 / sqrt(3) * ephi[-1] * sqrt(gamma2[-1])  # This is the nonlinear speed of sound
-        udot[-1] = - cs * uprime + (0.5 - 2*cs/r[-1]) * (u[-1]-1)
+        lastr = r[-1]
+        lastr2 = lastr * lastr
+        cs2 = cs * cs
+        denom = lastr * (2 * cs + lastr)
+
+        alpha = cs
+        beta = (12 * cs2 + 6 * cs * lastr + lastr2) / denom / 2
+        gamma = -cs * (3 * cs2 + 3 * cs * lastr + lastr2) / lastr / denom
+        delta = - cs * (2 * cs2 + 2 * cs * lastr + lastr2) / 2 / denom
+        udot[-1] = (- alpha * dudr[-1]
+                    - beta * (u[-1] - 1)
+                    - gamma * (m[-1] - 1)
+                    - delta * dmdr[-1])
 
         return np.concatenate((udot, mdot))
 
@@ -242,7 +304,8 @@ class MSData(object):
             "csp",      # 11
             "csm",      # 12
             "cs0",      # 13
-            "xi"        # 14
+            "xi",       # 14
+            "Q",        # 15
         ]
         fulldata = [self.computed_data[name] for name in datanames]
         file.write("# " + "\t".join(map(str, datanames)) + "\n")

@@ -3,7 +3,9 @@
 """
 Wrapper that drives MS and RB evolution
 """
+from math import log
 from enum import Enum
+import numpy as np
 from ms import MSData, IntegrationError, BlackHoleFormed, NegativeDensity
 from rb import RBData
 
@@ -11,11 +13,10 @@ from rb import RBData
 class Status(Enum):
     """Status of Driver object"""
     MS_OK = 0
-    BlackHoleFormed = 1
-    RB_OK = 2
-    MassExtracted = 3
-    MS_MaxTimeReached = 4
-    RB_MaxTimeReached = 5
+    NoBlackHole = 1
+    BlackHoleFormed = 2
+    RB_OK = 3
+    MassExtracted = 4
     MS_IntegrationError = -1
     RB_IntegrationError = -2
     MS_NegativeDensity = -3
@@ -28,7 +29,7 @@ class Driver(object):
     """
 
     def __init__(self, r, u, m, xi0=0.0,
-                 maxtime=7, jumptime=0,
+                 timeout=True, jumptime=0,
                  viscosity=2.0, debug=False):
         """
         Set parameters for driving this run
@@ -37,12 +38,12 @@ class Driver(object):
         u - list of \tilde{U} values at each Rgrid value
         m - list of \tilde{m} values at each Rgrid value
 
-        maxtime - Final time to run to
+        timeout - Do we timeout when the largest mode peaks (True), or run infinitely (False)
         jumptime - Time before which no writes take place
         debug - An internal debug flag
         """
         # Save parameters
-        self.maxtime = maxtime
+        self.timeout = timeout
         self.jumptime = jumptime
         self.debug = debug
 
@@ -53,6 +54,9 @@ class Driver(object):
         self.msg = ""
         self.hit50 = False
         self.stalled = False
+
+        # Compute the max time for using timeout
+        self.timeouttime = 0.12 + 2 * log(r[-1])
 
     def runMS(self, outfile, bhcheck=True, timestep=0.1):
         """
@@ -75,9 +79,13 @@ class Driver(object):
             self.MSdata.write_data(outfile)
 
         # Integration loop
-        while self.MSdata.integrator.t < self.maxtime:
+        newtime = 0.0
+        while True:
             # Construct the time to integrate to
-            newtime = min(self.MSdata.integrator.t + timestep, self.maxtime)
+            # Steps are taken one at a time, so that the output of different runs will
+            # be as close together as possible
+            while newtime <= self.MSdata.integrator.t:
+                newtime += timestep
 
             # Take a step
             try:
@@ -104,8 +112,12 @@ class Driver(object):
             if self.status == Status.BlackHoleFormed:
                 return
 
-        # If we got here, we've run out of time
-        self.status = Status.MS_MaxTimeReached
+            # Do we check for black hole timeout?
+            if self.timeout and self.MSdata.integrator.t > self.timeouttime:
+                # Check if black holes are unlikely to form
+                if np.all(self.MSdata.um > 0.5) and np.all(self.MSdata.um < 1.5):
+                    self.status = Status.NoBlackHole
+                    return
 
     def runRB(self, outfile, timestep=0.01, write_initial_data=False):
         """
@@ -132,9 +144,13 @@ class Driver(object):
             if write_initial_data:
                 self.RBdata.write_data(outfile)
 
-        while self.RBdata.integrator.t < self.maxtime:
-            # Construct the time to step to
-            newtime = min(self.RBdata.integrator.t + timestep, self.maxtime)
+        newtime = self.RBdata.integrator.t
+        while True:
+            # Construct the time to integrate to
+            # Steps are taken one at a time, so that the output of different runs will
+            # be as close together as possible
+            while newtime <= self.RBdata.integrator.t:
+                newtime += timestep
 
             # Take a step
             try:
@@ -154,5 +170,4 @@ class Driver(object):
             if self.debug:
                 print("RB tau:", round(self.RBdata.integrator.t, 5))
 
-        # If we got here, we've run out of time
-        self.status = Status.RB_MaxTimeReached
+            # We need a way to stop evolution when mass extraction is available

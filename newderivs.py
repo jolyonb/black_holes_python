@@ -81,11 +81,12 @@ class Derivative(object):
         x4sums *= 4/3
         # x4sums[i] = 4/3*(x[i]^4 + x[i-1]^4) / (x[i] - x[i-1])
 
-        # Construct the first element (backward difference vanishes)
-        self._rhostencil[0, 0] = - x4sums[1]
-        self._rhostencil[0, 1] = x4sums[1]
+        # Construct the first element (uses special formula)
+        h = diffs[0]
+        epsilon = diffs[1] / h - 1
+        self._rhostencil[0, 0] = - 5/3/h/(1+epsilon)/(2+epsilon)
+        self._rhostencil[0, 1] = - self._rhostencil[0, 0]
         self._rhostencil[0, 2] = 0
-        self._rhostencil[0] /= x4doublediffs[0]
 
         # Construct the rest of the elements
         for i in range(1, length - 1):

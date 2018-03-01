@@ -49,6 +49,10 @@ class DOPRI5(object):
         if self.hnext > self.max_h:
             self.hnext = self.max_h
 
+    def clear_fsal(self):
+        """Clears FSAL information, forcing it to be recalculated"""
+        self.dxdt = None
+
     def step(self):
         """Take a step"""
         rejected = False
