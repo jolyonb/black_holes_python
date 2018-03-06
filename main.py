@@ -64,7 +64,7 @@ f = open("output.dat", "w")
 # Make the grid and initial data
 if len(sys.argv) == 1:
     grid = makegrid(1000, squeeze=3, Amax=14)
-    deltam0 = compute_deltam0(grid, amplitude=0.15)
+    deltam0 = compute_deltam0(grid, amplitude=0.175)
     r, u, m = growingmode(grid, deltam0)
     xi0 = 0.0
 else:
@@ -85,7 +85,7 @@ else:
     print("Starting evolution at xi = {}".format(xi0))
 
 # Construct the driver
-mydriver = Driver(r, u, m, jumptime=0, debug=True, xi0=xi0, viscosity=2, timeout=False)
+mydriver = Driver(r, u, m, jumptime=4, debug=True, xi0=xi0, viscosity=2, timeout=False)
 
 # Start by performing the MS evolution
 print("Beginning MS evolution")

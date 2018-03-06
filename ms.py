@@ -262,10 +262,6 @@ class MSData(object):
         mdot -= dmdr * rdot
         udot -= dudr * rdot
 
-        # Hack for the origin
-        alpha = 0.1
-        udot[0] += alpha * ((m[0]-1)/2 - 2 * (u[0] - 1))
-
         # Boundary condition on U:
         # \dot{U} = - c_s U' + (1/2 - 2 c_s/R) (U - 1)
         # cs = exp(0.5 * xi) / sqrt(12)  # This is the linear speed of sound
