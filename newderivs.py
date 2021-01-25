@@ -3,6 +3,7 @@
 Computes second order finite difference derivatives for MS evolution
 """
 import numpy as np
+np.seterr(all='raise')
 
 class DerivativeError(Exception):
     pass
@@ -49,9 +50,10 @@ class Derivative(object):
         self._dydxstencil = np.zeros([length, 3])
 
         # Left hand point is special because of evenness
+        # This comes from a 4-point stencil
         # 0 refers to the coefficient of the point, rather than left of the point
-        self._dydxstencil[0, 0] = invdoublediffs[0] - invdiffs[1]
-        self._dydxstencil[0, 1] = invdiffs[1] - invdoublediffs[0]
+        self._dydxstencil[0, 0] = + 1 / (xvals[0] - xvals[1]) + 1 / (xvals[0] + xvals[1])
+        self._dydxstencil[0, 1] = - 1 / (xvals[0] - xvals[1]) - 1 / (xvals[0] + xvals[1])
         self._dydxstencil[0, 2] = 0
 
         # Middle points are straightforward
@@ -67,6 +69,12 @@ class Derivative(object):
         self._dydxstencil[i, 1] = -invdiffs[i-1] - invdiffs[i]
         self._dydxstencil[i, 2] = invdoublediffs[i-1] + invdiffs[i]
 
+        # Make a different version for odd derivatives
+        # Only two coefficients need to change
+        # Note that this comes from a 4-point derivative
+        self._oddstencil = self._dydxstencil.copy()
+        self._oddstencil[0, 0] = 1 / xvals[0] + 1 / (xvals[0] - xvals[1]) + 1 / (xvals[0] + xvals[1])
+        self._oddstencil[0, 1] = -2 / xvals[1] + 1 / (xvals[1] - xvals[0]) + 1 / (xvals[0] + xvals[1])
 
         # Construct rhoderiv. Note that as a second derivative, we can't compute this
         # for the last gridpoint.
@@ -77,8 +85,7 @@ class Derivative(object):
         x4doublediffs = x4diffs[1:] + x4diffs[:-1]
         # x4doublediffs[i] = x[i+1]^4 - x[i-1]^4
         x4sums = np.insert(x4vals[1:] + x4vals[:-1], 0, 2*x4vals[0])
-        x4sums /= diffs
-        x4sums *= 4/3
+        x4sums *= invdiffs * 4/3
         # x4sums[i] = 4/3*(x[i]^4 + x[i-1]^4) / (x[i] - x[i-1])
 
         # Construct the first element (uses special formula)
@@ -95,12 +102,14 @@ class Derivative(object):
             self._rhostencil[i, 2] = x4sums[i+1]
             self._rhostencil[i] /= x4doublediffs[i]
 
-    def dydx(self, yvals):
+    def dydx(self, yvals, even=True):
         """
         Pass in a vector of y values
         Returns a vector of dy/dx values
         """
-        return self._compute_deriv(yvals, self._dydxstencil)
+        if even:
+            return self._compute_deriv(yvals, self._dydxstencil)
+        return self._compute_deriv(yvals, self._oddstencil)
 
     def rhoderiv(self, yvals):
         """
@@ -109,6 +118,40 @@ class Derivative(object):
         Note that the this is not computed for the last gridpoint; instead, 0 is returned
         """
         return self._compute_deriv(yvals, self._rhostencil)
+
+    def rhoderiv_lagrange(self, yvals, rvals):
+        """
+        Construct the rho derivative where yvals and rvals are written
+        as a function of x, and we want (x d^2y/dr^2 + 4 dy/dr)/3
+        Note that the this is not computed for the last gridpoint; instead, 0 is returned
+
+        Because this depends on yvals and rvals, this cannot be computed with a stencil.
+        """
+        # Start by computing the differences in yvals
+        ydiffs = np.diff(yvals)
+        rdiffs = np.diff(rvals)
+
+        # Compute dy/dr as a forwards difference
+        dydr = ydiffs / rdiffs
+
+        # Compute the r^4 terms
+        r4vals = rvals**4
+        r4sums = r4vals[1:] + r4vals[:-1]
+        r4diffs = np.diff(r4vals)
+        r4doublediffs = r4diffs[1:] + r4diffs[:-1]
+
+        # Construct the result
+        result = 4 / 3 * np.diff(r4sums * dydr) / r4doublediffs
+        # Set first and last gridpoints to zero
+        fullresult = np.zeros_like(yvals)
+        # Insert the results
+        fullresult[1:-1] = result
+
+        # Need something special for the first gridpoint
+        fullresult[0] = 10 / 3 * ydiffs[0] * rvals[0] / rdiffs[0] / (rvals[0] + rvals[1])
+
+        # Return the result
+        return fullresult
 
     def _compute_deriv(self, yvals, stencil):
         """
@@ -158,10 +201,32 @@ if __name__ == "__main__":
     for i in range(len(dycos)):
         print(x[i], dycos[i], -ysin[i], abs(dycos[i] + ysin[i]))
 
+    # Take derivatives
+    dysin = diff.dydx(ysin, even=False)
+    # How did we go?
+    print("x", "Derivative", "Actual", "Error")
+    for i in range(len(dysin)):
+        print(x[i], dysin[i], ycos[i], abs(dysin[i] - ycos[i]))
+
     # Take rho derivatives
     rho = diff.rhoderiv(ycos)
     actual = (-x*ycos-4*ysin)/3
     # How did we go?
+    print("Eulerian derivatives")
     print("x", "Derivative", "Actual", "Error")
     for i in range(len(rho)):
         print(x[i], rho[i], actual[i], abs(rho[i] - actual[i]))
+
+    # Take rho derivatives using yvals and rvals
+    rho2 = diff.rhoderiv_lagrange(ycos, x)
+    actual = (-x*ycos-4*ysin)/3
+    # How did we go?
+    print("Lagrangian derivatives")
+    print("x", "Derivative", "Actual", "Error")
+    for i in range(len(rho2)):
+        print(x[i], rho2[i], actual[i], abs(rho2[i] - actual[i]))
+
+    print("Eulerian vs Lagrangian")
+    print("Difference", "Error")
+    for i in range(len(rho)):
+        print(rho[i] - rho2[i], abs(rho2[i] - actual[i]))

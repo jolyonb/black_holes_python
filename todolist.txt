@@ -1,0 +1,163 @@
+Lagrange/Euler switch
+Code cleanup
+
+
+Viscosity: Recommend a higher order derivative of U (not an evolution eqn). Also recommend smoothing Q, like a haystack filter. Without a shock capturing code, shocks will give bad derivatives that will tend to set up ringing at the top of the shock.
+
+
+
+python main.py outerbc1.dat
+wiggles in shock appear around xi = 6.7
+
+
+Outer boundary dataset
+Propagate new U completely
+Test nonlinear speed of sound in outer boundary
+Comment on oscillations at the origin
+Comment on derivatives at origin?
+
+Linear section
+Draft of plots/animations
+
+
+
+Then ready for linear evolution, remaking example videos
+Finally, fix introduction, abstract and conclusion
+Then proofread everything
+
+FIXME: Sections II, III, V and VI have been edited. The appendices are also good to go. Section VI needs some additional information from the linearized analysis, and further needs a linearized analysis for HM (that sounds bad).
+
+
+
+I've put in better second derivatives at the origin.
+For amplitude 0.173, still seeing wild behavior at the origin though.
+Actually, this is for an evenly spaced grid with 1000 points, no squeeze - I suspect this is strongly under-resolved at the origin
+Even with much better resolution at the origin, there's still wild whipsawing going on. This is unphysical - viscosity should rapidly damp this down. Can we apply artificial viscosity in this situation?
+
+Write about better derivatives at the origin
+
+Artificial viscosity probably needs some smoothing; it tends to be blocky
+Also needs testing - the value of 2 may be a little low
+Why is it always generating wiggles?
+
+Need a hard timeout, as instabilities may stop the nice exit condition from being triggered
+
+
+Get RB working again
+Figure out how to take spatial derivatives in RB
+
+
+Do boundary condition runs - do we need artificial viscosity first?
+- do we need to demand that the output is on the same time slice each run to make a good comparison?
+- program a bail condition - detect when things are very unlikely to form a black hole
+
+
+
+Write singularity detector in MS code! When dR/dt at the first gridpoint <= 0
+Does our boundary condition improve once we add the Eulerian transformation to it?
+Switch to change between Lagrangian/Eulerian code
+
+
+
+- Do termination condition in delta rho, where things are analytic
+- Better e^\phi integration
+- Do derivatives wrt A for Lagrangian to avoid recomputing derivatives repeatedly
+
+
+
+~~~~~~~~~~~~~~~
+Artificial viscosity
+- Helps to have 4th order derivatives (combats wiggles)
+- Haystack filtering to smooth (wide)
+- Coefficient up to around 30 (jacked up due to haystacking)
+
+Boundary condition
+- 30% nonlinear is about the limit for having essentially no reflection
+- Nonlinear speed of sound improves the reflection quality noticeably
+- Artificial viscosity has been ignored in determining the boundary condition. However, it can have quite a nonlinear effect even for linear inputs, due to the Q' term. We found that putting an envelope on Q to turn it off near the boundary was magic?
+
+input.dat constructed from amp 0.15, Amax 15, lagrangian, viscosity on, 1250 gridpoints
+
+
+
+
+
+
+Plots:
+~~~~~~
+- Boundary condition (amplitude = 0.150)
+Gaussian: sigma = 2.0, amplitude = 0.150, artificial viscosity off (this is important - viscosity operating near the boundary can mess up the boundary condition!)
+Run 1: A = 12 (viscosity off)
+Run 2: A = 15 (viscosity on - becomes too steep after A=12)
+
+- Viscosity (amplitude = 0.17)
+Run without artificial viscosity (A=20)
+Run with artificial viscosity (A=20) (Lagrangian)
+Run with artificial viscosity (A=20) (Eulerian as a proxy for 4th order derivatives)
+
+
+Jolyon
+~~~~~~
+Check first three sections
+Fixme before section 4
+Generate data for wave passing through outer boundary
+Look into artificial viscosity
+
+Face
+~~~~
+Do section 4 - completely
+
+
+Todo:
+
+Pass in w instead of hard coding 1/3
+
+Clean up the boundary conditions
+
+Clean up artificial viscosity
+
+Check on the CFL conditions
+
+Clean up viscosity integration
+
+Clean up initial data stuff
+
+Make a module that computes grids, loads data, etc - clean up main
+
+Make sure that Lagrangian/Eulerian both just work
+
+Write up Lagrangian finite diff results in paper
+
+Make data for example that shows wave passing outer boundary
+
+Make data for HM run
+
+Remake movies appropriately
+
+Rework paper
+
+Go through paper carefully and rederive as necessary?
+
+Clean up linear section of paper
+
+Clean everything up until HM section for the moment...
+
+
+
+
+
+
+List of things to do
+~~~~~~~~~~~~~~~~~~~~
+
+Remake Figure 1 (Face to make plot)
+
+Proofread Sections I, II, III, IV, V - should all be done (Both)
+
+Section VI C - Jolyon to rewrite
+
+Section VII - Figure out what we want to show here (Jolyon) and rewrite appropriately
+
+Remake plots and animations (at very end)
+
+Proofread appendices

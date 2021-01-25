@@ -53,11 +53,14 @@ class DOPRI5(object):
         """Clears FSAL information, forcing it to be recalculated"""
         self.dxdt = None
 
-    def step(self):
+    def step(self, newtime):
         """Take a step"""
         rejected = False
 
         while True:
+            # Comment these two lines out if you want to allow it to go past
+            if self.t + self.hnext > newtime:
+                self.hnext = newtime - self.t
             self._take_step(self.hnext)
             if self._good_step(rejected):
                 break

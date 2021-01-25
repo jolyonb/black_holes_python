@@ -2,8 +2,8 @@
 """
 Computes finite difference derivatives on a non-uniform grid
 """
-
 import numpy as np
+np.seterr(all='raise')
 
 class DerivativeError(Exception):
     pass

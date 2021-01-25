@@ -17,6 +17,8 @@ Creating primordial black holes using python!
 12. Characteristic speed c_s^- (in \tilde{R})
 13. Characteristic speed c_s^0 (in \tilde{R})
 14. \xi
+15. Q
+16. e^\phi
 
 ## Helpful gnuplot commands
 
@@ -26,6 +28,8 @@ Data units are delimited by "\t", records by "\n", groups by "\n\n". Note the ch
   ```gnuplot
   plot "output.dat" ev :::1::45 u "r":(2*column('M')/column('R')) w l
   ```
+
+Note that ev `ev` format is `:step::start::stop` (we don't use the omitted values).
 
 * Plot characteristics in \tilde{R}:
   ```gnuplot

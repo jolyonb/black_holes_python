@@ -5,10 +5,8 @@ Wrapper that drives MS and RB evolution
 """
 from math import log
 from enum import Enum
-import numpy as np
 from ms import MSData, IntegrationError, BlackHoleFormed, NegativeDensity
 from rb import RBData
-
 
 class Status(Enum):
     """Status of Driver object"""
@@ -29,26 +27,36 @@ class Driver(object):
     """
 
     def __init__(self, r, u, m, xi0=0.0,
-                 timeout=True, jumptime=0,
-                 viscosity=2.0, debug=False):
+                 timeout=True, jumptime=0, maxtime=None,
+                 viscosity=2.0, eulerian=True,
+                 bhcheck=True, debug=False):
         """
         Set parameters for driving this run
 
-        r - the list of points at specific values of R (increasing)
+        r - list of R values
         u - list of \tilde{U} values at each Rgrid value
         m - list of \tilde{m} values at each Rgrid value
 
         timeout - Do we timeout when the largest mode peaks (True), or run infinitely (False)
         jumptime - Time before which no writes take place
+        maxtime - Time at which to stop
+        viscosity - Coefficient for artificial viscosity
+        eulerian - Flag for whether to do Eulerian or Lagrangian evolution
+        bhcheck - Controls whether or not black hole formation is checked during the
+                  evolution. If false, the evolution will continue until an error is raised.
+
         debug - An internal debug flag
         """
         # Save parameters
         self.timeout = timeout
         self.jumptime = jumptime
         self.debug = debug
+        self.eulerian = eulerian
+        self.bhcheck = bhcheck
+        self.maxtime = maxtime
 
         # Initialize the data objects
-        self.MSdata = MSData(r, u, m, debug=debug, xi0=xi0, viscosity=viscosity)
+        self.MSdata = MSData(r, u, m, debug=debug, xi0=xi0, viscosity=viscosity, eulerian=eulerian, bhcheck=bhcheck)
         self.RBdata = None
         self.status = Status.MS_OK
         self.msg = ""
@@ -56,14 +64,11 @@ class Driver(object):
         self.stalled = False
 
         # Compute the max time for using timeout
-        self.timeouttime = 0.12 + 2 * log(r[-1])
+        self.timeouttime = 0.8278 + 2 * log(r[-1])
 
-    def runMS(self, outfile, bhcheck=True, timestep=0.1):
+    def runMS(self, outfile, timestep=0.1):
         """
         Runs the Misner-Sharp evolution, outputting the generated data to outfile.
-
-        bhcheck controls whether or not black hole formation is checked during the
-        evolution. If false, the evolution will continue until an error is raised.
 
         timestep is the time step for outputting data.
 
@@ -89,7 +94,7 @@ class Driver(object):
 
             # Take a step
             try:
-                self.MSdata.step(newtime, bhcheck)
+                self.MSdata.step(newtime)
                 # Record how things are going
                 self.hit50 = self.MSdata.hit50
                 self.stalled = self.MSdata.stalled
@@ -115,9 +120,15 @@ class Driver(object):
             # Do we check for black hole timeout?
             if self.timeout and self.MSdata.integrator.t > self.timeouttime:
                 # Check if black holes are unlikely to form
-                if np.all(self.MSdata.um > 0.5) and np.all(self.MSdata.um < 1.5):
+                # if np.all(self.MSdata.um > 0.5) and np.all(self.MSdata.um < 1.5):
+                if self.MSdata.unlikely():
                     self.status = Status.NoBlackHole
                     return
+
+            # Are we at the max time?
+            if self.maxtime and self.MSdata.integrator.t >= self.maxtime:
+                self.status = Status.NoBlackHole
+                return
 
     def runRB(self, outfile, timestep=0.01, write_initial_data=False):
         """
