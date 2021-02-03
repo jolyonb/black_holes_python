@@ -8,7 +8,7 @@ import numpy as np
 from dopri5 import DOPRI5, DopriIntegrationError
 from newderivs import Derivative
 from fancyderivs import Derivative as Deriv4
-np.seterr(all='raise')
+np.seterr(all='raise', under='ignore')
 
 class IntegrationError(Exception):
     """An integration error occurred when evolving"""
