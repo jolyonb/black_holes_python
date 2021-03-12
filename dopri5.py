@@ -40,6 +40,10 @@ class DOPRI5(object):
         # Internal variables
         self.hdid = 0        # Previous step we just took
         self.dxdt = None    # Used for FSAL
+        
+    def set_init_values(self, t0, init_values):
+        self.values = init_values
+        self.t = t0
 
     def update_max_h(self, new_max_h):
         """Updates the max step size"""
