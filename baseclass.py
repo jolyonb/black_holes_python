@@ -121,7 +121,7 @@ class Evolver(object):
     # Abstract methods - to be implemented!
 
     @abstractmethod
-    def derivatives(self, t, field_vec) -> np.ndarray:
+    def derivatives(self, t, field_vec, params=None) -> np.ndarray:
         """Computes derivatives at the given value of the fields and t. Returns time derivative of field_vec."""
         raise NotImplementedError()
 
