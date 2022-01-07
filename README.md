@@ -7,6 +7,28 @@ The entry point for the code is driver.py, which uses an old algorithm to take a
 I recommend using gnuplot to visualize the output (the output has been formatted according to gnuplot specifications). Some helpful plotting commands are listed in the readme file for this repository.
 
 
+## Plotting column numbers
+
+The column numbers are as given; the column names are in parentheses.
+
+1. Grid point number (index)
+2. \tilde{R} (r)
+3. \tilde{U} (u)
+4. \tilde{M} (m)
+5. \tilde{\rho} (rho)
+6. R (rfull)
+7. U (ufull)
+8. M (mfull)
+9. \rho (rhofull)
+10. 2M/R (horizon)
+11. Characteristic speed c_s^+ (in \tilde{R}) (cs+)
+12. Characteristic speed c_s^- (in \tilde{R}) (cs-)
+13. Fluid speed c_s^0 (in \tilde{R}) (cs0)
+14. \xi (xi)
+15. Q (Q)
+16. e^\phi (ephi)
+
+
 ## Lagrangian Evolution
 
 The Lagrangian evolution is characterized by having grid points move along with fluid elements. This means that the grid is continually changing. This is fine, except that when you have a large overdensity, the grid tends to fall towards that overdensity. This means that you tend to have a lot of grid points near the origin, then some very sparsely distributed points, then evenly distributed points once you get back into the cosmological regime. This is fine, until you want a high accuracy derivative in that sparsely distributed area. If a shock wave passes through this area, you're going to be in trouble, as the derivative quality is terrible there, and will lead to instabilities.
