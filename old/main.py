@@ -62,8 +62,8 @@ def growingmode(grid, deltam0):
 
 # Make the grid and initial data
 if len(sys.argv) == 1:
-    grid = makegrid(1500, squeeze=0, Amax=18)
-    deltam0 = compute_deltam0(grid, amplitude=0.120)
+    grid = makegrid(1500, squeeze=2, Amax=10)
+    deltam0 = compute_deltam0(grid, amplitude=0.1737)
     r, u, m = growingmode(grid, deltam0)
     xi0 = 0.0
 else:
@@ -84,7 +84,7 @@ else:
     print("Starting evolution at xi = {}".format(xi0))
 
 # Set up the output file
-f = open("boundary18.dat", "w")
+f = open("testing.dat", "w")
 
 # Construct the driver
 mydriver = Driver(r, u, m,
@@ -114,3 +114,6 @@ elif mydriver.status == Status.BlackHoleFormed:
 # Tidy up
 f.close()
 print("Done!")
+
+if __name__ == '__main__':
+    pass

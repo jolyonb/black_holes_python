@@ -1,184 +1,106 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
-Wrapper that drives MS and RB evolution
+driver.py
+
+Entry point for evolving black holes.
 """
-from math import log
-from enum import Enum
-from ms import MSData, IntegrationError, BlackHoleFormed, NegativeDensity
-from rb import RBData
 
-class Status(Enum):
-    """Status of Driver object"""
-    MS_OK = 0
-    NoBlackHole = 1
-    BlackHoleFormed = 2
-    RB_OK = 3
-    MassExtracted = 4
-    MS_IntegrationError = -1
-    RB_IntegrationError = -2
-    MS_NegativeDensity = -3
-    RB_NegativeDensity = -4
+import sys
+import numpy as np
+
+from ms import MS, MSEulerian, MSLagrangian
+from derivs import Derivative
 
 
-class Driver(object):
+def makegrid(gridpoints: int, squeeze: float = 2, Amax: float = 14):
     """
-    Sets up and runs the entire black hole evolution
+    Creates a grid with a given Amax value and the specified number of gridpoints.
+    If squeeze is 0, the grid is even, else it's squeezed towards the origin.
+    Note that there is no gridpoint at the origin or at Amax.
     """
+    delta = Amax / gridpoints
+    grid = np.arange(delta / 2, Amax, delta)
+    if squeeze == 0:
+        return grid
+    return Amax * np.sinh(squeeze * grid / Amax) / np.sinh(squeeze)
 
-    def __init__(self, r, u, m, xi0=0.0,
-                 timeout=True, jumptime=0, maxtime=None,
-                 viscosity=2.0, eulerian=True,
-                 bhcheck=True, debug=False):
-        """
-        Set parameters for driving this run
 
-        r - list of R values
-        u - list of \tilde{U} values at each Rgrid value
-        m - list of \tilde{m} values at each Rgrid value
+def compute_deltam0(grid: np.ndarray, amplitude: float = 0.17):
+    """
+    Constructs deltam as a Gaussian on the given grid.
+    Note that the critical amplitude for black hole formation is around 0.1737 (for sigma=2).
+    """
+    sigma = 2
+    return amplitude * np.exp(- grid * grid / 2 / sigma / sigma)
 
-        timeout - Do we timeout when the largest mode peaks (True), or run infinitely (False)
-        jumptime - Time before which no writes take place
-        maxtime - Time at which to stop
-        viscosity - Coefficient for artificial viscosity
-        eulerian - Flag for whether to do Eulerian or Lagrangian evolution
-        bhcheck - Controls whether or not black hole formation is checked during the
-                  evolution. If false, the evolution will continue until an error is raised.
 
-        debug - An internal debug flag
-        """
-        # Save parameters
-        self.timeout = timeout
-        self.jumptime = jumptime
-        self.debug = debug
-        self.eulerian = eulerian
-        self.bhcheck = bhcheck
-        self.maxtime = maxtime
+def growingmode(grid: np.ndarray, deltam0: np.ndarray):
+    """Computes the growing mode based on deltam0 and a comoving grid"""
+    # Initialize a differentiator
+    diff = Derivative(grid)
 
-        # Initialize the data objects
-        self.MSdata = MSData(r, u, m, debug=debug, xi0=xi0, viscosity=viscosity, eulerian=eulerian, bhcheck=bhcheck)
-        self.RBdata = None
-        self.status = Status.MS_OK
-        self.msg = ""
-        self.hit50 = False
-        self.stalled = False
+    # Compute dm
+    dm = diff.dydx(deltam0, even=True)
 
-        # Compute the max time for using timeout
-        self.timeouttime = 0.8278 + 2 * log(r[-1])
+    # Initial data
+    deltam1 = 1.0 * deltam0
+    deltau1 = - 0.25 * deltam0
+    deltarho1 = deltam0 + grid * dm / 3
+    deltar1 = -1 / 8 * (deltam0 + deltarho1)
 
-    def runMS(self, outfile, timestep=0.1):
-        """
-        Runs the Misner-Sharp evolution, outputting the generated data to outfile.
+    ddeltarho1 = diff.dydx(deltarho1, even=True)
+    ddeltar1 = diff.dydx(deltar1, even=True)
 
-        timestep is the time step for outputting data.
+    deltam2 = (deltau1 / 5 * (2 * deltau1 - 6 * deltam1 - deltarho1)
+               + deltarho1 / 40 * (10 * deltam1 - 3 * deltarho1)
+               + ddeltarho1 / 10 / grid)
+    ddeltam2 = diff.dydx(deltam2, even=True)
+    deltau2 = 3 / 20 * (deltau1 * (deltam1 + deltarho1 - 2 * deltau1)
+                        - deltarho1 * deltarho1 / 4 - ddeltarho1 / 2 / grid)
+    deltarho2 = deltam2 + grid * (ddeltam2 / 3 - (deltarho1 - deltam1) * ddeltar1)
+    deltar2 = 1 / 16 * (4 * deltar1 * deltau1 + 4 * deltau2 - deltarho2
+                        + deltarho1 * (5 / 8 * deltarho1 - deltar1 - deltau1))
 
-        The resulting status is stored in self.status.
-        """
-        # Make sure we're ready to roll
-        if self.status != Status.MS_OK:
-            raise ValueError("Cannot begin MS evolution as status is not OK.")
+    # Starting variables
+    m = 1.0 + deltam1 + deltam2
+    u = 1.0 + deltau1 + deltau2
+    r = (1.0 + deltar1 + deltar2) * grid
 
-        # Write initial data to outfile if applicable
-        if self.MSdata.integrator.t >= self.jumptime:
-            # Write the initial conditions
-            self.MSdata.write_data(outfile)
+    u *= r
 
-        # Integration loop
-        newtime = 0.0
-        while True:
-            # Construct the time to integrate to
-            # Steps are taken one at a time, so that the output of different runs will
-            # be as close together as possible
-            while newtime <= self.MSdata.integrator.t:
-                newtime += timestep
+    return r, u, m
 
-            # Take a step
-            try:
-                self.MSdata.step(newtime)
-                # Record how things are going
-                self.hit50 = self.MSdata.hit50
-                self.stalled = self.MSdata.stalled
-            except BlackHoleFormed:
-                # Don't exit at this stage; we want to record the data
-                self.status = Status.BlackHoleFormed
-            except IntegrationError as e:
-                self.status = Status.MS_IntegrationError
-                self.msg = e.args[0]
-                return
-            except NegativeDensity:
-                self.status = Status.MS_NegativeDensity
-                return
+def main():
+    # Set up our driver here
+    driver = MS(black_hole_check=True,
+                enforce_timeout=False,
+                eomhandler=MSEulerian,  # MSEulerian or MSLagrangian
+                viscosity=2,
+                debug=True)
 
-            # Write the data
-            if self.MSdata.integrator.t >= self.jumptime:
-                self.MSdata.write_data(outfile)
+    # Construct initial conditions
+    if len(sys.argv) == 2:
+        # Load initial conditions from file
+        driver.load_initial_conditions(sys.argv[1])
+    else:
+        # Initialize grid
+        grid = makegrid(gridpoints=600, squeeze=2, Amax=10)
+        # Initialize deltam0
+        deltam0 = compute_deltam0(grid, amplitude=0.175)
+        # Initialize r, u and m based on deltam0
+        r, u, m = growingmode(grid, deltam0)
+        # Starting time
+        xi0 = 0.0
+        # Initialize drivers
+        driver.set_initial_conditions(xi0, r, u, m)
 
-            # Get out if a black hole has formed
-            if self.status == Status.BlackHoleFormed:
-                return
+    # Run!
+    print('Evolver initialized. Beginning evolution!')
+    with open('output.dat', 'w') as f:
+        driver.drive(output_step=0.1,
+                     file_handle=f,
+                     max_time=7,
+                     write_after=0)
+    print(f'Evolution complete! Status: {driver.status.name}')
 
-            # Do we check for black hole timeout?
-            if self.timeout and self.MSdata.integrator.t > self.timeouttime:
-                # Check if black holes are unlikely to form
-                # if np.all(self.MSdata.um > 0.5) and np.all(self.MSdata.um < 1.5):
-                if self.MSdata.unlikely():
-                    self.status = Status.NoBlackHole
-                    return
-
-            # Are we at the max time?
-            if self.maxtime and self.MSdata.integrator.t >= self.maxtime:
-                self.status = Status.NoBlackHole
-                return
-
-    def runRB(self, outfile, timestep=0.01, write_initial_data=False):
-        """
-        Runs the Russel-Bloomfield evolution, outputting the generated data to outfile.
-
-        timestep is the time step for outputting data.
-
-        write_initial_data is used to specify if the inital data should be written
-        to the file. This is useful when RB data and MS data are being written to
-        separate files.
-
-        The resulting status is stored in self.status.
-        """
-        # Check that the status is correct
-        if self.status != Status.BlackHoleFormed:
-            raise ValueError("Cannot begin RB evolution before a black hole forms.")
-
-        # Initialize the RB data object
-        self.RBdata = RBData(self.MSdata, self.debug)
-        self.status = Status.RB_OK
-
-        # Write the initial conditions if not writing to the MS file
-        if self.RBdata.integrator.t >= self.jumptime:
-            if write_initial_data:
-                self.RBdata.write_data(outfile)
-
-        newtime = self.RBdata.integrator.t
-        while True:
-            # Construct the time to integrate to
-            # Steps are taken one at a time, so that the output of different runs will
-            # be as close together as possible
-            while newtime <= self.RBdata.integrator.t:
-                newtime += timestep
-
-            # Take a step
-            try:
-                self.RBdata.step(newtime)
-            except IntegrationError:
-                self.status = Status.RB_IntegrationError
-                return
-            except NegativeDensity:
-                self.status = Status.RB_NegativeDensity
-                return
-
-            # Write the data
-            if self.RBdata.integrator.t >= self.jumptime:
-                self.RBdata.write_data(outfile)
-
-            # Status report
-            if self.debug:
-                print("RB tau:", round(self.RBdata.integrator.t, 5))
-
-            # We need a way to stop evolution when mass extraction is available
+if __name__ == '__main__':
+    main()
