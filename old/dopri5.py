@@ -50,7 +50,8 @@ class DOPRI5(object):
         if new_max_h < self.min_h:
             raise DopriIntegrationError("Requested max step size less than min step size")
         self.max_h = new_max_h
-        self.hnext = min(self.hnext, self.max_h)
+        if self.hnext > self.max_h:
+            self.hnext = self.max_h
 
     def clear_fsal(self):
         """Clears FSAL information, forcing it to be recalculated"""
@@ -61,7 +62,7 @@ class DOPRI5(object):
         rejected = False
 
         while True:
-            # Comment these two lines out if you want to allow it to go past newtime
+            # Comment these two lines out if you want to allow it to go past
             if self.t + self.hnext > newtime:
                 self.hnext = newtime - self.t
             self._take_step(self.hnext)
@@ -92,16 +93,20 @@ class DOPRI5(object):
                 scale = maxscale
             else:
                 scale = safety * math.pow(err, -0.2)
-                scale = max(scale, minscale)
-                scale = min(scale, maxscale)
+                if scale < minscale:
+                    scale = minscale
+                if scale > maxscale:
+                    scale = maxscale
             # Make sure we're not increasing the step if we just rejected something
             if rejected:
                 scale = min(scale, 1.0)
             # Update the step sizes
             self.hdid = self.hnext
             self.hnext = self.hdid * scale
-            self.hnext = min(self.hnext, self.max_h)
-            self.hnext = max(self.hnext, self.min_h)
+            if self.hnext > self.max_h:
+                self.hnext = self.max_h
+            if self.hnext < self.min_h:
+                self.hnext = self.min_h
             return True
         else:
             # Error was too big
@@ -110,7 +115,8 @@ class DOPRI5(object):
             # Try again!
             scale = max(safety * math.pow(err, -0.2), minscale)
             self.hnext *= scale
-            self.hnext = max(self.hnext, self.min_h)
+            if self.hnext < self.min_h:
+                self.hnext = self.min_h
             return False
 
     def _error(self):
@@ -119,7 +125,8 @@ class DOPRI5(object):
         maxed = np.max(maxed, axis=1)
         delta = self.atol + self.rtol * maxed
         temp = self.errors / delta
-        return math.sqrt(np.dot(temp, temp) / len(temp))
+        err = math.sqrt(np.dot(temp, temp) / len(temp))
+        return err
 
     # Coefficients for DOPRI5
     _dopri5times = np.array([0, 1/5, 3/10, 4/5, 8/9, 1, 1])
@@ -137,16 +144,16 @@ class DOPRI5(object):
         """Take an individual step with size h"""
         # Check that we're initialized
         if self.dxdt is None:
-            self.dxdt = self.derivs(self.t, self.values, self.params)
+            self.dxdt = self.derivs(self.values, self.t, self.params)
 
         # Compute the slopes and updated positions
         slopes = [None] * 7
         slopes[0] = self.dxdt   # stored from previous step
         newvals = self.values + h*self._dopri5coeffs[1][0]*slopes[0]
-        slopes[1] = self.derivs(self.t + h*self._dopri5times[1], newvals, self.params)
+        slopes[1] = self.derivs(newvals, self.t + h*self._dopri5times[1], self.params)
         for i in range(2, 7):
             newvals = self.values + h*sum(self._dopri5coeffs[i][j]*slopes[j] for j in range(i))
-            slopes[i] = self.derivs(self.t + h*self._dopri5times[i], newvals, self.params)
+            slopes[i] = self.derivs(newvals, self.t + h*self._dopri5times[i], self.params)
 
         # Save the results
         self.newvalues = newvals
