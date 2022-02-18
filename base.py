@@ -17,6 +17,7 @@ from numbers import Number
 from collections import OrderedDict
 
 from dopri5 import DOPRI5, DopriIntegrationError
+from dopri853 import DOPRI853, DopriIntegrationError
 
 np.seterr(all='raise', under='ignore')
 
@@ -68,7 +69,8 @@ class BlackHoleEvolver(ABC):
         self.status = Status.NEEDS_INITIALIZING
         self.msg = None
         # Set up the integrator. We initialize initial conditions later using set_initial_conditions.
-        self.integrator = DOPRI5(t0=None, init_values=None, derivs=self.derivatives, rtol=self.rtol, atol=self.atol)
+        # self.integrator = DOPRI5(t0=None, init_values=None, derivs=self.derivatives, rtol=self.rtol, atol=self.atol)
+        self.integrator = DOPRI853(t0=None, init_values=None, derivs=self.derivatives, rtol=self.rtol, atol=self.atol)
 
     def set_initial_conditions(self, start_xi: float, *start_fields: np.ndarray):
         """
