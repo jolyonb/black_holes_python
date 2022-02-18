@@ -16,8 +16,9 @@ from typing import List, TextIO, Optional, Union, Tuple, Type
 from numbers import Number
 from collections import OrderedDict
 
-from dopri5 import DOPRI5, DopriIntegrationError
-from dopri853 import DOPRI853, DopriIntegrationError
+from dopri5 import DOPRI5
+from dopri853 import DOPRI853
+from dopri_error import DopriIntegrationError
 
 np.seterr(all='raise', under='ignore')
 

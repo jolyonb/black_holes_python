@@ -7,9 +7,7 @@ October 2017
 import numpy as np
 import math
 
-class DopriIntegrationError(Exception):
-    """Error class for integration"""
-    pass
+from dopri_error import DopriIntegrationError
 
 class DOPRI5(object):
     """Dormand-Prince 5th order integrator"""
