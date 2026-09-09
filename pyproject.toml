@@ -1,0 +1,76 @@
+[project]
+name = "pbh"
+version = "0.1.0"
+description = "Misner-Sharp evolution of primordial black hole formation in a radiation-dominated universe"
+readme = "README.md"
+authors = [{ name = "Jolyon Bloomfield" }]
+requires-python = ">=3.14"
+dependencies = ["numpy>=2.3"]
+
+[project.scripts]
+pbh = "pbh.cli:main"
+
+[dependency-groups]
+dev = [
+    "pre-commit>=4.0",
+    "pyright>=1.1.400",
+    "pytest>=8.0",
+    "ruff>=0.12",
+]
+
+[build-system]
+requires = ["uv_build>=0.8,<0.12"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 120
+target-version = "py314"
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "N",    # pep8-naming
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "C4",   # flake8-comprehensions
+    "SIM",  # flake8-simplify
+    "PT",   # flake8-pytest-style
+    "RUF",  # ruff-specific
+    "NPY",  # numpy-specific
+    "ANN",  # type annotations
+    "D",    # pydocstyle
+]
+ignore = [
+    "D105",  # missing docstring in magic method
+    "D107",  # missing docstring in __init__
+    "D203",  # one blank line before class docstring (conflicts with D211)
+    "D213",  # multi-line summary on second line (conflicts with D212)
+    "N802",  # function names: physics quantities (H, Q, P) are capitalised by convention
+    "N803",  # argument names: same
+    "N806",  # variable names: same
+    "N815",  # mixed-case attributes: same
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["D", "ANN"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.format]
+docstring-code-format = true
+
+[tool.pyright]
+include = ["src", "tests"]
+pythonVersion = "3.14"
+typeCheckingMode = "strict"
+reportMissingModuleSource = false
+reportConstantRedefinition = false  # physics quantities (Q, P, H) are capitalised by convention
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+filterwarnings = ["error"]

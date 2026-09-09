@@ -1,54 +1,57 @@
-"""
-derivs.py
+"""Finite difference derivatives on a non-uniform grid with reflection symmetry about the origin.
 
-Contains the Derivative class which computes second order finite difference derivatives.
+Contains the :class:`Derivative` class, which computes second order finite difference derivatives.
 
 * Assumes even or odd symmetry about the origin
 * Assumes no gridpoint at the origin
-* Computes dy/dr for even or odd functions
-* Computes (r d^2y/dr^2 + 4 dy/dr) for even functions in two different ways (one with stencil, one with y(R) and r(R))
+* Computes dy/dx for even or odd functions
+* Computes (x d^2y/dx^2 + 4 dy/dx)/3 for even functions in two different ways (one with a stencil, one from y(A) and
+  x(A) for a Lagrangian grid)
 """
 
 import numpy as np
+from numpy.typing import NDArray
+
+type FloatArray = NDArray[np.float64]
 
 
 class DerivativeError(Exception):
     """Class used for all errors taking derivatives."""
 
 
-class Derivative(object):
-    """
-    Computes a finite difference derivatives for even functions on a grid without a
-    gridpoint at the origin. In particular, the following derivatives are computed:
+class Derivative:
+    """Finite difference derivatives for functions on a grid without a gridpoint at the origin.
+
+    The following derivatives are computed:
 
     * dy/dx
     * rhoderiv = (x d^2y/dx^2 + 4 dy/dx) / 3 = 4/3 * d/d(x^4) (x^4 dy/dx)
     """
 
-    def __init__(self, xvals: np.ndarray):
-        """
-        Initializes all of the derivative coefficients in our stencil.
+    def __init__(self, xvals: FloatArray) -> None:
+        """Initialize all of the derivative coefficients in our stencils.
 
-        xvals is an array of x values
+        Args:
+            xvals: Sorted array of (positive) x values.
         """
         # Initialize the stencil storage
         self.length = length = len(xvals)
-        if length < 2:
+        if length < 3:
             raise DerivativeError("Grid too short to compute derivatives")
 
         # Construct the xvals differences
         # diffs[i] is xvals[i] - xvals[i-1], which goes backwards so we can get
         # the boundary spacing correct
-        diffs = np.insert(np.diff(xvals), 0, xvals[0]*2)
-        invdiffs = 1/diffs
+        diffs = np.insert(np.diff(xvals), 0, xvals[0] * 2)
+        invdiffs = 1 / diffs
         # doublediffs[i] = x[i+1] - x[i-1]
         doublediffs = diffs[1:] + diffs[:-1]
-        invdoublediffs = 1/doublediffs
+        invdoublediffs = 1 / doublediffs
 
         # Make the slices that will extract the correct components for dot products
-        self.seqs = [slice(i-1, i+2) for i in range(length)]
+        self.seqs = [slice(i - 1, i + 2) for i in range(length)]
         self.seqs[0] = slice(0, 3)
-        self.seqs[-1] = slice(length-3, length)
+        self.seqs[-1] = slice(length - 3, length)
 
         # Construct the simple linear derivative
         # This is a centered nonuniform first order derivative using three gridpoints
@@ -60,12 +63,12 @@ class Derivative(object):
         # Left hand point is special because of evenness
         # This comes from a 4-point stencil
         # 0 index refers to the coefficient of the point, rather than left of the point
-        self._evenstencil[0, 0] = + 1 / (xvals[0] - xvals[1]) + 1 / (xvals[0] + xvals[1])
-        self._evenstencil[0, 1] = - 1 / (xvals[0] - xvals[1]) - 1 / (xvals[0] + xvals[1])
+        self._evenstencil[0, 0] = +1 / (xvals[0] - xvals[1]) + 1 / (xvals[0] + xvals[1])
+        self._evenstencil[0, 1] = -1 / (xvals[0] - xvals[1]) - 1 / (xvals[0] + xvals[1])
         self._evenstencil[0, 2] = 0
 
         # Middle points are straightforward
-        for i in range(1, length-1):
+        for i in range(1, length - 1):
             self._evenstencil[i, 0] = -invdiffs[i] + invdoublediffs[i]
             self._evenstencil[i, 1] = invdiffs[i] - invdiffs[i + 1]
             self._evenstencil[i, 2] = invdiffs[i + 1] - invdoublediffs[i]
@@ -92,48 +95,50 @@ class Derivative(object):
         x4diffs = np.insert(np.diff(x4vals), 0, 0)
         x4doublediffs = x4diffs[1:] + x4diffs[:-1]
         # x4doublediffs[i] = x[i+1]^4 - x[i-1]^4
-        x4sums = np.insert(x4vals[1:] + x4vals[:-1], 0, 2*x4vals[0])
-        x4sums *= invdiffs * 4/3
+        x4sums = np.insert(x4vals[1:] + x4vals[:-1], 0, 2 * x4vals[0])
+        x4sums *= invdiffs * 4 / 3
         # x4sums[i] = 4/3*(x[i]^4 + x[i-1]^4) / (x[i] - x[i-1])
 
         # Construct the first element (uses special formula)
         h = diffs[0]
         epsilon = diffs[1] / h - 1
-        self._rhostencil[0, 0] = - 5/3/h/(1+epsilon)/(2+epsilon)
-        self._rhostencil[0, 1] = - self._rhostencil[0, 0]
+        self._rhostencil[0, 0] = -5 / 3 / h / (1 + epsilon) / (2 + epsilon)
+        self._rhostencil[0, 1] = -self._rhostencil[0, 0]
         self._rhostencil[0, 2] = 0
 
         # Construct the rest of the elements
         for i in range(1, length - 1):
             self._rhostencil[i, 0] = x4sums[i]
-            self._rhostencil[i, 1] = - x4sums[i+1] - x4sums[i]
-            self._rhostencil[i, 2] = x4sums[i+1]
+            self._rhostencil[i, 1] = -x4sums[i + 1] - x4sums[i]
+            self._rhostencil[i, 2] = x4sums[i + 1]
             self._rhostencil[i] /= x4doublediffs[i]
 
-    def dydx(self, yvals: np.ndarray, even: bool) -> np.ndarray:
-        """
-        Pass in a vector of y values and the parity of y.
-        Returns a vector of dy/dx values.
+    def dydx(self, yvals: FloatArray, even: bool) -> FloatArray:
+        """Compute dy/dx.
+
+        Args:
+            yvals: Values of y on the grid.
+            even: Parity of y about the origin (True for even, False for odd).
+
+        Returns:
+            A vector of dy/dx values.
         """
         stencil = self._evenstencil if even else self._oddstencil
         return self._compute_deriv(yvals, stencil)
 
-    def rhoderiv(self, yvals: np.ndarray) -> np.ndarray:
-        """
-        Pass in a vector of y values.
-        Returns a vector of (x d^2y/dx^2 + 4 dy/dx)/3 values.
-        Note that the this is not computed for the last gridpoint; instead, 0 is returned.
+    def rhoderiv(self, yvals: FloatArray) -> FloatArray:
+        """Compute (x d^2y/dx^2 + 4 dy/dx)/3 for an even function y.
+
+        Note that this is not computed for the last gridpoint; instead, 0 is returned there.
         """
         return self._compute_deriv(yvals, self._rhostencil)
 
     @staticmethod
-    def rhoderiv_lagrange(yvals: np.ndarray, rvals: np.ndarray) -> np.ndarray:
-        """
-        Construct the rho derivative where yvals and rvals are written
-        as a function of x, and we want (x d^2y/dr^2 + 4 dy/dr)/3.
-        Note that this is not computed for the last gridpoint; instead, 0 is returned.
+    def rhoderiv_lagrange(yvals: FloatArray, rvals: FloatArray) -> FloatArray:
+        """Compute (r d^2y/dr^2 + 4 dy/dr)/3 where y and r are both given as functions of a grid coordinate.
 
-        Because this depends on yvals and rvals, this cannot be computed with a stencil.
+        Because this depends on both yvals and rvals, it cannot be computed with a fixed stencil.
+        Note that this is not computed for the last gridpoint; instead, 0 is returned there.
         """
         # Start by computing the differences in yvals
         ydiffs = np.diff(yvals)
@@ -161,10 +166,10 @@ class Derivative(object):
         # Return the result
         return fullresult
 
-    def _compute_deriv(self, yvals: np.ndarray, stencil: np.ndarray) -> np.ndarray:
-        """
-        Pass in a vector of y values and a stencil.
-        Computes the action of the stencil on the y values.
+    def _compute_deriv(self, yvals: FloatArray, stencil: FloatArray) -> FloatArray:
+        """Compute the action of a stencil on the y values.
+
+        Stencils with fewer rows than gridpoints leave the trailing entries of the result as zero.
         """
         if self.length != len(yvals):
             raise DerivativeError("xvals and yvals have different dimensions")
@@ -174,60 +179,3 @@ class Derivative(object):
         for pos in range(len(stencil)):
             derivatives[pos] = np.dot(stencil[pos], yvals[self.seqs[pos]])
         return derivatives
-
-
-# Testing suite
-if __name__ == "__main__":
-    import random
-    from math import pi
-
-    numvals = 40
-
-    # Randomly pick some x values
-    x = np.sort(np.array([random.uniform(0.0, 2*pi) for i in range(numvals)]))
-    # x = np.array([i for i in range(20)]) + 0.5
-    # x /= 2
-
-    # Take some trig functions
-    ysin = np.sin(x)
-    ycos = np.cos(x)
-
-    # Initialize differentiator
-    diff = Derivative(x)
-
-    # Take derivatives
-    dycos = diff.dydx(ycos, even=True)
-    # How did we go?
-    print("x", "Derivative", "Actual", "Error")
-    for i in range(len(dycos)):
-        print(x[i], dycos[i], -ysin[i], abs(dycos[i] + ysin[i]))
-
-    # Take derivatives
-    dysin = diff.dydx(ysin, even=False)
-    # How did we go?
-    print("x", "Derivative", "Actual", "Error")
-    for i in range(len(dysin)):
-        print(x[i], dysin[i], ycos[i], abs(dysin[i] - ycos[i]))
-
-    # Take rho derivatives
-    rho = diff.rhoderiv(ycos)
-    actual = (-x*ycos-4*ysin)/3
-    # How did we go?
-    print("Eulerian derivatives")
-    print("x", "Derivative", "Actual", "Error")
-    for i in range(len(rho)):
-        print(x[i], rho[i], actual[i], abs(rho[i] - actual[i]))
-
-    # Take rho derivatives using yvals and rvals
-    rho2 = diff.rhoderiv_lagrange(ycos, x)
-    actual = (-x*ycos-4*ysin)/3
-    # How did we go?
-    print("Lagrangian derivatives")
-    print("x", "Derivative", "Actual", "Error")
-    for i in range(len(rho2)):
-        print(x[i], rho2[i], actual[i], abs(rho2[i] - actual[i]))
-
-    print("Eulerian vs Lagrangian")
-    print("Difference", "Error")
-    for i in range(len(rho)):
-        print(rho[i] - rho2[i], abs(rho2[i] - actual[i]))

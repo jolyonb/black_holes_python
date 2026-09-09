@@ -1,31 +1,76 @@
-"""
-DOPRI5 Integration Algorithm
+"""DOPRI5 integration algorithm.
 
-Jolyon Bloomfield
-October 2017
+Dormand-Prince 5(4) embedded Runge-Kutta integrator with adaptive step size control and first-same-as-last (FSAL)
+reuse of the final slope evaluation.
+
+Jolyon Bloomfield, October 2017.
 """
-import numpy as np
+
 import math
+from collections.abc import Callable
+from typing import Final
+
+import numpy as np
+from numpy.typing import NDArray
+
+type FloatArray = NDArray[np.float64]
+type DerivsFunc = Callable[[float, FloatArray, object], FloatArray]
+"""Signature of a derivative function: ``derivs(t, values, params) -> dvalues/dt``."""
+
 
 class DopriIntegrationError(Exception):
-    """Error class for integration"""
-    pass
+    """Error raised when integration cannot proceed."""
 
-class DOPRI5(object):
-    """Dormand-Prince 5th order integrator"""
 
-    def __init__(self,
-                 t0,                # Starting time
-                 init_values,       # Starting values
-                 derivs,            # Derivative function
-                 init_h=0.01,       # Initial step size
-                 min_h=5e-8,        # Minimum step size
-                 max_h=1.0,         # Maximum step size
-                 rtol=1e-7,         # Relative tolerance
-                 atol=1e-7,         # Absolute tolerance
-                 params=None):      # Parameters to pass to the derivatives function
-        """
-        Initialize the integrator
+# Butcher tableau for DOPRI5
+_TIMES: Final[FloatArray] = np.array([0, 1 / 5, 3 / 10, 4 / 5, 8 / 9, 1, 1])
+_COEFFS: Final[tuple[FloatArray, ...]] = (
+    np.array([]),
+    np.array([1 / 5]),
+    np.array([3 / 40, 9 / 40]),
+    np.array([44 / 45, -56 / 15, 32 / 9]),
+    np.array([19372 / 6561, -25360 / 2187, 64448 / 6561, -212 / 729]),
+    np.array([9017 / 3168, -355 / 33, 46732 / 5247, 49 / 176, -5103 / 18656]),
+    np.array([35 / 384, 0, 500 / 1113, 125 / 192, -2187 / 6784, 11 / 84]),
+)
+_ERRORS: Final[FloatArray] = np.array([71 / 57600, 0, -71 / 16695, 71 / 1920, -17253 / 339200, 22 / 525, -1 / 40])
+
+
+def _linear_combination(coeffs: FloatArray, arrays: list[FloatArray]) -> FloatArray:
+    """Return ``sum(c * a for c, a in zip(coeffs, arrays))`` accumulated left to right."""
+    result = coeffs[0] * arrays[0]
+    for c, a in zip(coeffs[1:], arrays[1:], strict=True):
+        result = result + c * a
+    return result
+
+
+class DOPRI5:
+    """Dormand-Prince 5th order integrator."""
+
+    def __init__(
+        self,
+        t0: float,
+        init_values: FloatArray,
+        derivs: DerivsFunc,
+        init_h: float = 0.01,
+        min_h: float = 5e-8,
+        max_h: float = 1.0,
+        rtol: float = 1e-7,
+        atol: float = 1e-7,
+        params: object = None,
+    ) -> None:
+        """Initialize the integrator.
+
+        Args:
+            t0: Starting time.
+            init_values: Starting values.
+            derivs: Derivative function, called as ``derivs(t, values, params)``.
+            init_h: Initial step size.
+            min_h: Minimum step size.
+            max_h: Maximum step size.
+            rtol: Relative tolerance.
+            atol: Absolute tolerance.
+            params: Parameters passed through to the derivative function.
         """
         self.derivs = derivs
         self.values = init_values
@@ -38,26 +83,31 @@ class DOPRI5(object):
         self.params = params
 
         # Internal variables
-        self.hdid = 0        # Previous step we just took
-        self.dxdt = None    # Used for FSAL
-        
-    def set_init_values(self, t0, init_values):
+        self.hdid = 0.0  # Previous step we just took
+        self.dxdt: FloatArray | None = None  # Used for FSAL
+        self._newvalues: FloatArray = init_values
+        self._newdxdt: FloatArray | None = None
+        self._errors: FloatArray = np.zeros_like(init_values)
+
+    def set_init_values(self, t0: float, init_values: FloatArray) -> None:
+        """Reset the time and values, e.g. to restart an integration."""
         self.values = init_values
         self.t = t0
+        self.clear_fsal()
 
-    def update_max_h(self, new_max_h):
-        """Updates the max step size"""
+    def update_max_h(self, new_max_h: float) -> None:
+        """Update the max step size."""
         if new_max_h < self.min_h:
             raise DopriIntegrationError("Requested max step size less than min step size")
         self.max_h = new_max_h
         self.hnext = min(self.hnext, self.max_h)
 
-    def clear_fsal(self):
-        """Clears FSAL information, forcing it to be recalculated"""
+    def clear_fsal(self) -> None:
+        """Clear FSAL information, forcing it to be recalculated."""
         self.dxdt = None
 
-    def step(self, newtime):
-        """Take a step"""
+    def step(self, newtime: float) -> None:
+        """Take a single accepted step, never going past ``newtime``."""
         rejected = False
 
         while True:
@@ -67,21 +117,24 @@ class DOPRI5(object):
             self._take_step(self.hnext)
             if self._good_step(rejected):
                 break
-            else:
-                rejected = True
+            rejected = True
 
         # Update our data
         self.t += self.hdid
-        self.values = self.newvalues
-        self.dxdt = self.newdxdt
+        self.values = self._newvalues
+        self.dxdt = self._newdxdt
 
-    def _good_step(self, rejected, minscale=0.2, maxscale=5, safety=0.8):
-        """
-        Checks if the previous step was good, and updates the step size
-        rejected stores whether or not we rejected a previous attempt at this step
-        minscale is the minimum we will scale down the stepsize
-        maxscale is the maximum we will scale up the stepsize
-        safety is the safety factor in the stepsize estimation
+    def _good_step(self, rejected: bool, minscale: float = 0.2, maxscale: float = 5, safety: float = 0.8) -> bool:
+        """Check whether the previous step was good, and update the step size.
+
+        Args:
+            rejected: Whether we rejected a previous attempt at this step.
+            minscale: The minimum factor by which we will scale down the stepsize.
+            maxscale: The maximum factor by which we will scale up the stepsize.
+            safety: The safety factor in the stepsize estimation.
+
+        Returns:
+            True if the step is accepted, else False.
         """
         # Compute the scaled error of the past step
         err = self._error()
@@ -103,53 +156,41 @@ class DOPRI5(object):
             self.hnext = min(self.hnext, self.max_h)
             self.hnext = max(self.hnext, self.min_h)
             return True
-        else:
-            # Error was too big
-            if self.hnext == self.min_h:
-                raise DopriIntegrationError("Step size decreased below minimum threshold")
-            # Try again!
-            scale = max(safety * math.pow(err, -0.2), minscale)
-            self.hnext *= scale
-            self.hnext = max(self.hnext, self.min_h)
-            return False
 
-    def _error(self):
-        """Computes the normalized error in the step just taken"""
-        maxed = np.column_stack((np.abs(self.values), np.abs(self.newvalues)))
-        maxed = np.max(maxed, axis=1)
+        # Error was too big
+        if self.hnext == self.min_h:
+            raise DopriIntegrationError("Step size decreased below minimum threshold")
+        # Try again!
+        scale = max(safety * math.pow(err, -0.2), minscale)
+        self.hnext *= scale
+        self.hnext = max(self.hnext, self.min_h)
+        return False
+
+    def _error(self) -> float:
+        """Compute the normalized error in the step just taken."""
+        maxed = np.maximum(np.abs(self.values), np.abs(self._newvalues))
         delta = self.atol + self.rtol * maxed
-        temp = self.errors / delta
-        return math.sqrt(np.dot(temp, temp) / len(temp))
+        temp = self._errors / delta
+        return math.sqrt(float(np.dot(temp, temp)) / len(temp))
 
-    # Coefficients for DOPRI5
-    _dopri5times = np.array([0, 1/5, 3/10, 4/5, 8/9, 1, 1])
-    _dopri5coeffs = [0,
-                     np.array([1/5]),
-                     np.array([3/40, 9/40]),
-                     np.array([44/45, -56/15, 32/9]),
-                     np.array([19372/6561, -25360/2187, 64448/6561, -212/729]),
-                     np.array([9017/3168, -355/33, 46732/5247, 49/176, -5103/18656]),
-                     np.array([35/384, 0, 500/1113, 125/192, -2187/6784, 11/84])
-                     ]
-    _dopri5errors = np.array([71/57600, 0, -71/16695, 71/1920, -17253/339200, 22/525, -1/40])
-
-    def _take_step(self, h):
-        """Take an individual step with size h"""
+    def _take_step(self, h: float) -> None:
+        """Take an individual (trial) step with size h."""
         # Check that we're initialized
         if self.dxdt is None:
             self.dxdt = self.derivs(self.t, self.values, self.params)
 
         # Compute the slopes and updated positions
-        slopes = [None] * 7
-        slopes[0] = self.dxdt   # stored from previous step
-        newvals = self.values + h*self._dopri5coeffs[1][0]*slopes[0]
-        slopes[1] = self.derivs(self.t + h*self._dopri5times[1], newvals, self.params)
+        slopes: list[FloatArray] = [self.dxdt]  # stored from previous step
+        # The first stage is a single term; (h * c) * slope is used here for bit-for-bit consistency with earlier
+        # versions of this code.
+        newvals = self.values + h * _COEFFS[1][0] * slopes[0]
+        slopes.append(self.derivs(self.t + h * _TIMES[1], newvals, self.params))
         for i in range(2, 7):
-            newvals = self.values + h*sum(self._dopri5coeffs[i][j]*slopes[j] for j in range(i))
-            slopes[i] = self.derivs(self.t + h*self._dopri5times[i], newvals, self.params)
+            newvals = self.values + h * _linear_combination(_COEFFS[i], slopes)
+            slopes.append(self.derivs(self.t + h * _TIMES[i], newvals, self.params))
 
         # Save the results
-        self.newvalues = newvals
-        self.newdxdt = slopes[6]
+        self._newvalues = newvals
+        self._newdxdt = slopes[6]
         # Compute the errors
-        self.errors = h * sum(self._dopri5errors[i]*slopes[i] for i in range(7))
+        self._errors = h * _linear_combination(_ERRORS, slopes)

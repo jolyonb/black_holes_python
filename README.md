@@ -2,7 +2,29 @@
 
 This is the clean implementation of the black hole evolution code. Apart from being nicely structured and readable, it also links all physics equations in the code to equations in [this version of the paper](paper.pdf). Sometimes we have two versions of an equation coded, with one commented out. The reason for this is to reuse things that have already been computed, so as to cut down on computation. Note that we specialize to w=1/3 and alpha=1/2 (alpha is just a function of w). Also note that we take the only scale in the problem R_H=1. All dimensionful quantities can be reconstructed by reinserting factors of R_H (the horizon radius at the start of evolution). Unfortunately, I haven't finished updating the PDF file completely; there are a few issues towards the end of the file where I haven't yet propagated some redefinitions. Such issues are noted in the code where applicable.
 
-The entry point for the code is driver.py, which uses an old algorithm to take a linearized \delta_m and construct the growing mode from it. (We have better tools now.)
+## Getting started
+
+The project is managed with [uv](https://docs.astral.sh/uv/) and requires Python 3.14.
+
+```
+uv sync                 # create .venv with runtime + dev dependencies
+uv run pbh --help       # show all evolution options
+uv run pbh              # evolve the default Gaussian perturbation, writing output.dat
+uv run pbh -o run.dat --scheme lagrangian --gridpoints 1000 --amplitude 0.18
+uv run pbh output.dat   # restart from the first block of a previous output file
+```
+
+The command line entry point is `pbh.cli`, which uses an old algorithm to take a linearized \delta_m and construct the growing mode from it (`pbh.initial`). (We have better tools now.) The physics lives in `pbh.ms` (Misner-Sharp equations of motion, Eulerian and Lagrangian), built on `pbh.base` (generic evolver and cached equation-of-motion handler), `pbh.derivs` (finite difference stencils) and `pbh.dopri5` (adaptive Runge-Kutta integrator).
+
+### Development
+
+```
+uv run pytest           # test suite, including golden regression tests for horizon formation
+uv run ruff check .     # lint
+uv run ruff format .    # format
+uv run pyright          # strict type checking
+uv run pre-commit install   # run all of the above automatically on each commit
+```
 
 I recommend using gnuplot to visualize the output (the output has been formatted according to gnuplot specifications). Some helpful plotting commands are listed in the readme file for this repository.
 
