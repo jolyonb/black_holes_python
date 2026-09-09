@@ -95,6 +95,30 @@ def test_short_evolution_is_stable(handler: type[MSCommon], small_initial_data: 
     assert blocks[0].splitlines()[0].startswith("# index\tr\tu\tm\trho\t")
 
 
+@pytest.mark.parametrize("handler", HANDLERS)
+def test_outer_boundary_condition_is_applied(handler: type[MSCommon], small_initial_data: InitialData) -> None:
+    r, u, m = small_initial_data
+    driver = MS(eomhandler=handler)
+    driver.set_initial_conditions(0.0, r, u, m)
+    eom = driver.eomhandler
+    assert eom.udot_lagrangian[-1] == eom.udot_outer_boundary
+    rdot, udot, mdot = eom.derivatives()
+    assert rdot.shape == udot.shape == mdot.shape == r.shape
+
+
+@pytest.mark.parametrize("handler", HANDLERS)
+def test_background_is_static(handler: type[MSCommon]) -> None:
+    """The unperturbed background (u = r, m = 1) is a fixed point of the rescaled equations, boundary included."""
+    grid = makegrid(gridpoints=50, squeeze=0, Amax=10)
+    r, u, m = growingmode(grid, np.zeros_like(grid))
+    driver = MS(eomhandler=handler)
+    driver.set_initial_conditions(0.0, r, u, m)
+    eom = driver.eomhandler
+    assert eom.udot_outer_boundary == pytest.approx(0, abs=1e-12)
+    for dot in eom.derivatives():
+        assert dot == pytest.approx(0, abs=1e-12)
+
+
 def test_eulerian_and_lagrangian_agree_at_early_times(small_initial_data: InitialData) -> None:
     """Both schemes are discretisations of the same equations; the central mass function should agree closely."""
     r, u, m = small_initial_data

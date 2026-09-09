@@ -258,10 +258,11 @@ class BlackHoleEvolver[H: EOMHandler]:
         return self.integrator.t
 
     def derivatives(self, xi: float, field_vec: FloatArray, params: object = None) -> FloatArray:
-        """Compute the time derivative of ``field_vec`` at the given fields and time."""
+        """Compute the time derivative of ``field_vec`` at the given fields and time (DOPRI5 callback)."""
+        del params  # Unused; part of the DOPRI5 callback signature
         # Set EOM handler to use the appropriate field values
         self.eomhandler.set_fields(xi, field_vec)
-        return self.package_vars(*self.eomhandler.derivatives(params))
+        return self.package_vars(*self.eomhandler.derivatives())
 
     def cfl_check(self) -> float:
         """Check the CFL condition and return the max step size allowed (not including a safety factor)."""
@@ -507,7 +508,7 @@ class EOMHandler(ABC):
         """The speed of sound c_-."""
 
     @abstractmethod
-    def derivatives(self, params: object) -> tuple[FloatArray, FloatArray, FloatArray]:
+    def derivatives(self) -> tuple[FloatArray, FloatArray, FloatArray]:
         """Return a tuple of time derivatives for evolution (rdot, udot, mdot)."""
 
     @abstractmethod

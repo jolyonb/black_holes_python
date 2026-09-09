@@ -256,45 +256,56 @@ class MSCommon(EOMHandler, ABC):
         r"""The fluid velocity d\bar{R}/d\xi (where \bar{R} is a field)."""
         return (self.u * self.ephi - self.r) / 2  # Eq. (44a)
 
-    def lagrangian_derivatives(self, params: object) -> tuple[FloatArray, FloatArray, FloatArray]:
-        """Evaluate the Lagrangian equations of motion, returning a tuple (rdot, udot, mdot)."""
-        del params  # Unused
-        # Extract the required quantities
-        u = self.u
-        m = self.m
-        r = self.r
-        rho = self.rho
-        ephi = self.ephi
-        P = self.P
-        gamma2 = self.gamma2
-        dPdr = self.dPdr
+    # Lagrangian equations of motion. These are the building blocks for both schemes: the Eulerian scheme applies a
+    # chain rule shift to them.
 
-        # Here are the equations of motion
-        rdot = self.c_fluid
-        mdot = 2 * m - 1.5 * u * ephi * (P + m) / r  # Eq. (44b)
-        udot = (u - ephi * (gamma2 * dPdr / (rho + P) + 0.5 * (m + 3 * P) * r)) / 2  # Eq. (44c)
+    @cached_property
+    def rdot_lagrangian(self) -> FloatArray:
+        r"""d\bar{R}/d\xi following the fluid."""
+        return self.c_fluid  # Eq. (44a)
 
-        # We now impose the outer boundary condition on U
-        # cs = exp(xi/2) / sqrt(12)  # This is the linear speed of sound, which can be read from Eq. (59)
-        cs = self.c_characteristic[-1]  # This is the **nonlinear** speed of sound
-        r0 = r[-1]
+    @cached_property
+    def mdot_lagrangian(self) -> FloatArray:
+        r"""d\bar{m}/d\xi following the fluid."""
+        return 2 * self.m - 1.5 * self.u * self.ephi * (self.P + self.m) / self.r  # Eq. (44b)
+
+    @cached_property
+    def udot_lagrangian(self) -> FloatArray:
+        r"""d\bar{U}/d\xi following the fluid, with the outer boundary condition applied at the last gridpoint."""
+        u, m, r = self.u, self.m, self.r
+        rho, P, dPdr = self.rho, self.P, self.dPdr
+        udot = (u - self.ephi * (self.gamma2 * dPdr / (rho + P) + 0.5 * (m + 3 * P) * r)) / 2  # Eq. (44c)
+        # The interior equation is not valid at the outer boundary, where dPdr is not available (drhodr is returned
+        # as zero there). Replace it with the boundary condition.
+        udot[-1] = self.udot_outer_boundary
+        return udot
+
+    @cached_property
+    def udot_outer_boundary(self) -> float:
+        r"""d\bar{U}/d\xi at the outer boundary, from the outgoing-wave boundary condition.
+
+        Implements Eq. (102), using the nonlinear speed of sound for the characteristic speed. (The linear speed of
+        sound would be cs = exp(xi/2) / sqrt(12), which can be read from Eq. (59).)
+        """
+        cs = self.c_characteristic[-1]
+        r0 = self.r[-1]
+        u0 = self.u[-1]
+        m0 = self.m[-1]
         r02 = r0 * r0
         cs2 = cs * cs
         denom = r0 * (2 * cs + r0)
-        # The following implement Eqs. (101a-d)
+        # Coefficients from Eqs. (101a-d)
         W = -cs
         X = -(12 * cs2 + 6 * cs * r0 + r02) / 2 / denom
         Y = cs * (2 * cs2 + 2 * cs * r0 + r02) / 2 / denom
         Z = cs * (3 * cs2 + 3 * cs * r0 + r02) / r0 / denom
-        udot[-1] = (
-            W * (self.dudr[-1] - u[-1] / r0)  # Eq. (102)
-            + X * (u[-1] - r0)
+        return float(
+            W * (self.dudr[-1] - u0 / r0)  # Eq. (102)
+            + X * (u0 - r0)
             + Y * r0 * self.dmdr[-1]
-            + Z * r0 * (m[-1] - 1)
-            + u[-1] * rdot[-1] / r[-1]
+            + Z * r0 * (m0 - 1)
+            + u0 * self.rdot_lagrangian[-1] / r0
         )
-
-        return rdot, udot, mdot
 
 
 class MSLagrangian(MSCommon):
@@ -386,9 +397,9 @@ class MSLagrangian(MSCommon):
         r"""The speed of sound c_- = -d\bar{R}/d\xi."""
         return -self.c_characteristic
 
-    def derivatives(self, params: object) -> tuple[FloatArray, FloatArray, FloatArray]:
+    def derivatives(self) -> tuple[FloatArray, FloatArray, FloatArray]:
         """Return a tuple of time derivatives for evolution (rdot, udot, mdot)."""
-        return self.lagrangian_derivatives(params)
+        return self.rdot_lagrangian, self.udot_lagrangian, self.mdot_lagrangian
 
     def cfl_step(self) -> float:
         """Return the maximum step size allowed by the CFL condition."""
@@ -482,17 +493,15 @@ class MSEulerian(MSCommon):
         r"""The characteristic speed -d\bar{R}/d\xi."""
         return self.c_fluid - self.c_characteristic
 
-    def derivatives(self, params: object) -> tuple[FloatArray, FloatArray, FloatArray]:
+    def derivatives(self) -> tuple[FloatArray, FloatArray, FloatArray]:
         """Return a tuple of time derivatives for evolution (rdot, udot, mdot)."""
-        # Construct the Lagrangian EOMs
-        rdot, udot, mdot = self.lagrangian_derivatives(params)
-        # Convert to Eulerian EOMs. From the chain rule:
+        # Convert the Lagrangian EOMs to Eulerian EOMs. From the chain rule:
         # d/d\xi|A = d/d\xi|R + dR/d\xi|A d/dR|\xi
         # So, d/d\xi|R = d/d\xi|A - rdot d/dR|\xi
-        mdot -= self.dmdr * rdot
-        udot -= self.dudr * rdot
-        rdot = np.zeros_like(rdot)
-        return rdot, udot, mdot
+        rdot = self.rdot_lagrangian
+        mdot = self.mdot_lagrangian - self.dmdr * rdot
+        udot = self.udot_lagrangian - self.dudr * rdot
+        return np.zeros_like(rdot), udot, mdot
 
     def cfl_step(self) -> float:
         """Return the maximum step size allowed by the CFL condition."""
