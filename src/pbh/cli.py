@@ -7,10 +7,14 @@ gnuplot-formatted output blocks to a data file.
 import argparse
 from collections.abc import Sequence
 
+from pbh.base import Status
 from pbh.initial import compute_deltam0, growingmode, makegrid
 from pbh.ms import MS, MSCommon, MSEulerian, MSLagrangian
 
 HANDLERS: dict[str, type[MSCommon]] = {"eulerian": MSEulerian, "lagrangian": MSLagrangian}
+
+#: Statuses in which an evolution is considered to have completed normally
+SUCCESS_STATUSES = frozenset({Status.TIMEOUT, Status.BLACKHOLE_FORMED})
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -66,7 +70,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     with open(args.output, "w") as f:
         driver.drive(output_step=args.output_step, file_handle=f, max_time=args.max_time, write_after=args.write_after)
     print(f"Evolution complete! Status: {driver.status.name}")
-    return 0 if driver.status.value >= 0 else 1
+    return 0 if driver.status in SUCCESS_STATUSES else 1
 
 
 if __name__ == "__main__":

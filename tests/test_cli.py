@@ -35,6 +35,13 @@ def test_run_writes_output(tmp_path: Path, scheme: str, capsys: pytest.CaptureFi
     assert all(len(block.splitlines()) == 101 for block in blocks)
 
 
+def test_unphysical_run_exits_nonzero(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    out = tmp_path / "bad.dat"
+    argv = ["-o", str(out), "--gridpoints", "100", "--amplitude", "0.25", "--max-time", "0.5", "--quiet"]
+    assert main(argv) == 1
+    assert "Status: NEGATIVE_GAMMA2" in capsys.readouterr().out
+
+
 def test_run_from_file(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     first = tmp_path / "first.dat"
     assert main(["-o", str(first), "--gridpoints", "100", "--max-time", "0.2", "--quiet"]) == 0

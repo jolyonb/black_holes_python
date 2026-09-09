@@ -69,11 +69,10 @@ class Derivative:
         evenstencil[0, 1] = -1 / (xvals[0] - xvals[1]) - 1 / (xvals[0] + xvals[1])
         evenstencil[0, 2] = 0
 
-        # Middle points are straightforward
-        for i in range(1, length - 1):
-            evenstencil[i, 0] = -invdiffs[i] + invdoublediffs[i]
-            evenstencil[i, 1] = invdiffs[i] - invdiffs[i + 1]
-            evenstencil[i, 2] = invdiffs[i + 1] - invdoublediffs[i]
+        # Middle points are straightforward (row i uses diffs[i], diffs[i+1] and doublediffs[i])
+        evenstencil[1:-1, 0] = -invdiffs[1:-1] + invdoublediffs[1:]
+        evenstencil[1:-1, 1] = invdiffs[1:-1] - invdiffs[2:]
+        evenstencil[1:-1, 2] = invdiffs[2:] - invdoublediffs[1:]
 
         # Right hand point needs a slightly different form, still at O(h^2)
         # 2 index refers to the coefficient of the point, rather than right of the point
@@ -108,12 +107,11 @@ class Derivative:
         rhostencil[0, 1] = -rhostencil[0, 0]
         rhostencil[0, 2] = 0
 
-        # Construct the rest of the elements
-        for i in range(1, length - 1):
-            rhostencil[i, 0] = x4sums[i]
-            rhostencil[i, 1] = -x4sums[i + 1] - x4sums[i]
-            rhostencil[i, 2] = x4sums[i + 1]
-            rhostencil[i] /= x4doublediffs[i]
+        # Construct the rest of the elements (row i uses x4sums[i], x4sums[i+1] and x4doublediffs[i])
+        rhostencil[1:, 0] = x4sums[1:-1]
+        rhostencil[1:, 1] = -x4sums[2:] - x4sums[1:-1]
+        rhostencil[1:, 2] = x4sums[2:]
+        rhostencil[1:] /= x4doublediffs[1:, np.newaxis]
 
         # Assemble the stencils into sparse operators
         self._even_operator = self._make_operator(evenstencil, starts)
