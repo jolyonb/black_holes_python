@@ -131,6 +131,21 @@ class Derivative:
         matrix.sort_indices()
         return matrix
 
+    @property
+    def even_matrix(self) -> sp.csr_array:
+        """The sparse operator computing dy/dx for even y."""
+        return self._even_operator
+
+    @property
+    def odd_matrix(self) -> sp.csr_array:
+        """The sparse operator computing dy/dx for odd y."""
+        return self._odd_operator
+
+    @property
+    def rho_matrix(self) -> sp.csr_array:
+        """The sparse operator computing (x d^2y/dx^2 + 4 dy/dx)/3 for even y. Its last row is empty."""
+        return self._rho_operator
+
     def dydx(self, yvals: FloatArray, even: bool) -> FloatArray:
         """Compute dy/dx.
 
