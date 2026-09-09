@@ -19,7 +19,9 @@ The command line entry point is `pbh.cli`, which uses an old algorithm to take a
 ### Development
 
 ```
-uv run pytest           # test suite, including golden regression tests for horizon formation
+uv run pytest           # fast test suite (well under a second)
+uv run pytest -m slow   # full evolutions, including golden regression tests for horizon formation
+uv run pytest -m ''     # everything
 uv run ruff check .     # lint
 uv run ruff format .    # format
 uv run pyright          # strict type checking

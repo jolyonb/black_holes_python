@@ -111,6 +111,7 @@ def test_eulerian_and_lagrangian_agree_at_early_times(small_initial_data: Initia
     ("handler", "expected_xi"),
     [(MSEulerian, 4.321432333547402), (MSLagrangian, 4.321234132034417)],
 )
+@pytest.mark.slow
 def test_black_hole_formation_golden(handler: type[MSCommon], expected_xi: float) -> None:
     """Golden regression test: horizon formation time for a supercritical perturbation (recorded 2026-09-08)."""
     grid = makegrid(gridpoints=300, squeeze=2, Amax=10)
@@ -124,6 +125,7 @@ def test_black_hole_formation_golden(handler: type[MSCommon], expected_xi: float
     assert np.any((eom.horizon >= 1) & (eom.u < 0))
 
 
+@pytest.mark.slow
 def test_viscosity_triggers_in_supercritical_run() -> None:
     grid = makegrid(gridpoints=300, squeeze=2, Amax=10)
     r, u, m = growingmode(grid, compute_deltam0(grid, amplitude=0.19))
@@ -138,6 +140,7 @@ def test_viscosity_triggers_in_supercritical_run() -> None:
     np.testing.assert_allclose(eom.P, eom.rho / 3 + eom.rho * eom.Q)
 
 
+@pytest.mark.slow
 def test_viscosity_disabled_when_none() -> None:
     grid = makegrid(gridpoints=300, squeeze=2, Amax=10)
     r, u, m = growingmode(grid, compute_deltam0(grid, amplitude=0.19))
@@ -149,6 +152,7 @@ def test_viscosity_disabled_when_none() -> None:
     assert np.all(eom.Q == 0)
 
 
+@pytest.mark.slow
 def test_enforce_timeout_stops_at_timeout_time() -> None:
     # A subcritical perturbation that will not form a black hole
     grid = makegrid(gridpoints=150, squeeze=2, Amax=10)

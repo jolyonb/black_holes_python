@@ -72,5 +72,6 @@ reportConstantRedefinition = false  # physics quantities (Q, P, H) are capitalis
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra --strict-markers"
+addopts = "-ra --strict-markers -m 'not slow'"
+markers = ["slow: full evolutions taking around a second each; run with `pytest -m slow` or `pytest -m ''`"]
 filterwarnings = ["error"]
