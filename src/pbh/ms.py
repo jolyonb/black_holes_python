@@ -36,6 +36,8 @@ class MS(BlackHoleEvolver["MSCommon"]):
         atol: float = 1e-8,
         cfl_safety: float = 0.75,
         viscosity: float | None = None,
+        viscosity_buffer: float = 1.0,
+        viscosity_buffer_width: float = 0.1,
         debug: bool = False,
     ) -> None:
         """Initialize the evolver.
@@ -48,11 +50,15 @@ class MS(BlackHoleEvolver["MSCommon"]):
             atol: Absolute tolerance for the integrator.
             cfl_safety: Safety factor applied to the CFL step size limit.
             viscosity: Artificial viscosity coefficient (None or 0 to disable).
+            viscosity_buffer: Distance in r from the outer edge to the midpoint of the envelope that switches
+                artificial viscosity off near the boundary.
+            viscosity_buffer_width: Width in r of that envelope.
             debug: Whether to print debugging information.
         """
-        super().__init__(
-            eomhandler=eomhandler, rtol=rtol, atol=atol, cfl_safety=cfl_safety, viscosity=viscosity, debug=debug
+        handler = eomhandler(
+            viscosity=viscosity, viscosity_buffer=viscosity_buffer, viscosity_buffer_width=viscosity_buffer_width
         )
+        super().__init__(eomhandler=handler, rtol=rtol, atol=atol, cfl_safety=cfl_safety, debug=debug)
         self.black_hole_check = black_hole_check
         self.enforce_timeout = enforce_timeout
         self.timeouttime = math.inf
@@ -114,21 +120,46 @@ class MSCommon(EOMHandler, ABC):
     Parts that must be specifically implemented by subclasses are introduced as abstract methods.
     """
 
-    def __init__(self, viscosity: float | None = None) -> None:
+    def __init__(
+        self,
+        viscosity: float | None = None,
+        viscosity_buffer: float = 1.0,
+        viscosity_buffer_width: float = 0.1,
+    ) -> None:
+        """Initialize storage and operators.
+
+        Args:
+            viscosity: Artificial viscosity coefficient (None or 0 to disable).
+            viscosity_buffer: Distance in r from the outer edge to the midpoint of the envelope that switches
+                artificial viscosity off near the boundary.
+            viscosity_buffer_width: Width in r of that envelope.
+        """
         super().__init__(viscosity)
-        # Storage for differentiation object (set by initialize_derivatives)
+        self.viscosity_buffer = viscosity_buffer
+        self.viscosity_buffer_width = viscosity_buffer_width
+        # Storage for differentiation object and viscosity envelope (set by initialize_derivatives)
         self._diff: Derivative | None = None
-        # Storage for the artificial viscosity envelope (computed on first use)
         self._Qenvelope: FloatArray | None = None
+
+    def initialize_derivatives(self) -> None:
+        """Compute the artificial viscosity envelope from the initial radii.
+
+        The envelope is a Fermi-Dirac profile in r, switching viscosity off within ``viscosity_buffer`` of the outer
+        edge (over a width ``viscosity_buffer_width``), so that Q and dQ/dr vanish where the outgoing-wave boundary
+        condition, derived with Q = 0, is applied. It is a fixed physical distance rather than a number of
+        gridpoints, so the physics does not change with resolution. It is built from the initial radii: the Eulerian
+        grid never moves, and in the Lagrangian scheme the outer boundary is a fixed fluid label, whose neighbourhood
+        stays close to FRW, so the buffer rides with it.
+        """
+        r = self.r
+        midpoint = r[-1] - self.viscosity_buffer
+        self._Qenvelope = 1 / (np.exp((r - midpoint) / self.viscosity_buffer_width) + 1)
 
     @property
     def Qenvelope(self) -> FloatArray:
-        """Envelope turning artificial viscosity off near the outer boundary, as a Fermi-Dirac distribution."""
+        """Envelope turning artificial viscosity off near the outer boundary (see :meth:`initialize_derivatives`)."""
         if self._Qenvelope is None:
-            gridpoints = len(self.r)
-            turnover_pt = float((gridpoints - 1) - 30)
-            width = 3
-            self._Qenvelope = 1 / (np.exp((np.arange(gridpoints) - turnover_pt) / width) + 1)
+            raise ValueError("Must call initialize_derivatives before requesting the viscosity envelope")
         return self._Qenvelope
 
     @property
@@ -320,6 +351,7 @@ class MSLagrangian(MSCommon):
         The first gridpoint is at 0.5, then 1.5, etc. This differs from the index values by 0.5.
         This needs to be done so that the differentiator places the symmetry gridpoint at -0.5.
         """
+        super().initialize_derivatives()
         self._diff = Derivative(np.arange(len(self.r), dtype=np.float64) + 0.5)
 
     @cached_property
@@ -420,12 +452,18 @@ class MSEulerian(MSCommon):
     We evolve \bar{m}(R) and \bar{U}(R), using a fixed grid in R (circumferential radius).
     """
 
-    def __init__(self, viscosity: float | None = None) -> None:
-        super().__init__(viscosity)
+    def __init__(
+        self,
+        viscosity: float | None = None,
+        viscosity_buffer: float = 1.0,
+        viscosity_buffer_width: float = 0.1,
+    ) -> None:
+        super().__init__(viscosity, viscosity_buffer, viscosity_buffer_width)
         self._rdiff: FloatArray | None = None
 
     def initialize_derivatives(self) -> None:
         """Initialize derivative operator, as well as the rdiff value."""
+        super().initialize_derivatives()
         self._diff = Derivative(self.r)
         self._rdiff = np.concatenate((np.array([self.r[0] * 2]), np.diff(self.r)))
 

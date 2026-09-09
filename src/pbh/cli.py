@@ -44,6 +44,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--scheme", choices=HANDLERS, default="eulerian", help="equations of motion to evolve (default: %(default)s)"
     )
     parser.add_argument("--viscosity", type=float, default=2.0, help="artificial viscosity (0 to disable)")
+    parser.add_argument(
+        "--viscosity-buffer",
+        type=float,
+        default=1.0,
+        help="distance in r from the outer edge within which viscosity is switched off (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--viscosity-buffer-width",
+        type=float,
+        default=0.1,
+        help="width in r of the viscosity switch-off (default: %(default)s)",
+    )
     parser.add_argument("--max-time", type=float, default=7.0, help="xi at which to stop (default: %(default)s)")
     parser.add_argument("--output-step", type=float, default=0.1, help="xi between output blocks")
     parser.add_argument("--write-after", type=float, default=0.0, help="xi after which output is written")
@@ -69,6 +81,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         black_hole_check=not args.no_black_hole_check,
         enforce_timeout=args.enforce_timeout,
         viscosity=args.viscosity or None,
+        viscosity_buffer=args.viscosity_buffer,
+        viscosity_buffer_width=args.viscosity_buffer_width,
         debug=not args.quiet,
     )
 

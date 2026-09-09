@@ -58,21 +58,19 @@ class BlackHoleEvolver[H: EOMHandler]:
 
     def __init__(
         self,
-        eomhandler: type[H],
+        eomhandler: H,
         rtol: float = 1e-8,
         atol: float = 1e-8,
         cfl_safety: float = 0.75,
-        viscosity: float | None = None,
         debug: bool = False,
     ) -> None:
         """Initialize storage and prepare class for operation.
 
         Args:
-            eomhandler: The equation of motion handler class to instantiate.
+            eomhandler: The equation of motion handler to drive.
             rtol: Relative tolerance for the integrator.
             atol: Absolute tolerance for the integrator.
             cfl_safety: Safety factor applied to the CFL step size limit.
-            viscosity: Artificial viscosity coefficient (None or 0 to disable).
             debug: Whether to print debugging information.
         """
         # Constants controlling integration
@@ -82,8 +80,8 @@ class BlackHoleEvolver[H: EOMHandler]:
         # Properties of what we're integrating (set by set_initial_conditions)
         self.gridpoints = 0
         self.index: NDArray[np.intp] = np.empty(0, dtype=np.intp)
-        # Set up the equation of motion handler
-        self.eomhandler: H = eomhandler(viscosity=viscosity)
+        # The equation of motion handler
+        self.eomhandler: H = eomhandler
         # Other details
         self.debug = debug
         self.status = Status.NEEDS_INITIALIZING

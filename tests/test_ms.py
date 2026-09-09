@@ -166,6 +166,35 @@ def test_viscosity_triggers_in_supercritical_run() -> None:
 
 
 @pytest.mark.slow
+@pytest.mark.parametrize("handler", HANDLERS)
+def test_viscosity_envelope_is_resolution_independent(handler: type[MSCommon]) -> None:
+    """The envelope is a fixed function of r, not of grid index."""
+    envelopes: dict[int, tuple[FloatArray, FloatArray]] = {}
+    for n in (300, 600):
+        r = makegrid(gridpoints=n, squeeze=2, Amax=10)
+        driver = MS(eomhandler=handler, viscosity=2)
+        driver.set_initial_conditions(0.0, r, r.copy(), np.ones_like(r))
+        envelopes[n] = (r, driver.eomhandler.Qenvelope)
+    r3, e3 = envelopes[300]
+    r6, e6 = envelopes[600]
+    # Same function of the distance from the outer edge (the two grids' last points differ by half a cell)
+    depth3, depth6 = r3[-1] - r3, r6[-1] - r6
+    assert np.interp(depth3, depth6[::-1], e6[::-1]) == pytest.approx(e3, abs=1e-3)
+    assert e3[-1] < 1e-4
+    assert e6[-1] < 1e-4  # off at the boundary
+    assert np.interp(r6[-1] - 1.0, r6, e6) == pytest.approx(0.5, abs=0.02)  # midpoint at the buffer distance
+    assert e6[r6 < r6[-1] - 2.0].min() > 0.999  # fully on well inside
+
+
+def test_viscosity_envelope_options() -> None:
+    r = makegrid(gridpoints=300, squeeze=2, Amax=10)
+    driver = MS(eomhandler=MSEulerian, viscosity=2, viscosity_buffer=3.0, viscosity_buffer_width=0.5)
+    driver.set_initial_conditions(0.0, r, r.copy(), np.ones_like(r))
+    envelope = driver.eomhandler.Qenvelope
+    assert np.interp(r[-1] - 3.0, r, envelope) == pytest.approx(0.5, abs=0.02)
+    assert np.interp(r[-1] - 3.0 + 0.5, r, envelope) == pytest.approx(1 / (np.e + 1), abs=0.02)
+
+
 def test_viscosity_disabled_when_none() -> None:
     grid = makegrid(gridpoints=300, squeeze=2, Amax=10)
     r, u, m = growingmode(grid, compute_deltam0(grid, amplitude=0.19))
