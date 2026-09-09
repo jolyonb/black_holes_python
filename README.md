@@ -76,10 +76,9 @@ In the Eulerian evolution, the grid points stay at fixed radius. What this tends
 
 Note that if you're getting integration errors from shocks, increasing resolution will usually help.
 
+### Open problem: near-critical instability
+
 I'm presently having trouble with:
 (gridpoints=500, squeeze=2, Amax=10, amplitude=0.1737, sigma=2.0)
-I'm wondering if the old code can handle this situation? If so, then the only real difference between the new code and the old is the 4th order derivatives for computing Q.
 
-Old code barfed with this too. Trying again with 1000 gridpoints. Also barfed. Note - this was using viscosity=20, so a lot of suppression. One last go at 1500 gridpoints. Also failed. In particular, failed before a shock wave formed. Looked like a high frequency instability in rho was responsible (in a position without a huge amount of nonlinearity), suggesting that we had complex eigenvalues in our differentiation matrix? May need to test this carefully... Also just need to test this in our new code.
-
-Upshot: I need to clean up the code in a few more places so we can run things faster, but we're seeing the same issues as previously :( Hopefully with cleaner code in place, we can investigate more thoroughly, and potentially with more eyes on it too.
+An earlier version of the code (see git history before September 2026) failed on this too, with viscosity=20 (so a lot of suppression), at 500, 1000 and 1500 gridpoints. In particular, it failed before a shock wave formed. It looked like a high frequency instability in rho was responsible (in a position without a huge amount of nonlinearity), suggesting that we had complex eigenvalues in our differentiation matrix? This needs testing carefully, and reproducing with the current code.
