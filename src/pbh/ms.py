@@ -1,8 +1,8 @@
 """Misner-Sharp black hole evolution.
 
 Provides the :class:`MS` evolver together with the Lagrangian (:class:`MSLagrangian`) and Eulerian
-(:class:`MSEulerian`) implementations of the equations of motion. Equation numbers refer to the paper in
-``paper.pdf``.
+(:class:`MSEulerian`) implementations of the equations of motion. Equation numbers refer to the working draft of
+the paper (kept outside this repository).
 """
 
 import math
@@ -282,10 +282,11 @@ class MSCommon(EOMHandler, ABC):
         xint = np.insert(xint, 0, 0)  # Add a 0 to the start of the cumulative sum
         xint -= xint[-1]  # Add a constant to apply the boundary condition
 
-        # Reconstruct e^phi. NOTE: with xint = -int_r^rmax x dr this sign makes d ln(ephi)/dr differ from the
-        # Misner-Sharp -P'/(rho+P) by twice the viscous correction; kept verbatim (it moves the viscous goldens), see
-        # "Known numerics" in CLAUDE.md.
-        return ephi_analytic * np.exp(-xint)  # Eq. (211)
+        # Reconstruct e^phi: ln(e^phi) = ln(e^phi_analytic) + xint, so that d ln(e^phi)/dr = -dPdr/(rho + P) (the
+        # analytic part contributes -lapse_term, xint contributes lapse_term - pressure_term) and e^phi matches the
+        # analytic value at the outer boundary. Before 2026-09-09 the exponent had the opposite sign, which put the
+        # viscous correction in with the wrong sign (at most a 2% error in the lapse at a shock).
+        return ephi_analytic * np.exp(xint)  # Eq. (211)
 
     @cached_property
     def P(self) -> FloatArray:
@@ -553,11 +554,7 @@ class MSEulerian(MSCommon):
 
         # Construct Q
         deltau = self.dudr * self.rdiff
-        # Eq. (207), note an old definition for \bar{U}. The prefactor is (H a R_H)^2 = e^(2(alpha-1)xi) = self.Ha2;
-        # it is kept as an exponential here to mirror the exp(-xi) this site used before w was a parameter (bitwise
-        # identical for radiation, whereas Ha2, built from 1/(a*a), differs by an ulp).
-        Q = test * viscosity * np.exp(2 * (self.alpha - 1) * self.xi) * deltau * deltau
-        # Q = test * viscosity * self.Ha2 * deltau * deltau
+        Q = test * viscosity * self.Ha2 * deltau * deltau  # Eq. (207), note an old definition for \bar{U}
 
         # Smooth Q a bit (which has a binary on/off switch from test that is discontinuous)
         Q = self.haystack(Q)

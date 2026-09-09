@@ -66,8 +66,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--w",
         type=Fraction,
         default=RADIATION_W,
-        help="equation of state parameter P = w rho, as a rational such as 1/3; also applies when restarting from a "
-        "file, so pass the value the original run used. Only w = 1/3 can currently be evolved from the command line "
+        help="equation of state parameter P = w rho, as a rational such as 1/3; when restarting from a file it must "
+        "match the value recorded there. Only w = 1/3 can currently be evolved from the command line "
         "(the exact outer boundary condition exists only for radiation); other values are accepted by the library API "
         "(default: %(default)s)",
     )

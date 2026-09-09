@@ -29,6 +29,7 @@ QUANTITIES = [
     "xi",
     "Q",
     "ephi",
+    "w",
 ]
 
 
@@ -151,3 +152,33 @@ def test_resumed_run_matches_uninterrupted_run(tmp_path: Path, small_initial_dat
     # The adaptive step history differs, so agreement is to integration tolerance rather than bit-exact
     assert resumed.xi == pytest.approx(full.xi)
     assert resumed.eomhandler.m == pytest.approx(full.eomhandler.m, rel=1e-6)
+
+
+@pytest.mark.parametrize("suffix", [".npz", ".dat"])
+def test_restart_checks_the_recorded_w(tmp_path: Path, suffix: str, small_initial_data: InitialData) -> None:
+    r, u, m = small_initial_data
+    driver = MS(eomhandler=MSEulerian)
+    driver.set_initial_conditions(0.0, r, u, m)
+    path = tmp_path / f"out{suffix}"
+    with open_writer(path) as writer:
+        driver.drive(output_step=0.5, writer=writer, max_time=0.5)
+
+    same = MS(eomhandler=MSEulerian)
+    same.load_initial_conditions(path, snapshot=-1)
+    assert same.xi == pytest.approx(0.5)
+
+    other = MS(eomhandler=MSEulerian, w=0.2)
+    with pytest.raises(ValueError, match=r"written with w = 0\.3333333333333333, but this evolver has w = 0\.2"):
+        other.load_initial_conditions(path)
+
+
+def test_text_file_without_w_column_still_loads(tmp_path: Path, small_initial_data: InitialData) -> None:
+    """Files written before w was recorded have fewer columns; they are read by header name and w is not checked."""
+    r, u, m = small_initial_data
+    path = tmp_path / "legacy.dat"
+    with path.open("w") as f:
+        GnuplotWriter(f).write({"index": np.arange(len(r)), "r": r, "u": u, "m": m, "xi": 0.25})
+    driver = MS(eomhandler=MSEulerian, w=0.2)
+    driver.load_initial_conditions(path)
+    assert driver.xi == 0.25
+    assert driver.eomhandler.m == pytest.approx(m)

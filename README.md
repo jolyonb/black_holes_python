@@ -67,6 +67,7 @@ The column numbers are as given; the column names are in parentheses.
 14. \xi (xi)
 15. Q (Q)
 16. e^\phi (ephi)
+17. w (w), the equation of state parameter the run used; checked on restart
 
 
 ## Lagrangian Evolution

@@ -237,18 +237,24 @@ def test_non_radiation_guards() -> None:
 
 @pytest.mark.parametrize("w", [Fraction(1, 3), 1 / 3, "1/3", "2/6", 0.3333333333])
 def test_radiation_constants_are_exact(w: EOSParameter) -> None:
-    """Every spelling of w = 1/3 yields the same exact constants, so the radiation numerics are bitwise unchanged."""
-    eom = MSEulerian(w=w)
+    """Every spelling of w = 1/3 yields the same exact constants, so the radiation numerics are bitwise unchanged.
+
+    A truncated float is snapped to 1/3 too, with a warning.
+    """
+    if isinstance(w, float) and w != 1 / 3:
+        with pytest.warns(UserWarning, match="rounded to the rational 1/3"):
+            eom = MSEulerian(w=w)
+    else:
+        eom = MSEulerian(w=w)
     assert eom.w_exact == Fraction(1, 3)
     assert eom.is_radiation
     assert eom.w == 1 / 3
     assert eom.alpha == 0.5
-    assert eom.inv_alpha == 2.0
     assert eom.inv_w == 3.0
     assert eom.lapse_exponent == 0.25  # e^phi = rho^(-1/4)
     assert eom.inv_cs_factor == np.sqrt(12)  # the old hard-coded divisor in c_characteristic
     # Computed once in __init__ and stored as plain floats, not recomputed on every access
-    for name in ("w", "inv_w", "alpha", "inv_alpha", "lapse_exponent", "inv_cs_factor"):
+    for name in ("w", "inv_w", "alpha", "lapse_exponent", "inv_cs_factor"):
         assert isinstance(vars(eom)[name], float)
 
 
@@ -261,7 +267,6 @@ def test_eos_constants_for_general_w() -> None:
     assert eom.w_exact == Fraction(1, 5)
     assert not eom.is_radiation
     assert eom.alpha == float(Fraction(5, 9))
-    assert eom.inv_alpha == float(Fraction(9, 5))
     assert eom.inv_w == 5.0
     assert eom.lapse_exponent == float(Fraction(1, 6))
     assert eom.inv_cs_factor == pytest.approx(1 / (eom.alpha * np.sqrt(0.2)), rel=1e-15)
@@ -297,6 +302,39 @@ def test_viscous_lapse_split_cancels_when_q_vanishes(w: EOSParameter) -> None:
     assert eom.dPdr == pytest.approx(eom.w * eom.drhodr, rel=1e-15)
 
 
+class ForcedNonzeroViscosity(MSEulerian):
+    """Marks artificial viscosity as present with a smooth nonzero Q and its analytic derivative."""
+
+    def _computeQ(self) -> None:
+        Q = 0.02 * np.exp(-self.r * self.r / 8)
+        self._cacheQ(True, Q, -self.r / 4 * Q)
+
+
+def test_viscous_lapse_gradient_is_misner_sharp() -> None:
+    """With Q != 0, d ln(e^phi)/dr must equal -dPdr/(rho + P) (Eq. (211)) up to discretisation error.
+
+    The correction is integrated inwards from the outer boundary; until 2026-09-09 it entered with the wrong sign,
+    which makes the residual twice the correction's gradient. The tolerance is well inside that.
+    """
+    grid = makegrid(gridpoints=1600, squeeze=0, Amax=10)
+    m = 1 + 0.1 * np.exp(-grid * grid / 8)
+    driver = MS(eomhandler=ForcedNonzeroViscosity, viscosity=2)
+    driver.set_initial_conditions(0.0, grid, grid.copy(), m)
+    eom = driver.eomhandler
+    log_correction = np.log(eom.ephi) - np.log(eom.rho ** (-eom.lapse_exponent))
+    assert np.abs(log_correction).max() > 1e-3  # the viscous correction is not negligible in this set-up
+    assert log_correction[-1] == 0.0  # boundary condition: analytic lapse at the outer edge
+    residual = np.gradient(np.log(eom.ephi), eom.r) + eom.dPdr / (eom.rho + eom.P)
+    scale = np.abs(np.gradient(log_correction, eom.r)).max()
+    assert np.abs(residual[2:-2]).max() < 0.02 * scale
+
+
+def test_float_w_rounded_to_a_rational_warns() -> None:
+    with pytest.warns(UserWarning, match="rounded to the rational 1/3"):
+        assert as_rational_w(0.3333333) == Fraction(1, 3)
+    assert as_rational_w(0.2) == Fraction(1, 5)  # exact, no warning (warnings are errors in this suite)
+
+
 def test_eulerian_and_lagrangian_agree_at_early_times(small_initial_data: InitialData) -> None:
     """Both schemes are discretisations of the same equations; the central mass function should agree closely."""
     r, u, m = small_initial_data
@@ -311,11 +349,12 @@ def test_eulerian_and_lagrangian_agree_at_early_times(small_initial_data: Initia
 
 @pytest.mark.parametrize(
     ("handler", "expected_xi"),
-    [(MSEulerian, 4.321432333547402), (MSLagrangian, 4.321234132034417)],
+    [(MSEulerian, 4.321432333547401), (MSLagrangian, 4.3212366034058345)],
 )
 @pytest.mark.slow
 def test_black_hole_formation_golden(handler: type[MSCommon], expected_xi: float) -> None:
-    """Golden regression test: horizon formation time for a supercritical perturbation (recorded 2026-09-08)."""
+    """Golden regression test: horizon formation time for a supercritical perturbation (recorded 2026-09-09, after
+    the viscous-lapse sign fix)."""
     grid = makegrid(gridpoints=300, squeeze=2, Amax=10)
     r, u, m = growingmode(grid, compute_deltam0(grid, amplitude=0.19))
     driver = MS(eomhandler=handler, black_hole_check=True, viscosity=2)

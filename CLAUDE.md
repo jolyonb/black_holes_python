@@ -50,20 +50,13 @@ The old code's "high-frequency instability in rho" is an odd-even sawtooth null 
 first-derivative operators, pumped by variable coefficients. `tests/test_operators.py` pins both that defect and the
 good `R^4` flux-form density operator. The structural fix is the staggered layout from Phase B.
 
-Open (pre-existing, not fixed because it moves the viscous goldens; needs owner sign-off): the viscous lapse correction
-in `MSCommon.ephi` enters with the wrong sign. With `x = w rho'/((1+w) rho) - P'/(P+rho)` and `xint(r) = -int_r^rmax x`,
-`ephi_analytic * np.exp(-xint)` gives `d ln ephi/dr = -(2w/(1+w)) rho'/rho + P'/(P+rho)` instead of the Misner-Sharp
-`-P'/(rho+P)`; with a forced `Q` the residual is exactly twice the correction (1.8e-2 vs 9e-3 at n = 1600), and
-`np.exp(xint)` brings it to 6e-6. `analysis/updated/code.tex` prints the same flipped exponential and contradicts its own
-`phi = -(w/(1+w)) ln rho - int_A^Amax [...]` two lines earlier. Fix = flip the sign, correct code.tex, re-record the
-viscous goldens, add a forced-`Q` test of `d ln ephi/dr == -dPdr/(rho+P)`. Harmless with `Q = 0` (the split cancels).
+The viscous lapse correction in `MSCommon.ephi` had the wrong sign until 2026-09-09 (fixed; effect was at most a 2%
+lapse error at a shock, formation times unchanged to 5 digits). Output files record `w` (column 17) and restarts check it.
 
 ## Next steps, in order
 
-1. Expression cleanup (trades bit-identity for the cleanest forms; goldens at rel 1e-9 survive): one cached
-   `H = exp(-xi)` and one cached `(H a)^2 = exp(2(alpha-1)xi)` at every site, replacing the mirrored spellings kept
-   for bit-identity in the `w` refactor; fix the viscous-lapse sign above; record `w` in output files and check it on
-   restart.
+1. (done 2026-09-09) Expression cleanup after the `w` refactor: single cached `H = exp(-xi)` and `(H a)^2`, viscous
+   lapse sign fixed, `w` recorded in output and checked on restart, float `w` snapping warns. Goldens re-recorded.
 2. Phase C: implement `analysis/phaseB/writeup/S_spec.tex` as a new staggered core alongside the old handlers, with
    the acceptance tests in the spec's test table; then the production supercritical run (sigma = 2, amplitude 0.175)
    reading the mass from the enclosed-energy plateau.

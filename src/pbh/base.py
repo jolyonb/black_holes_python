@@ -4,6 +4,8 @@ Relies on the :mod:`pbh.dopri5` module to actually perform time evolution.
 """
 
 import math
+import os
+import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from enum import Enum
@@ -45,6 +47,12 @@ def as_rational_w(w: EOSParameter) -> Fraction:
         if isinstance(w, float) and wfrac != w:
             rounded = f" (a float is rounded to a rational with denominator at most 10**6: {wfrac})"
         raise ValueError(f"w must satisfy 0 < w <= 1, got {w!r}{rounded}")
+    if isinstance(w, float) and float(wfrac) != w:
+        warnings.warn(
+            f"w = {w!r} was rounded to the rational {wfrac} (denominator at most 10**6); pass a Fraction or a string "
+            f"such as '1/3' for an exact value",
+            skip_file_prefixes=(os.path.dirname(os.path.abspath(__file__)),),  # attribute it to the caller of pbh
+        )
     return wfrac
 
 
@@ -165,32 +173,56 @@ class BlackHoleEvolver[H: EOMHandler]:
             with np.load(filename) as archive:
                 xi = float(archive["xi"][snapshot])
                 r, u, m = archive["r"][snapshot], archive["u"][snapshot], archive["m"][snapshot]
+                w = float(archive["w"][snapshot]) if "w" in archive else None
         else:
-            xi, r, u, m = self._read_text_snapshot(filename, snapshot)
+            xi, r, u, m, w = self._read_text_snapshot(filename, snapshot)
+        if w is not None and w != self.eomhandler.w:
+            raise ValueError(
+                f"{filename} was written with w = {w!r}, but this evolver has w = {self.eomhandler.w!r} "
+                f"({self.eomhandler.w_exact})"
+            )
         self.set_initial_conditions(xi, r, u, m)
 
     @staticmethod
-    def _read_text_snapshot(filename: Path, snapshot: int) -> tuple[float, FloatArray, FloatArray, FloatArray]:
-        """Read (xi, r, u, m) from one block of a gnuplot-format data file."""
-        blocks: list[list[list[str]]] = []
+    def _read_text_snapshot(
+        filename: Path, snapshot: int
+    ) -> tuple[float, FloatArray, FloatArray, FloatArray, float | None]:
+        """Read (xi, r, u, m, w) from one block of a gnuplot-format data file.
+
+        Columns are located by the ``# name name ...`` header line of the block (see :meth:`snapshot`); ``w`` is
+        None for files written before it was recorded.
+        """
+        blocks: list[tuple[list[str], list[list[str]]]] = []
+        names: list[str] = []
         block: list[list[str]] = []
         with filename.open() as f:
             for raw_line in f:
                 line = raw_line.strip()
-                if line.startswith("#"):
-                    continue
-                if line:
+                if line.startswith("#") and not block:
+                    names = line[1:].split()  # the header line of the next block
+                elif line.startswith("#"):
+                    continue  # a comment inside a block
+                elif line:
                     block.append(line.split("\t"))
                 elif block:
-                    blocks.append(block)
+                    blocks.append((names, block))
                     block = []
         if block:
-            blocks.append(block)
+            blocks.append((names, block))
+        names, data = blocks[snapshot]
+        if not names:
+            raise ValueError(f"{filename} has no header line naming its columns")
+        column = {name: i for i, name in enumerate(names)}
+        for name in ("xi", "r", "u", "m"):
+            if name not in column:
+                raise ValueError(f"{filename} block {snapshot} has no column {name!r} (header: {names})")
 
-        data = blocks[snapshot]
-        # Columns: index, r, u, m, ..., xi (see snapshot())
-        r, u, m = np.array([[float(row[1]), float(row[2]), float(row[3])] for row in data]).transpose()
-        return float(data[0][13]), r, u, m
+        def col(name: str) -> FloatArray:
+            return np.array([float(row[column[name]]) for row in data])
+
+        xi = float(data[0][column["xi"]])
+        w = float(data[0][column["w"]]) if "w" in column else None
+        return xi, col("r"), col("u"), col("m"), w
 
     def evolve(self, stop_xi: float) -> bool:
         """Take steps forwards in time until the specified stop time.
@@ -338,6 +370,7 @@ class BlackHoleEvolver[H: EOMHandler]:
             "xi": self.eomhandler.xi,  # 14
             "Q": self.eomhandler.Q,  # 15
             "ephi": self.eomhandler.ephi,  # 16
+            "w": self.eomhandler.w,  # 17
         }
 
     # Optional methods
@@ -406,7 +439,7 @@ class EOMHandler(ABC):
         """
         self.viscosity = viscosity
         # Equation of state constants, computed once in exact rational arithmetic and then floated. At w = 1/3 every
-        # one of these floats is exact (inv_w = 3.0, alpha = 0.5, inv_alpha = 2.0, lapse_exponent = 0.25,
+        # one of these floats is exact (inv_w = 3.0, alpha = 0.5, lapse_exponent = 0.25,
         # inv_cs_factor = sqrt(12)), which is what keeps the radiation numerics bitwise unchanged.
         #: The equation of state parameter w as an exact rational
         self.w_exact = as_rational_w(w)
@@ -417,8 +450,6 @@ class EOMHandler(ABC):
         self.inv_w = float(1 / self.w_exact)
         #: alpha = 2/(3(1+w)), the exponent in a = e^(alpha xi) (Eq. (43b))
         self.alpha = float(alpha_exact)
-        #: 1/alpha, so that H = a^(-1/alpha) (Eq. (43c))
-        self.inv_alpha = float(1 / alpha_exact)
         #: w/(1+w) = 3 alpha w/2, the exponent in e^phi = rho^(-w/(1+w)) (Eq. (45))
         self.lapse_exponent = float(self.w_exact / (1 + self.w_exact))
         #: 1/(alpha sqrt(w)), the inverse of the sound speed factor in the characteristic speed (Eq. (200))
@@ -466,21 +497,13 @@ class EOMHandler(ABC):
 
     @cached_property
     def H(self) -> Scalar:
-        """The Hubble factor H (with R_H = 1). This may be different at different gridpoints."""
-        # H = e^(-xi) = a^(-1/alpha); at alpha = 1/2 this is bitwise the old 1/(a*a) (np.power, not **, so that the
-        # scalar path also takes the exact-square fast path), whereas np.exp(-xi) differs by an ulp.
-        return 1 / np.power(self.a, self.inv_alpha)  # Eqs. (43c) and (43b)
-        # return np.exp(-self.xi)  # Eq. (43c)
+        """The Hubble factor H = e^(-xi) (with R_H = 1). This may be different at different gridpoints."""
+        return np.exp(-self.xi)  # Eq. (43c)
 
     @cached_property
     def Ha2(self) -> Scalar:
-        """(H a R_H)^2 = e^(2(alpha-1)xi) = Gamma^2/Gammabar^2 (Eqs. (43b) and (43c)).
-
-        Written as H a^(2-1/alpha) so that at alpha = 1/2 (where it equals H) it is bitwise the factor 1/(a*a) used
-        before w was a parameter; the exponential form is the commented alternative.
-        """
-        return self.H * np.power(self.a, 2 - self.inv_alpha)
-        # return np.exp(2 * (self.alpha - 1) * self.xi)
+        """(H a R_H)^2 = e^(2(alpha-1)xi) = Gamma^2/Gammabar^2 (Eqs. (43b) and (43c)); equals H only for radiation."""
+        return np.exp(2 * (self.alpha - 1) * self.xi)
 
     @cached_property
     def rho_b(self) -> Scalar:
