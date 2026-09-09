@@ -169,9 +169,27 @@ def test_negative_gamma2_sets_status() -> None:
     r, u, m = growingmode(grid, compute_deltam0(grid, amplitude=0.25))
     driver = MS(eomhandler=MSEulerian)
     driver.set_initial_conditions(0.0, r, u, m)
-    with pytest.raises(EvolverError):
+    with pytest.raises(EvolverError) as excinfo:
         _ = driver.eomhandler.gamma2
+    assert excinfo.value.status == Status.NEGATIVE_GAMMA2
+    # The evolver only learns about the error when it catches it during evolution
+    assert driver.status == Status.READY
+    assert driver.evolve(1.0) is True
     assert driver.status == Status.NEGATIVE_GAMMA2
+
+
+def test_unphysical_initial_data_stops_drive_gracefully(tmp_path: Path) -> None:
+    """An EvolverError raised while writing output must be caught, not escape from drive()."""
+    grid = makegrid(gridpoints=100, squeeze=2, Amax=10)
+    r, u, m = growingmode(grid, compute_deltam0(grid, amplitude=0.25))
+    driver = MS(eomhandler=MSEulerian)
+    driver.set_initial_conditions(0.0, r, u, m)
+    datafile = tmp_path / "out.dat"
+    with datafile.open("w") as f:
+        driver.drive(output_step=0.5, file_handle=f, max_time=1.0)
+    assert driver.status == Status.NEGATIVE_GAMMA2
+    assert driver.msg == "NEGATIVE_GAMMA2"
+    assert driver.xi == 0.0
 
 
 def test_load_initial_conditions_round_trip(tmp_path: Path, small_initial_data: InitialData) -> None:

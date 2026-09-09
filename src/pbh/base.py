@@ -21,13 +21,6 @@ type Scalar = float | FloatArray
 np.seterr(all="raise", under="ignore")
 
 
-class EvolverError(Exception):
-    """Generic exception caught as part of Evolver evolution.
-
-    Anything raising this should set the evolver's status appropriately before doing so.
-    """
-
-
 class Status(Enum):
     """Status of a :class:`BlackHoleEvolver` object."""
 
@@ -40,6 +33,19 @@ class Status(Enum):
     INTEGRATION_ERROR = -1
     NEGATIVE_ENERGY_DENSITY = -2
     NEGATIVE_GAMMA2 = -3
+
+
+class EvolverError(Exception):
+    """Raised by an :class:`EOMHandler` when evolution cannot continue.
+
+    Carries the :class:`Status` the evolver should adopt; the evolver catches the exception and updates its own status,
+    so handlers never need a reference back to the evolver.
+    """
+
+    def __init__(self, status: Status, msg: str | None = None) -> None:
+        self.status = status
+        self.msg = msg or status.name
+        super().__init__(self.msg)
 
 
 class BlackHoleEvolver[H: EOMHandler]:
@@ -72,13 +78,10 @@ class BlackHoleEvolver[H: EOMHandler]:
         self.atol = atol
         self.cfl_safety = cfl_safety
         # Properties of what we're integrating (set by set_initial_conditions)
-        self.num_fields = 0
         self.gridpoints = 0
         self.index: NDArray[np.intp] = np.empty(0, dtype=np.intp)
-        # Store evolution quantities
-        self.viscosity = viscosity
-        self.eomhandler: H = eomhandler(parent=self)
-        self.Qenvelope: FloatArray = np.empty(0)
+        # Set up the equation of motion handler
+        self.eomhandler: H = eomhandler(viscosity=viscosity)
         # Other details
         self.debug = debug
         self.status = Status.NEEDS_INITIALIZING
@@ -100,18 +103,11 @@ class BlackHoleEvolver[H: EOMHandler]:
         Assumes that each field has a value on each gridpoint.
         """
         # Initialize fields
-        self.num_fields = len(start_fields)
         self.gridpoints = len(start_fields[0])
         for field in start_fields:
             if len(field) != self.gridpoints:
                 raise ValueError("All fields must have the same number of gridpoints")
         self.index = np.arange(self.gridpoints)
-
-        # Set up envelope for applying artificial viscosity - we don't want it applying at the boundary
-        # We construct the envelope as a Fermi-Dirac distribution
-        turnover_pt = float((self.gridpoints - 1) - 30)
-        width = 3
-        self.Qenvelope = 1 / (np.exp((self.index - turnover_pt) / width) + 1)
 
         # Initialize the integrator
         self._integrator = DOPRI5(
@@ -166,24 +162,23 @@ class BlackHoleEvolver[H: EOMHandler]:
         while self.xi < stop_xi:
             stepcount += 1
 
-            # Take a step
             try:
+                # Take a step
                 self.integrator.step(stop_xi)
+
+                # Perform post-processing
+                if self.post_step_processing():
+                    # Anything that gets here should have set the status appropriately
+                    return True
+
+                # Update CFL condition
+                self.integrator.update_max_h(self.cfl_safety * self.cfl_check())
             except DopriIntegrationError as err:
-                self.status = Status.INTEGRATION_ERROR
-                self.msg = err.args[0]
+                self._record_error(Status.INTEGRATION_ERROR, err.args[0])
                 return True
-            except EvolverError:
-                # Anything that throws this error should update status appropriately before doing so
+            except EvolverError as err:
+                self._record_error(err.status, err.msg)
                 return True
-
-            # Perform post-processing
-            if self.post_step_processing():
-                # Anything that gets here should have set the status appropriately
-                return True
-
-            # Update CFL condition
-            self.integrator.update_max_h(self.cfl_safety * self.cfl_check())
 
         if self.debug:
             self.debug_evolve_complete(stepcount)
@@ -207,7 +202,8 @@ class BlackHoleEvolver[H: EOMHandler]:
 
         # Write initial data
         if write_after is None or self.xi >= write_after:
-            self.output(file_handle)
+            if self._output_or_abort(file_handle):
+                return
             newtime = self.xi
         else:
             newtime = max(write_after, self.xi)
@@ -224,8 +220,8 @@ class BlackHoleEvolver[H: EOMHandler]:
             abort = self.evolve(newtime)
 
             # Write the data
-            if write_after is None or self.xi >= write_after:
-                self.output(file_handle)
+            if (write_after is None or self.xi >= write_after) and self._output_or_abort(file_handle):
+                return
 
             # Do we stop?
             if abort or self.post_output_processing():
@@ -234,6 +230,20 @@ class BlackHoleEvolver[H: EOMHandler]:
                 self.status = Status.TIMEOUT
                 return
 
+    def _record_error(self, status: Status, msg: str) -> None:
+        """Record that evolution has failed with the given status and message."""
+        self.status = status
+        self.msg = msg
+
+    def _output_or_abort(self, file_handle: TextIO) -> bool:
+        """Write output, returning True if the EOM handler found the state unphysical (status updated)."""
+        try:
+            self.output(file_handle)
+        except EvolverError as err:
+            self._record_error(err.status, err.msg)
+            return True
+        return False
+
     @staticmethod
     def package_vars(*fields: FloatArray) -> FloatArray:
         """Take a list of fields and convert them into a single vector.
@@ -241,14 +251,6 @@ class BlackHoleEvolver[H: EOMHandler]:
         e.g: [x, y, z], [v_x, v_y, v_z] -> [x, y, z, v_x, v_y, v_z]
         """
         return np.concatenate(fields)
-
-    def unpackage_vars(self, field_vec: FloatArray) -> list[FloatArray]:
-        """Take a vector of fields and return them as a list of fields.
-
-        Note that the return values are views.
-        e.g: [x, y, z, v_x, v_y, v_z] -> [x, y, z], [v_x, v_y, v_z]
-        """
-        return np.split(field_vec, self.num_fields)
 
     @property
     def xi(self) -> float:
@@ -356,13 +358,16 @@ class EOMHandler(ABC):
     * Utilizes caching to ensure that quantities are not computed repeatedly.
     """
 
-    def __init__(self, parent: BlackHoleEvolver[Any]) -> None:
+    #: Number of evolved fields (r, u and m)
+    NUM_FIELDS = 3
+
+    def __init__(self, viscosity: float | None = None) -> None:
         """Initialize storage and operators.
 
         Args:
-            parent: The evolver that owns this handler, used for unpacking fields and updating statuses.
+            viscosity: Artificial viscosity coefficient (None or 0 to disable).
         """
-        self._parent = parent
+        self.viscosity = viscosity
         # Initialize storage for state
         self._xi: Scalar | None = None
         self._fields: FloatArray | None = None
@@ -421,12 +426,11 @@ class EOMHandler(ABC):
 
     @cached_property
     def gamma2(self) -> FloatArray:
-        r"""\bar{\gamma}^2. Raises EvolverError (setting status NEGATIVE_GAMMA2) if negative anywhere."""
+        r"""\bar{\gamma}^2. Raises EvolverError with status NEGATIVE_GAMMA2 if negative anywhere."""
         gamma2 = 1 / self.H + self.u * self.u - self.r * self.r * self.m  # Eqs. (42f) and (43c)
         # gamma2 = np.exp(self.xi) + self.u * self.u - self.r * self.r * self.m  # Eq. (42f)
         if np.any(gamma2 < 0):
-            self._parent.status = Status.NEGATIVE_GAMMA2
-            raise EvolverError()
+            raise EvolverError(Status.NEGATIVE_GAMMA2)
         return gamma2
 
     @cached_property
@@ -457,17 +461,17 @@ class EOMHandler(ABC):
     @cached_property
     def r(self) -> FloatArray:
         r"""\bar{R}."""
-        return self._parent.unpackage_vars(self.fields)[0]
+        return np.split(self.fields, self.NUM_FIELDS)[0]
 
     @cached_property
     def u(self) -> FloatArray:
         r"""\bar{U}."""
-        return self._parent.unpackage_vars(self.fields)[1]
+        return np.split(self.fields, self.NUM_FIELDS)[1]
 
     @cached_property
     def m(self) -> FloatArray:
         r"""\bar{m}."""
-        return self._parent.unpackage_vars(self.fields)[2]
+        return np.split(self.fields, self.NUM_FIELDS)[2]
 
     # Abstract quantities: These will need to be implemented on a case-by-case basis
     # Note that this is just the list of required properties; you can create others too!

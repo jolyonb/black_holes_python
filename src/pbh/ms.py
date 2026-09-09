@@ -114,10 +114,22 @@ class MSCommon(EOMHandler, ABC):
     Parts that must be specifically implemented by subclasses are introduced as abstract methods.
     """
 
-    def __init__(self, parent: BlackHoleEvolver[MSCommon]) -> None:
-        super().__init__(parent)
+    def __init__(self, viscosity: float | None = None) -> None:
+        super().__init__(viscosity)
         # Storage for differentiation object (set by initialize_derivatives)
         self._diff: Derivative | None = None
+        # Storage for the artificial viscosity envelope (computed on first use)
+        self._Qenvelope: FloatArray | None = None
+
+    @property
+    def Qenvelope(self) -> FloatArray:
+        """Envelope turning artificial viscosity off near the outer boundary, as a Fermi-Dirac distribution."""
+        if self._Qenvelope is None:
+            gridpoints = len(self.r)
+            turnover_pt = float((gridpoints - 1) - 30)
+            width = 3
+            self._Qenvelope = 1 / (np.exp((np.arange(gridpoints) - turnover_pt) / width) + 1)
+        return self._Qenvelope
 
     @property
     def diff(self) -> Derivative:
@@ -138,11 +150,10 @@ class MSCommon(EOMHandler, ABC):
 
     @cached_property
     def rho(self) -> FloatArray:
-        r"""\bar{\rho}. Raises EvolverError (setting status NEGATIVE_ENERGY_DENSITY) if negative anywhere."""
+        r"""\bar{\rho}. Raises EvolverError with status NEGATIVE_ENERGY_DENSITY if negative anywhere."""
         rho = self.m + self.r * self.dmdr / 3  # Eq. (44d)
         if np.any(rho < 0):
-            self._parent.status = Status.NEGATIVE_ENERGY_DENSITY
-            raise EvolverError()
+            raise EvolverError(Status.NEGATIVE_ENERGY_DENSITY)
         return rho
 
     @property
@@ -298,7 +309,7 @@ class MSLagrangian(MSCommon):
         The first gridpoint is at 0.5, then 1.5, etc. This differs from the index values by 0.5.
         This needs to be done so that the differentiator places the symmetry gridpoint at -0.5.
         """
-        self._diff = Derivative((self._parent.index + 0.5).astype(np.float64))
+        self._diff = Derivative(np.arange(len(self.r), dtype=np.float64) + 0.5)
 
     @cached_property
     def dmda(self) -> FloatArray:
@@ -339,7 +350,7 @@ class MSLagrangian(MSCommon):
         """Compute the artificial viscosity Q and its derivative."""
         # Trigger if viscosity is nonzero and \partial_A U < 0
         test = self.duda < 0  # Eq. (208b), note an old definition for \bar{U}
-        viscosity = self._parent.viscosity
+        viscosity = self.viscosity
         if not viscosity or not np.any(test):
             self._cacheQ(False, np.zeros_like(self.r), np.zeros_like(self.r))
             return
@@ -353,7 +364,7 @@ class MSLagrangian(MSCommon):
         Q = self.haystack(Q)
 
         # Apply the Q envelope to turn off Q at the outer boundary
-        Q *= self._parent.Qenvelope
+        Q *= self.Qenvelope
 
         # Cache Q and dQdr
         dQda = self.diff.dydx(Q, even=True)
@@ -398,8 +409,8 @@ class MSEulerian(MSCommon):
     We evolve \bar{m}(R) and \bar{U}(R), using a fixed grid in R (circumferential radius).
     """
 
-    def __init__(self, parent: BlackHoleEvolver[MSCommon]) -> None:
-        super().__init__(parent)
+    def __init__(self, viscosity: float | None = None) -> None:
+        super().__init__(viscosity)
         self._rdiff: FloatArray | None = None
 
     def initialize_derivatives(self) -> None:
@@ -437,7 +448,7 @@ class MSEulerian(MSCommon):
         """Compute the artificial viscosity Q and its derivative."""
         # Trigger if viscosity is nonzero and dudr < 0
         test = self.dudr < 0  # Eq. (208b), note an old definition for \bar{U}
-        viscosity = self._parent.viscosity
+        viscosity = self.viscosity
         if not viscosity or not np.any(test):
             self._cacheQ(False, np.zeros_like(self.r), np.zeros_like(self.r))
             return
@@ -451,7 +462,7 @@ class MSEulerian(MSCommon):
         Q = self.haystack(Q)
 
         # Apply the Q envelope to turn off Q at the outer boundary
-        Q *= self._parent.Qenvelope
+        Q *= self.Qenvelope
 
         # Cache Q and dQdr
         self._cacheQ(True, Q, self.diff.dydx(Q, even=True))
