@@ -1,12 +1,16 @@
 """Tests for Misner-Sharp evolution."""
 
 import io
+import math
+from abc import ABC
+from fractions import Fraction
 from pathlib import Path
 
 import numpy as np
 import pytest
+from scipy.special import spherical_jn
 
-from pbh.base import EvolverError, FloatArray, Status
+from pbh.base import EOSParameter, EvolverError, FloatArray, Status, alpha_of_w, as_rational_w, cached_property
 from pbh.initial import compute_deltam0, growingmode, makegrid
 from pbh.ms import MS, MSCommon, MSEulerian, MSLagrangian
 from pbh.output import GnuplotWriter
@@ -14,6 +18,8 @@ from pbh.output import GnuplotWriter
 InitialData = tuple[FloatArray, FloatArray, FloatArray]
 
 HANDLERS = [MSEulerian, MSLagrangian]
+#: Equations of state to vary: the general-w tests must hold for all of these, and only 1/3 has the exact boundary
+W_VALUES: list[EOSParameter] = [0.2, Fraction(1, 3), 0.6]
 
 
 def test_haystack_conserves_total_away_from_edges() -> None:
@@ -107,17 +113,188 @@ def test_outer_boundary_condition_is_applied(handler: type[MSCommon], small_init
     assert rdot.shape == udot.shape == mdot.shape == r.shape
 
 
+def background(gridpoints: int = 50, Amax: float = 10) -> InitialData:
+    """The unperturbed FRW background (r = grid, u = r, m = 1) on a uniform grid."""
+    grid = makegrid(gridpoints=gridpoints, squeeze=0, Amax=Amax)
+    return grid, grid.copy(), np.ones_like(grid)
+
+
+@pytest.mark.parametrize("w", W_VALUES)
 @pytest.mark.parametrize("handler", HANDLERS)
-def test_background_is_static(handler: type[MSCommon]) -> None:
-    """The unperturbed background (u = r, m = 1) is a fixed point of the rescaled equations, boundary included."""
-    grid = makegrid(gridpoints=50, squeeze=0, Amax=10)
-    r, u, m = growingmode(grid, np.zeros_like(grid))
-    driver = MS(eomhandler=handler)
+def test_background_is_static(handler: type[MSCommon], w: EOSParameter) -> None:
+    """The unperturbed background (u = r, m = 1) is a fixed point of the rescaled equations for every w.
+
+    Several w-dependent terms must cancel for this to hold (in udot, (1 - alpha) r = alpha (r/2)(1 + 3w) since
+    2(1 - alpha) = alpha(1 + 3w)), so a dropped factor of alpha or w shows up here. The outer boundary condition only
+    exists for w = 1/3, so for other w the interior equation is checked at every row and the boundary must refuse.
+    """
+    r, u, m = background()
+    driver = MS(eomhandler=handler, w=w)
     driver.set_initial_conditions(0.0, r, u, m)
     eom = driver.eomhandler
-    assert eom.udot_outer_boundary == pytest.approx(0, abs=1e-12)
-    for dot in eom.derivatives():
-        assert dot == pytest.approx(0, abs=1e-12)
+    assert eom.rho == pytest.approx(1.0)
+    np.testing.assert_allclose(eom.P, eom.w)
+    assert eom.ephi == pytest.approx(1.0)
+    assert eom.rdot_lagrangian == pytest.approx(0, abs=1e-12)
+    assert eom.mdot_lagrangian == pytest.approx(0, abs=1e-12)
+    assert eom.udot_interior == pytest.approx(0, abs=1e-12)
+    if eom.is_radiation:
+        assert eom.udot_outer_boundary == pytest.approx(0, abs=1e-12)
+        for dot in eom.derivatives():
+            assert dot == pytest.approx(0, abs=1e-12)
+    else:
+        with pytest.raises(NotImplementedError, match="w = 1/3"):
+            eom.derivatives()
+
+
+@pytest.mark.parametrize("w", W_VALUES)
+@pytest.mark.parametrize("handler", HANDLERS)
+def test_background_scalings_for_general_w(handler: type[MSCommon], w: EOSParameter) -> None:
+    """a = e^(alpha xi) and H = e^(-xi) for every w; the (H a R_H)^2 sites must not use the alpha = 1/2 coincidence."""
+    r, u, m = background()
+    xi = 1.0
+    driver = MS(eomhandler=handler, w=w)
+    driver.set_initial_conditions(xi, r, u, m)
+    eom = driver.eomhandler
+    alpha = eom.alpha
+    assert alpha == float(alpha_of_w(as_rational_w(w)))
+    assert eom.a == pytest.approx(np.exp(alpha * xi), rel=1e-14)
+    np.testing.assert_allclose(eom.H, np.exp(-xi), rtol=1e-14)
+    assert eom.Ha2 == pytest.approx(np.exp(2 * (alpha - 1) * xi), rel=1e-14)
+    assert eom.horizon == pytest.approx(r * r * np.exp(2 * (alpha - 1) * xi), rel=1e-14)
+    # For the background, gamma^2 = e^(2(1-alpha)xi) + r^2 - r^2
+    assert eom.gamma2 == pytest.approx(np.exp(2 * (1 - alpha) * xi), rel=1e-12)
+    # Sound speed alpha sqrt(w) e^phi gamma, e^phi = 1 on the background
+    assert eom.c_characteristic == pytest.approx(alpha * np.sqrt(eom.w) * np.exp((1 - alpha) * xi), rel=1e-12)
+    # The background is static at any xi, not just xi = 0
+    assert eom.mdot_lagrangian == pytest.approx(0, abs=1e-12)
+    assert eom.udot_interior == pytest.approx(0, abs=1e-12)
+
+
+class FreeOuterBoundary(MSCommon, ABC):
+    """Test-only outer boundary: the interior equation with drhodr = 0 (a zero pressure gradient condition).
+
+    The exact outgoing-wave condition exists only for w = 1/3. This crude replacement is exact for FRW, and on a
+    large domain its error cannot reach the inner half within Delta xi = 1 (sound travels less than 0.5 in r).
+    """
+
+    @cached_property
+    def udot_outer_boundary(self) -> float:
+        return float(self.udot_interior[-1])
+
+
+class FreeEulerian(FreeOuterBoundary, MSEulerian):
+    pass
+
+
+class FreeLagrangian(FreeOuterBoundary, MSLagrangian):
+    pass
+
+
+@pytest.mark.parametrize("w", W_VALUES)
+@pytest.mark.parametrize("handler", [FreeEulerian, FreeLagrangian])
+def test_superhorizon_growth_exponent(handler: type[MSCommon], w: EOSParameter) -> None:
+    """A superhorizon perturbation grows as e^(2(1-alpha) xi): e^xi for radiation, faster for stiffer fluids.
+
+    The exponent is (2 + 6w)/(3(1 + w)): 8/9 at w = 0.2, 1 at w = 1/3, 7/6 at w = 0.6. A long wavelength
+    (Amax = 40, k = pi/Amax) keeps the (k c_s tau)^2 corrections below 1e-3; the initial data is the first-order
+    growing mode dU = -(alpha/2) dm of the fundamental Bessel mode (drho = eps j0(k r)); only the inner half of the
+    domain is checked since the outer boundary condition is not the exact one.
+    """
+    alpha = float(alpha_of_w(as_rational_w(w)))
+    Amax, n, eps = 40.0, 200, 1e-5
+    r = makegrid(gridpoints=n, squeeze=0, Amax=Amax)
+    k = np.pi / Amax
+    dm0 = eps * 3 * spherical_jn(1, k * r) / (k * r)  # dm(r -> 0) = eps
+    driver = MS(eomhandler=handler, black_hole_check=False, viscosity=None, w=w)
+    driver.set_initial_conditions(0.0, r.copy(), r * (1 - alpha / 2 * dm0), 1 + dm0)
+    driver.drive(output_step=1.0, writer=None, max_time=1.0)
+    assert driver.xi == pytest.approx(1.0)
+    eom = driver.eomhandler
+    inner = r < 0.5 * Amax
+    growth = np.log((eom.m[inner] - 1) / dm0[inner])
+    assert growth[0] == pytest.approx(2 * (1 - alpha), abs=5e-3)
+    # A single mode keeps its profile, so the whole inner region grows by the same factor
+    assert growth == pytest.approx(2 * (1 - alpha), abs=5e-3)
+
+
+def test_non_radiation_guards() -> None:
+    """The theory that exists only for w = 1/3 refuses other w rather than silently using radiation numbers."""
+    r, u, m = background()
+    with pytest.raises(NotImplementedError, match="enforce_timeout"):
+        MS(eomhandler=MSEulerian, enforce_timeout=True, w=0.2)
+    driver = MS(eomhandler=MSEulerian, w=0.2)
+    driver.set_initial_conditions(0.0, r, u, m)
+    assert driver.timeouttime == math.inf
+    eom = driver.eomhandler
+    with pytest.raises(NotImplementedError, match="outgoing-wave"):
+        _ = eom.udot_outer_boundary
+    with pytest.raises(NotImplementedError, match="w = 1/3"):
+        _ = eom.udot_lagrangian
+    # The interior equation is still available
+    assert eom.udot_interior.shape == r.shape
+
+
+@pytest.mark.parametrize("w", [Fraction(1, 3), 1 / 3, "1/3", "2/6", 0.3333333333])
+def test_radiation_constants_are_exact(w: EOSParameter) -> None:
+    """Every spelling of w = 1/3 yields the same exact constants, so the radiation numerics are bitwise unchanged."""
+    eom = MSEulerian(w=w)
+    assert eom.w_exact == Fraction(1, 3)
+    assert eom.is_radiation
+    assert eom.w == 1 / 3
+    assert eom.alpha == 0.5
+    assert eom.inv_alpha == 2.0
+    assert eom.inv_w == 3.0
+    assert eom.lapse_exponent == 0.25  # e^phi = rho^(-1/4)
+    assert eom.inv_cs_factor == np.sqrt(12)  # the old hard-coded divisor in c_characteristic
+    # Computed once in __init__ and stored as plain floats, not recomputed on every access
+    for name in ("w", "inv_w", "alpha", "inv_alpha", "lapse_exponent", "inv_cs_factor"):
+        assert isinstance(vars(eom)[name], float)
+
+
+def test_eos_constants_for_general_w() -> None:
+    assert alpha_of_w(Fraction(1, 3)) == Fraction(1, 2)  # radiation
+    assert alpha_of_w(Fraction(0)) == Fraction(2, 3)  # dust
+    assert alpha_of_w(Fraction(1)) == Fraction(1, 3)  # stiff
+    assert as_rational_w("0.2") == as_rational_w(0.2) == Fraction(1, 5)
+    eom = MSLagrangian(w=0.2)
+    assert eom.w_exact == Fraction(1, 5)
+    assert not eom.is_radiation
+    assert eom.alpha == float(Fraction(5, 9))
+    assert eom.inv_alpha == float(Fraction(9, 5))
+    assert eom.inv_w == 5.0
+    assert eom.lapse_exponent == float(Fraction(1, 6))
+    assert eom.inv_cs_factor == pytest.approx(1 / (eom.alpha * np.sqrt(0.2)), rel=1e-15)
+    for bad in (0, -0.5, 1.5, "4/3"):
+        with pytest.raises(ValueError, match="0 < w <= 1"):
+            as_rational_w(bad)
+    # A positive float below the canonicalisation resolution rounds to 0; the message says so
+    with pytest.raises(ValueError, match=r"got 1e-07 \(a float is rounded .* 10\*\*6: 0\)"):
+        as_rational_w(1e-7)
+    assert as_rational_w(Fraction(1, 10_000_000)) == Fraction(1, 10_000_000)  # exact rationals are not rounded
+    with pytest.raises(ValueError, match="0 < w <= 1"):
+        MSEulerian(w=0)
+
+
+class ForcedViscosity(MSEulerian):
+    """Marks artificial viscosity as present with Q = 0, exercising the viscous branches of ephi, P and dPdr."""
+
+    def _computeQ(self) -> None:
+        self._cacheQ(True, np.zeros_like(self.r), np.zeros_like(self.r))
+
+
+@pytest.mark.parametrize("w", W_VALUES)
+def test_viscous_lapse_split_cancels_when_q_vanishes(w: EOSParameter) -> None:
+    """With Q = 0 the viscous e^phi must reduce to the analytic rho^(-w/(1+w)) at machine precision for every w."""
+    grid = makegrid(gridpoints=150, squeeze=2, Amax=10)
+    m = 1 + 0.1 * np.exp(-grid * grid / 8)
+    driver = MS(eomhandler=ForcedViscosity, viscosity=2, w=w)
+    driver.set_initial_conditions(0.0, grid, grid.copy(), m)
+    eom = driver.eomhandler
+    assert eom.viscosity_present
+    assert np.array_equal(eom.ephi, eom.rho ** (-eom.lapse_exponent))
+    np.testing.assert_allclose(eom.P, eom.w * eom.rho, rtol=1e-15)
+    assert eom.dPdr == pytest.approx(eom.w * eom.drhodr, rel=1e-15)
 
 
 def test_eulerian_and_lagrangian_agree_at_early_times(small_initial_data: InitialData) -> None:

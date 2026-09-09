@@ -10,7 +10,16 @@ from abc import ABC, abstractmethod
 
 import numpy as np
 
-from pbh.base import BlackHoleEvolver, EOMHandler, EvolverError, FloatArray, Status, cached_property
+from pbh.base import (
+    RADIATION_W,
+    BlackHoleEvolver,
+    EOMHandler,
+    EOSParameter,
+    EvolverError,
+    FloatArray,
+    Status,
+    cached_property,
+)
 from pbh.derivs import Derivative
 
 
@@ -39,6 +48,7 @@ class MS(BlackHoleEvolver["MSCommon"]):
         viscosity_buffer: float = 1.0,
         viscosity_buffer_width: float = 0.1,
         debug: bool = False,
+        w: EOSParameter = RADIATION_W,
     ) -> None:
         """Initialize the evolver.
 
@@ -54,10 +64,14 @@ class MS(BlackHoleEvolver["MSCommon"]):
                 artificial viscosity off near the boundary.
             viscosity_buffer_width: Width in r of that envelope.
             debug: Whether to print debugging information.
+            w: Equation of state parameter P = w rho (default 1/3, radiation). Rational; see
+                :data:`~pbh.base.EOSParameter`.
         """
         handler = eomhandler(
-            viscosity=viscosity, viscosity_buffer=viscosity_buffer, viscosity_buffer_width=viscosity_buffer_width
+            viscosity=viscosity, viscosity_buffer=viscosity_buffer, viscosity_buffer_width=viscosity_buffer_width, w=w
         )
+        if enforce_timeout and not handler.is_radiation:
+            raise NotImplementedError("enforce_timeout needs the timeout time, which is only known for w = 1/3")
         super().__init__(eomhandler=handler, rtol=rtol, atol=atol, cfl_safety=cfl_safety, debug=debug)
         self.black_hole_check = black_hole_check
         self.enforce_timeout = enforce_timeout
@@ -69,8 +83,12 @@ class MS(BlackHoleEvolver["MSCommon"]):
         """Set initial conditions, and compute the timeout time from the grid extent."""
         super().set_initial_conditions(start_xi, *start_fields)
 
-        # Set timeout to be the time at which the longest wavelength mode peaks for the first time.
-        self.timeouttime = 0.8278 + 2 * math.log(self.eomhandler.r[-1])  # Eq. (90)
+        # Set timeout to be the time at which the longest wavelength mode peaks for the first time. The constant is
+        # the first peak of x j1(x), which is specific to w = 1/3; for other w the timeout is never triggered.
+        if self.eomhandler.is_radiation:
+            self.timeouttime = 0.8278 + 2 * math.log(self.eomhandler.r[-1])  # Eq. (90)
+        else:
+            self.timeouttime = math.inf
         # Note that this works for both Eulerian and Lagrangian codes, as A and R are interchangeable at linear order.
 
     def post_step_processing(self) -> bool:
@@ -125,6 +143,7 @@ class MSCommon(EOMHandler, ABC):
         viscosity: float | None = None,
         viscosity_buffer: float = 1.0,
         viscosity_buffer_width: float = 0.1,
+        w: EOSParameter = RADIATION_W,
     ) -> None:
         """Initialize storage and operators.
 
@@ -133,8 +152,10 @@ class MSCommon(EOMHandler, ABC):
             viscosity_buffer: Distance in r from the outer edge to the midpoint of the envelope that switches
                 artificial viscosity off near the boundary.
             viscosity_buffer_width: Width in r of that envelope.
+            w: Equation of state parameter P = w rho (default 1/3, radiation). Rational; see
+                :data:`~pbh.base.EOSParameter`.
         """
-        super().__init__(viscosity)
+        super().__init__(viscosity, w=w)
         self.viscosity_buffer = viscosity_buffer
         self.viscosity_buffer_width = viscosity_buffer_width
         # Storage for differentiation object and viscosity envelope (set by initialize_derivatives)
@@ -241,7 +262,7 @@ class MSCommon(EOMHandler, ABC):
     @cached_property
     def ephi(self) -> FloatArray:
         r"""e^\phi."""
-        ephi_analytic = np.power(self.rho, -1 / 4)  # Eq. (45)
+        ephi_analytic = np.power(self.rho, -self.lapse_exponent)  # Eq. (45): rho^(-w/(1+w)) = rho^(-3 alpha w/2)
 
         if not self.viscosity_present:
             return ephi_analytic
@@ -249,7 +270,10 @@ class MSCommon(EOMHandler, ABC):
         # Compute the correction due to artificial viscosity.
         # This following is constructed so that when Q and dQdr are vanishing, we get exact cancellations at machine
         # precision (the first term is constructed exactly the same way as the last term).
-        x = (self.drhodr / 3) / (self.rho / 3 + self.rho) - self.dPdr / (self.P + self.rho)  # Eq. (210-211)
+        # The first term is d/dr ln rho^(w/(1+w)) = w rho'/((1+w) rho), built from the same pieces as dPdr/(P+rho).
+        lapse_term = (self.drhodr / self.inv_w) / (self.rho / self.inv_w + self.rho)
+        pressure_term = self.dPdr / (self.P + self.rho)
+        x = lapse_term - pressure_term  # Eq. (210-211)
 
         # Integrate X inwards using the trapezoid rule.
         # Construct (positive) interval values for trapezoid rule, using xint=0 (boundary condition) at outer boundary.
@@ -258,7 +282,9 @@ class MSCommon(EOMHandler, ABC):
         xint = np.insert(xint, 0, 0)  # Add a 0 to the start of the cumulative sum
         xint -= xint[-1]  # Add a constant to apply the boundary condition
 
-        # Reconstruct e^phi
+        # Reconstruct e^phi. NOTE: with xint = -int_r^rmax x dr this sign makes d ln(ephi)/dr differ from the
+        # Misner-Sharp -P'/(rho+P) by twice the viscous correction; kept verbatim (it moves the viscous goldens), see
+        # "Known numerics" in CLAUDE.md.
         return ephi_analytic * np.exp(-xint)  # Eq. (211)
 
     @cached_property
@@ -266,26 +292,28 @@ class MSCommon(EOMHandler, ABC):
         r"""\bar{P}."""
         if self.viscosity_present:
             # This is written in such a way to help with machine precision cancellations when self.Q is 0
-            return self.rho / 3 + self.rho * self.Q  # Eq. (41b)
-        return self.rho / 3  # Eq. (41b)
+            return self.rho / self.inv_w + self.rho * self.Q  # Eq. (41b): P = w rho (+ rho Q)
+        return self.rho / self.inv_w  # Eq. (41b): P = w rho
 
     @cached_property
     def dPdr(self) -> FloatArray:
         r"""d\bar{P}/d\bar{R}."""
         if self.viscosity_present:
             # This is written in such a way to help with machine precision cancellations when self.Q is 0
-            return self.drhodr / 3 + self.drhodr * self.Q + self.rho * self.dQdr  # Eq. (41b)
-        return self.drhodr / 3  # Eq. (41b)
+            return self.drhodr / self.inv_w + self.drhodr * self.Q + self.rho * self.dQdr  # Eq. (41b)
+        return self.drhodr / self.inv_w  # Eq. (41b)
 
     @cached_property
     def c_characteristic(self) -> FloatArray:
         r"""The characteristic speed d\bar{R}/d\xi (where \bar{R} is a characteristic position, not a field)."""
-        return self.ephi * self.gamma / np.sqrt(12)  # Eq. (200)
+        # alpha sqrt(w) e^phi Gammabar; dividing by the cached 1/(alpha sqrt(w)) keeps the w = 1/3 value bitwise
+        # the old ephi * gamma / sqrt(12) (multiplying by alpha * sqrt(w) is an ulp off).
+        return self.ephi * self.gamma / self.inv_cs_factor  # Eq. (200)
 
     @cached_property
     def c_fluid(self) -> FloatArray:
         r"""The fluid velocity d\bar{R}/d\xi (where \bar{R} is a field)."""
-        return (self.u * self.ephi - self.r) / 2  # Eq. (44a)
+        return self.alpha * (self.u * self.ephi - self.r)  # Eq. (44a)
 
     # Lagrangian equations of motion. These are the building blocks for both schemes: the Eulerian scheme applies a
     # chain rule shift to them.
@@ -298,14 +326,28 @@ class MSCommon(EOMHandler, ABC):
     @cached_property
     def mdot_lagrangian(self) -> FloatArray:
         r"""d\bar{m}/d\xi following the fluid."""
-        return 2 * self.m - 1.5 * self.u * self.ephi * (self.P + self.m) / self.r  # Eq. (44b)
+        # The 2 is -d ln rho_b/dxi and holds for every w; only the 3 alpha (= 1.5 for radiation) depends on w.
+        return 2 * self.m - 3 * self.alpha * self.u * self.ephi * (self.P + self.m) / self.r  # Eq. (44b)
+
+    @cached_property
+    def udot_interior(self) -> FloatArray:
+        r"""d\bar{U}/d\xi following the fluid from Eq. (44c), evaluated at every gridpoint.
+
+        Not valid at the outer boundary (drhodr is returned as zero there); the last entry is replaced by
+        :attr:`udot_outer_boundary` in :attr:`udot_lagrangian`.
+        """
+        u, m, r = self.u, self.m, self.r
+        rho, P, dPdr = self.rho, self.P, self.dPdr
+        # (1 - alpha) u - alpha e^phi [...]; the 3 and the 0.5 are geometric (m/R^2 + 4 pi R P = (H^2 R/2)(m + 3P)).
+        # At alpha = 1/2 this is the old (u - ephi * (...)) / 2.
+        return (1 - self.alpha) * u - self.alpha * self.ephi * (
+            self.gamma2 * dPdr / (rho + P) + 0.5 * (m + 3 * P) * r
+        )  # Eq. (44c)
 
     @cached_property
     def udot_lagrangian(self) -> FloatArray:
         r"""d\bar{U}/d\xi following the fluid, with the outer boundary condition applied at the last gridpoint."""
-        u, m, r = self.u, self.m, self.r
-        rho, P, dPdr = self.rho, self.P, self.dPdr
-        udot = (u - self.ephi * (self.gamma2 * dPdr / (rho + P) + 0.5 * (m + 3 * P) * r)) / 2  # Eq. (44c)
+        udot = self.udot_interior.copy()
         # The interior equation is not valid at the outer boundary, where dPdr is not available (drhodr is returned
         # as zero there). Replace it with the boundary condition.
         udot[-1] = self.udot_outer_boundary
@@ -317,7 +359,14 @@ class MSCommon(EOMHandler, ABC):
 
         Implements Eq. (102), using the nonlinear speed of sound for the characteristic speed. (The linear speed of
         sound would be cs = exp(xi/2) / sqrt(12), which can be read from Eq. (59).)
+
+        The coefficients are derived from the w = 1/3 linear modes; an exact local outgoing-wave condition exists only
+        for w = 1/3 (and dust), so any other w raises NotImplementedError.
         """
+        if not self.is_radiation:
+            raise NotImplementedError(
+                "the exact outgoing-wave boundary condition (Eqs. (101-102)) exists only for w = 1/3"
+            )
         cs = self.c_characteristic[-1]
         r0 = self.r[-1]
         u0 = self.u[-1]
@@ -398,10 +447,9 @@ class MSLagrangian(MSCommon):
             self._cacheQ(False, np.zeros_like(self.r), np.zeros_like(self.r))
             return
 
-        # Construct Q (note that DeltaA = 1)
-        Q = (
-            test * viscosity * self.H * self.duda * self.duda
-        )  # Eqs. (207) and (43c), note an old definition for \bar{U}
+        # Construct Q (note that DeltaA = 1). The prefactor is (H a R_H)^2 = e^(2(alpha-1)xi), which equals H only for
+        # radiation.
+        Q = test * viscosity * self.Ha2 * self.duda * self.duda  # Eq. (207), note an old definition for \bar{U}
 
         # Smooth Q a bit (which has a binary on/off switch from test that is discontinuous)
         Q = self.haystack(Q)
@@ -457,8 +505,9 @@ class MSEulerian(MSCommon):
         viscosity: float | None = None,
         viscosity_buffer: float = 1.0,
         viscosity_buffer_width: float = 0.1,
+        w: EOSParameter = RADIATION_W,
     ) -> None:
-        super().__init__(viscosity, viscosity_buffer, viscosity_buffer_width)
+        super().__init__(viscosity, viscosity_buffer, viscosity_buffer_width, w=w)
         self._rdiff: FloatArray | None = None
 
     def initialize_derivatives(self) -> None:
@@ -504,8 +553,11 @@ class MSEulerian(MSCommon):
 
         # Construct Q
         deltau = self.dudr * self.rdiff
-        # Eqs. (207) and (43c), note an old definition for \bar{U}
-        Q = test * viscosity * np.exp(-self.xi) * deltau * deltau
+        # Eq. (207), note an old definition for \bar{U}. The prefactor is (H a R_H)^2 = e^(2(alpha-1)xi) = self.Ha2;
+        # it is kept as an exponential here to mirror the exp(-xi) this site used before w was a parameter (bitwise
+        # identical for radiation, whereas Ha2, built from 1/(a*a), differs by an ulp).
+        Q = test * viscosity * np.exp(2 * (self.alpha - 1) * self.xi) * deltau * deltau
+        # Q = test * viscosity * self.Ha2 * deltau * deltau
 
         # Smooth Q a bit (which has a binary on/off switch from test that is discontinuous)
         Q = self.haystack(Q)

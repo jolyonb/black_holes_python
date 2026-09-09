@@ -3,9 +3,11 @@
 Relies on the :mod:`pbh.dopri5` module to actually perform time evolution.
 """
 
+import math
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from enum import Enum
+from fractions import Fraction
 from pathlib import Path
 from typing import Any, Self, overload
 
@@ -19,8 +21,36 @@ from pbh.output import Snapshot, SnapshotWriter
 type FloatArray = NDArray[np.float64]
 type Scalar = float | FloatArray
 """A quantity that is usually a single number, but may in principle vary from gridpoint to gridpoint."""
+type EOSParameter = Fraction | int | float | str
+"""The equation of state parameter w of P = w rho.
+
+Accepted as a :class:`~fractions.Fraction`, an int, a decimal or rational string such as ``"1/3"`` or ``"0.2"``, or a
+float (canonicalised to the nearest rational with denominator at most 10**6, so the float ``1/3`` means
+``Fraction(1, 3)``).
+"""
 
 np.seterr(all="raise", under="ignore")
+
+#: The equation of state parameter of radiation, w = 1/3: the default everywhere, and the only value for which the
+#: outer boundary condition, the timeout heuristic and the second-order initial data exist.
+RADIATION_W = Fraction(1, 3)
+
+
+def as_rational_w(w: EOSParameter) -> Fraction:
+    """Convert an equation of state parameter to an exact rational, checking that 0 < w <= 1."""
+    wfrac = Fraction(w).limit_denominator(1_000_000) if isinstance(w, float) else Fraction(w)
+    if not 0 < wfrac <= 1:
+        # Only a float can differ from its rational form; say so, since the rounded value is what was rejected
+        rounded = ""
+        if isinstance(w, float) and wfrac != w:
+            rounded = f" (a float is rounded to a rational with denominator at most 10**6: {wfrac})"
+        raise ValueError(f"w must satisfy 0 < w <= 1, got {w!r}{rounded}")
+    return wfrac
+
+
+def alpha_of_w(w: Fraction) -> Fraction:
+    """The exponent alpha = 2/(3(1+w)) of the scalefactor a = e^(alpha xi), exactly (Eq. (43b))."""
+    return Fraction(2, 3) / (1 + w)
 
 
 class Status(Enum):
@@ -367,13 +397,34 @@ class EOMHandler(ABC):
     #: Number of evolved fields (r, u and m)
     NUM_FIELDS = 3
 
-    def __init__(self, viscosity: float | None = None) -> None:
+    def __init__(self, viscosity: float | None = None, w: EOSParameter = RADIATION_W) -> None:
         """Initialize storage and operators.
 
         Args:
             viscosity: Artificial viscosity coefficient (None or 0 to disable).
+            w: Equation of state parameter P = w rho (default 1/3, radiation). Rational; see :data:`EOSParameter`.
         """
         self.viscosity = viscosity
+        # Equation of state constants, computed once in exact rational arithmetic and then floated. At w = 1/3 every
+        # one of these floats is exact (inv_w = 3.0, alpha = 0.5, inv_alpha = 2.0, lapse_exponent = 0.25,
+        # inv_cs_factor = sqrt(12)), which is what keeps the radiation numerics bitwise unchanged.
+        #: The equation of state parameter w as an exact rational
+        self.w_exact = as_rational_w(w)
+        alpha_exact = alpha_of_w(self.w_exact)
+        #: The equation of state parameter w
+        self.w = float(self.w_exact)
+        #: 1/w, so that P = rho / inv_w
+        self.inv_w = float(1 / self.w_exact)
+        #: alpha = 2/(3(1+w)), the exponent in a = e^(alpha xi) (Eq. (43b))
+        self.alpha = float(alpha_exact)
+        #: 1/alpha, so that H = a^(-1/alpha) (Eq. (43c))
+        self.inv_alpha = float(1 / alpha_exact)
+        #: w/(1+w) = 3 alpha w/2, the exponent in e^phi = rho^(-w/(1+w)) (Eq. (45))
+        self.lapse_exponent = float(self.w_exact / (1 + self.w_exact))
+        #: 1/(alpha sqrt(w)), the inverse of the sound speed factor in the characteristic speed (Eq. (200))
+        self.inv_cs_factor = math.sqrt(self.inv_w) / self.alpha
+        #: Whether w = 1/3 exactly; gates the theory that exists only for radiation (outer boundary condition, timeout)
+        self.is_radiation = self.w_exact == RADIATION_W
         # Initialize storage for state
         self._xi: Scalar | None = None
         self._fields: FloatArray | None = None
@@ -411,13 +462,25 @@ class EOMHandler(ABC):
     @cached_property
     def a(self) -> Scalar:
         """The scalefactor a. This may be different at different gridpoints."""
-        return np.exp(self.xi / 2)  # Eq. (43b)
+        return np.exp(self.alpha * self.xi)  # Eq. (43b)
 
     @cached_property
     def H(self) -> Scalar:
         """The Hubble factor H (with R_H = 1). This may be different at different gridpoints."""
-        return 1 / (self.a * self.a)  # Eqs. (43c) and (43b)
+        # H = e^(-xi) = a^(-1/alpha); at alpha = 1/2 this is bitwise the old 1/(a*a) (np.power, not **, so that the
+        # scalar path also takes the exact-square fast path), whereas np.exp(-xi) differs by an ulp.
+        return 1 / np.power(self.a, self.inv_alpha)  # Eqs. (43c) and (43b)
         # return np.exp(-self.xi)  # Eq. (43c)
+
+    @cached_property
+    def Ha2(self) -> Scalar:
+        """(H a R_H)^2 = e^(2(alpha-1)xi) = Gamma^2/Gammabar^2 (Eqs. (43b) and (43c)).
+
+        Written as H a^(2-1/alpha) so that at alpha = 1/2 (where it equals H) it is bitwise the factor 1/(a*a) used
+        before w was a parameter; the exponential form is the commented alternative.
+        """
+        return self.H * np.power(self.a, 2 - self.inv_alpha)
+        # return np.exp(2 * (self.alpha - 1) * self.xi)
 
     @cached_property
     def rho_b(self) -> Scalar:
@@ -427,14 +490,12 @@ class EOMHandler(ABC):
     @cached_property
     def horizon(self) -> FloatArray:
         """The apparent horizon condition 2M/R."""
-        return self.r * self.r * self.m * self.H  # Eqs. (52) and (43c)
-        # return self.r * self.r * self.m * np.exp(-self.xi)  # Eq. (52)
+        return self.r * self.r * self.m * self.Ha2  # Eq. (52): 2m/R = e^(2(alpha-1)xi) r^2 m
 
     @cached_property
     def gamma2(self) -> FloatArray:
         r"""\bar{\gamma}^2. Raises EvolverError with status NEGATIVE_GAMMA2 if negative anywhere."""
-        gamma2 = 1 / self.H + self.u * self.u - self.r * self.r * self.m  # Eqs. (42f) and (43c)
-        # gamma2 = np.exp(self.xi) + self.u * self.u - self.r * self.r * self.m  # Eq. (42f)
+        gamma2 = 1 / self.Ha2 + self.u * self.u - self.r * self.r * self.m  # Eq. (44f): e^(2(1-alpha)xi) + u^2 - r^2 m
         if np.any(gamma2 < 0):
             raise EvolverError(Status.NEGATIVE_GAMMA2)
         return gamma2

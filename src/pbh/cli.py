@@ -6,8 +6,9 @@ gnuplot-formatted output blocks to a data file.
 
 import argparse
 from collections.abc import Sequence
+from fractions import Fraction
 
-from pbh.base import Status
+from pbh.base import RADIATION_W, Status
 from pbh.initial import compute_deltam0, growingmode, makegrid
 from pbh.ms import MS, MSCommon, MSEulerian, MSLagrangian
 from pbh.output import open_writer
@@ -61,6 +62,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--write-after", type=float, default=0.0, help="xi after which output is written")
     parser.add_argument("--no-black-hole-check", action="store_true", help="keep evolving after horizon formation")
     parser.add_argument("--enforce-timeout", action="store_true", help="stop once the longest mode peaks")
+    parser.add_argument(
+        "--w",
+        type=Fraction,
+        default=RADIATION_W,
+        help="equation of state parameter P = w rho, as a rational such as 1/3; also applies when restarting from a "
+        "file, so pass the value the original run used. Only w = 1/3 can currently be evolved from the command line "
+        "(the exact outer boundary condition exists only for radiation); other values are accepted by the library API "
+        "(default: %(default)s)",
+    )
     parser.add_argument("--quiet", action="store_true", help="suppress debugging output")
 
     grid = parser.add_argument_group("initial data (ignored when loading from file)")
@@ -74,7 +84,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Run an evolution from the command line."""
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.w != RADIATION_W:
+        # Fail before anything is built or written: MSCommon.udot_outer_boundary would raise the same complaint from
+        # inside the integrator's first derivative evaluation.
+        parser.error(
+            f"--w: only w = 1/3 can be evolved from the command line (the exact outgoing-wave outer boundary "
+            f"condition exists only for radiation), got {args.w}"
+        )
 
     driver = MS(
         eomhandler=HANDLERS[args.scheme],
@@ -84,6 +102,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         viscosity_buffer=args.viscosity_buffer,
         viscosity_buffer_width=args.viscosity_buffer_width,
         debug=not args.quiet,
+        w=args.w,
     )
 
     if args.initial_conditions is not None:
@@ -91,7 +110,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     else:
         grid = makegrid(gridpoints=args.gridpoints, squeeze=args.squeeze, Amax=args.amax)
         deltam0 = compute_deltam0(grid, amplitude=args.amplitude, sigma=args.sigma)
-        r, u, m = growingmode(grid, deltam0)
+        r, u, m = growingmode(grid, deltam0, w=args.w)
         driver.set_initial_conditions(0.0, r, u, m)
 
     print("Evolver initialized. Beginning evolution!")
