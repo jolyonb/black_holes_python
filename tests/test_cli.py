@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from pbh.cli import build_parser, main
@@ -35,6 +36,15 @@ def test_run_writes_output(tmp_path: Path, scheme: str, capsys: pytest.CaptureFi
     assert all(len(block.splitlines()) == 101 for block in blocks)
 
 
+def test_run_writes_npz(tmp_path: Path) -> None:
+    out = tmp_path / "run.npz"
+    assert main(["-o", str(out), "--gridpoints", "100", "--max-time", "0.5", "--quiet"]) == 0
+    with np.load(out) as data:
+        assert data["xi"] == pytest.approx([0.0, 0.1, 0.2, 0.3, 0.4, 0.5])
+        assert data["rho"].shape == (6, 100)
+        assert data["index"].shape == (100,)
+
+
 def test_unphysical_run_exits_nonzero(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     out = tmp_path / "bad.dat"
     argv = ["-o", str(out), "--gridpoints", "100", "--amplitude", "0.25", "--max-time", "0.5", "--quiet"]
@@ -50,3 +60,8 @@ def test_run_from_file(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> No
     assert "Status: TIMEOUT" in capsys.readouterr().out
     # Loading from the first block should reproduce the first file exactly
     assert second.read_text() == first.read_text()
+    # Resuming from the last block continues from there
+    third = tmp_path / "third.npz"
+    assert main([str(first), "--snapshot", "-1", "-o", str(third), "--max-time", "0.4", "--quiet"]) == 0
+    with np.load(third) as data:
+        assert data["xi"] == pytest.approx([0.2, 0.3, 0.4])

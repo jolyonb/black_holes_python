@@ -9,6 +9,7 @@ import pytest
 from pbh.base import EvolverError, FloatArray, Status
 from pbh.initial import compute_deltam0, growingmode, makegrid
 from pbh.ms import MS, MSCommon, MSEulerian, MSLagrangian
+from pbh.output import GnuplotWriter
 
 InitialData = tuple[FloatArray, FloatArray, FloatArray]
 
@@ -83,7 +84,7 @@ def test_short_evolution_is_stable(handler: type[MSCommon], small_initial_data: 
     driver = MS(eomhandler=handler, viscosity=2)
     driver.set_initial_conditions(0.0, r, u, m)
     out = io.StringIO()
-    driver.drive(output_step=0.5, file_handle=out, max_time=1.0)
+    driver.drive(output_step=0.5, writer=GnuplotWriter(out), max_time=1.0)
     assert driver.status == Status.TIMEOUT
     assert driver.xi == pytest.approx(1.0)
     # Background should still be background at the outer edge
@@ -126,7 +127,7 @@ def test_eulerian_and_lagrangian_agree_at_early_times(small_initial_data: Initia
     for handler in HANDLERS:
         driver = MS(eomhandler=handler)
         driver.set_initial_conditions(0.0, r, u, m)
-        driver.drive(output_step=1.0, file_handle=io.StringIO(), max_time=1.0)
+        driver.drive(output_step=1.0, max_time=1.0)
         results[handler.__name__] = float(driver.eomhandler.m[0])
     assert results["MSEulerian"] == pytest.approx(results["MSLagrangian"], rel=1e-3)
 
@@ -142,7 +143,7 @@ def test_black_hole_formation_golden(handler: type[MSCommon], expected_xi: float
     r, u, m = growingmode(grid, compute_deltam0(grid, amplitude=0.19))
     driver = MS(eomhandler=handler, black_hole_check=True, viscosity=2)
     driver.set_initial_conditions(0.0, r, u, m)
-    driver.drive(output_step=0.5, file_handle=io.StringIO(), max_time=6)
+    driver.drive(output_step=0.5, max_time=6)
     assert driver.status == Status.BLACKHOLE_FORMED
     assert driver.xi == pytest.approx(expected_xi, rel=1e-9)
     eom = driver.eomhandler
@@ -155,7 +156,7 @@ def test_viscosity_triggers_in_supercritical_run() -> None:
     r, u, m = growingmode(grid, compute_deltam0(grid, amplitude=0.19))
     driver = MS(eomhandler=MSEulerian, black_hole_check=True, viscosity=2)
     driver.set_initial_conditions(0.0, r, u, m)
-    driver.drive(output_step=0.5, file_handle=io.StringIO(), max_time=6)
+    driver.drive(output_step=0.5, max_time=6)
     eom = driver.eomhandler
     assert eom.viscosity_present
     assert np.any(eom.Q > 0)
@@ -170,7 +171,7 @@ def test_viscosity_disabled_when_none() -> None:
     r, u, m = growingmode(grid, compute_deltam0(grid, amplitude=0.19))
     driver = MS(eomhandler=MSEulerian, viscosity=None)
     driver.set_initial_conditions(0.0, r, u, m)
-    driver.drive(output_step=1.0, file_handle=io.StringIO(), max_time=3)
+    driver.drive(output_step=1.0, max_time=3)
     eom = driver.eomhandler
     assert not eom.viscosity_present
     assert np.all(eom.Q == 0)
@@ -183,7 +184,7 @@ def test_enforce_timeout_stops_at_timeout_time() -> None:
     r, u, m = growingmode(grid, compute_deltam0(grid, amplitude=0.1))
     driver = MS(eomhandler=MSEulerian, enforce_timeout=True)
     driver.set_initial_conditions(0.0, r, u, m)
-    driver.drive(output_step=0.5, file_handle=io.StringIO(), max_time=20)
+    driver.drive(output_step=0.5, max_time=20)
     assert driver.status == Status.TIMEOUT
     assert driver.timeouttime < driver.xi <= driver.timeouttime + 0.5
 
@@ -210,7 +211,7 @@ def test_unphysical_initial_data_stops_drive_gracefully(tmp_path: Path) -> None:
     driver.set_initial_conditions(0.0, r, u, m)
     datafile = tmp_path / "out.dat"
     with datafile.open("w") as f:
-        driver.drive(output_step=0.5, file_handle=f, max_time=1.0)
+        driver.drive(output_step=0.5, writer=GnuplotWriter(f), max_time=1.0)
     assert driver.status == Status.NEGATIVE_GAMMA2
     assert driver.msg == "NEGATIVE_GAMMA2"
     assert driver.xi == 0.0
@@ -222,7 +223,7 @@ def test_load_initial_conditions_round_trip(tmp_path: Path, small_initial_data: 
     driver.set_initial_conditions(0.0, r, u, m)
     datafile = tmp_path / "out.dat"
     with datafile.open("w") as f:
-        driver.drive(output_step=0.5, file_handle=f, max_time=0.5)
+        driver.drive(output_step=0.5, writer=GnuplotWriter(f), max_time=0.5)
     # Evolve a little further so the first block differs from the final state
     assert driver.xi == pytest.approx(0.5)
 

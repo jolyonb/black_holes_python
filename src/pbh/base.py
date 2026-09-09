@@ -6,13 +6,15 @@ Relies on the :mod:`pbh.dopri5` module to actually perform time evolution.
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from enum import Enum
-from typing import Any, Self, TextIO, overload
+from pathlib import Path
+from typing import Any, Self, overload
 
 import numpy as np
 from numpy import pi
 from numpy.typing import NDArray
 
 from pbh.dopri5 import DOPRI5, DopriIntegrationError
+from pbh.output import Snapshot, SnapshotWriter
 
 type FloatArray = NDArray[np.float64]
 type Scalar = float | FloatArray
@@ -124,30 +126,43 @@ class BlackHoleEvolver[H: EOMHandler]:
 
         self.status = Status.READY
 
-    def load_initial_conditions(self, filename: str) -> None:
-        """Load initial conditions from a data file.
+    def load_initial_conditions(self, filename: str | Path, snapshot: int = 0) -> None:
+        """Load initial conditions from a snapshot of a data file written by :meth:`drive`.
 
-        In particular, reads data from the first block of a data file in the format output by this class.
+        Both the gnuplot text format and the ``.npz`` format are understood (chosen by suffix). ``snapshot`` indexes
+        the snapshots in the file; negative values count from the end, so ``-1`` resumes from the last one.
         """
-        # Read the first block into an array
-        data: list[list[str]] = []
-        with open(filename) as f:
-            while True:
-                line = f.readline().strip()
-                if line.startswith("#"):
-                    # Ignore comments
-                    continue
-                if len(line) == 0:
-                    # End of the first block
-                    break
-                data.append(line.split("\t"))
-
-        # Grab the pieces we want from each line: r, u, m and xi
-        r, u, m = np.array([[float(row[1]), float(row[2]), float(row[3])] for row in data]).transpose()
-        xi = float(data[0][13])
-
-        # Initialize everything
+        filename = Path(filename)
+        if filename.suffix == ".npz":
+            with np.load(filename) as archive:
+                xi = float(archive["xi"][snapshot])
+                r, u, m = archive["r"][snapshot], archive["u"][snapshot], archive["m"][snapshot]
+        else:
+            xi, r, u, m = self._read_text_snapshot(filename, snapshot)
         self.set_initial_conditions(xi, r, u, m)
+
+    @staticmethod
+    def _read_text_snapshot(filename: Path, snapshot: int) -> tuple[float, FloatArray, FloatArray, FloatArray]:
+        """Read (xi, r, u, m) from one block of a gnuplot-format data file."""
+        blocks: list[list[list[str]]] = []
+        block: list[list[str]] = []
+        with filename.open() as f:
+            for raw_line in f:
+                line = raw_line.strip()
+                if line.startswith("#"):
+                    continue
+                if line:
+                    block.append(line.split("\t"))
+                elif block:
+                    blocks.append(block)
+                    block = []
+        if block:
+            blocks.append(block)
+
+        data = blocks[snapshot]
+        # Columns: index, r, u, m, ..., xi (see snapshot())
+        r, u, m = np.array([[float(row[1]), float(row[2]), float(row[3])] for row in data]).transpose()
+        return float(data[0][13]), r, u, m
 
     def evolve(self, stop_xi: float) -> bool:
         """Take steps forwards in time until the specified stop time.
@@ -188,21 +203,21 @@ class BlackHoleEvolver[H: EOMHandler]:
     def drive(
         self,
         output_step: float,
-        file_handle: TextIO,
+        writer: SnapshotWriter | None = None,
         max_time: float | None = None,
         write_after: float | None = None,
     ) -> None:
         """Run evolution, writing output periodically.
 
-        Data is output every ``output_step`` to ``file_handle`` once the time is after ``write_after``.
-        Stops if post processing requests it, or if ``max_time`` is reached.
+        A snapshot is passed to ``writer`` every ``output_step`` once the time is after ``write_after`` (no output is
+        produced if ``writer`` is None). Stops if post processing requests it, or if ``max_time`` is reached.
         """
         if self.status != Status.READY:
             raise ValueError(f"Class cannot evolve with status {self.status.name}")
 
         # Write initial data
         if write_after is None or self.xi >= write_after:
-            if self._output_or_abort(file_handle):
+            if self._output_or_abort(writer):
                 return
             newtime = self.xi
         else:
@@ -220,7 +235,7 @@ class BlackHoleEvolver[H: EOMHandler]:
             abort = self.evolve(newtime)
 
             # Write the data
-            if (write_after is None or self.xi >= write_after) and self._output_or_abort(file_handle):
+            if (write_after is None or self.xi >= write_after) and self._output_or_abort(writer):
                 return
 
             # Do we stop?
@@ -235,10 +250,12 @@ class BlackHoleEvolver[H: EOMHandler]:
         self.status = status
         self.msg = msg
 
-    def _output_or_abort(self, file_handle: TextIO) -> bool:
-        """Write output, returning True if the EOM handler found the state unphysical (status updated)."""
+    def _output_or_abort(self, writer: SnapshotWriter | None) -> bool:
+        """Write a snapshot, returning True if the EOM handler found the state unphysical (status updated)."""
+        if writer is None:
+            return False
         try:
-            self.output(file_handle)
+            writer.write(self.snapshot())
         except EvolverError as err:
             self._record_error(err.status, err.msg)
             return True
@@ -270,13 +287,13 @@ class BlackHoleEvolver[H: EOMHandler]:
         self.eomhandler.set_fields(self.integrator.t, self.integrator.values)
         return self.eomhandler.cfl_step()
 
-    def output(self, file_handle: TextIO) -> None:
-        """Output the current state of the system to the given file handle."""
+    def snapshot(self) -> Snapshot:
+        """Return the named quantities describing the current state of the system."""
         # Set EOM handler to use the appropriate field values
         self.eomhandler.set_fields(self.integrator.t, self.integrator.values)
 
         # Extract and name quantities in the order they'll appear in the data output
-        data: dict[str, Scalar | NDArray[np.intp]] = {  # gnuplot column
+        return {  # gnuplot column
             "index": self.index,  # 1
             "r": self.eomhandler.r,  # 2
             "u": self.eomhandler.u,  # 3
@@ -294,16 +311,6 @@ class BlackHoleEvolver[H: EOMHandler]:
             "Q": self.eomhandler.Q,  # 15
             "ephi": self.eomhandler.ephi,  # 16
         }
-
-        # Write header
-        file_handle.write("# " + "\t".join(data.keys()) + "\n")
-
-        # Write the block of data
-        for i in range(self.gridpoints):
-            dat = [value[i] if isinstance(value, np.ndarray) else value for value in data.values()]
-            file_handle.write("\t".join(map(str, dat)) + "\n")
-        file_handle.write("\n")
-        file_handle.flush()
 
     # Optional methods
 

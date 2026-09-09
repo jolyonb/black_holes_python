@@ -11,7 +11,8 @@ uv sync                 # create .venv with runtime + dev dependencies
 uv run pbh --help       # show all evolution options
 uv run pbh              # evolve the default Gaussian perturbation, writing output.dat
 uv run pbh -o run.dat --scheme lagrangian --gridpoints 1000 --amplitude 0.18
-uv run pbh output.dat   # restart from the first block of a previous output file
+uv run pbh -o run.npz   # same, but as a numpy archive (one array per quantity, snapshot axis first)
+uv run pbh run.npz --snapshot -1   # resume from the last snapshot of a previous run (.dat or .npz)
 ```
 
 The command line entry point is `pbh.cli`, which uses an old algorithm to take a linearized \delta_m and construct the growing mode from it (`pbh.initial`). (We have better tools now.) The physics lives in `pbh.ms` (Misner-Sharp equations of motion, Eulerian and Lagrangian), built on `pbh.base` (generic evolver and cached equation-of-motion handler), `pbh.derivs` (finite difference stencils) and `pbh.dopri5` (adaptive Runge-Kutta integrator).
@@ -30,6 +31,21 @@ uv run pre-commit install   # run all of the above automatically on each commit
 
 I recommend using gnuplot to visualize the output (the output has been formatted according to gnuplot specifications). Some helpful plotting commands are listed in the readme file for this repository.
 
+
+## Output formats
+
+Two output formats are available, selected by the output file suffix. The gnuplot text format writes one block per
+snapshot, with tab-separated columns as listed below. The `.npz` format stores the same quantities as numpy arrays
+with a leading snapshot axis, which is much more convenient for analysis and comparison scripts:
+
+```python
+import numpy as np
+
+with np.load("run.npz") as data:
+    xi = data["xi"]  # shape (snapshots,)
+    rho = data["rho"]  # shape (snapshots, gridpoints)
+    index = data["index"]  # shape (gridpoints,)
+```
 
 ## Plotting column numbers
 

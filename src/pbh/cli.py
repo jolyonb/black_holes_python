@@ -10,6 +10,7 @@ from collections.abc import Sequence
 from pbh.base import Status
 from pbh.initial import compute_deltam0, growingmode, makegrid
 from pbh.ms import MS, MSCommon, MSEulerian, MSLagrangian
+from pbh.output import open_writer
 
 HANDLERS: dict[str, type[MSCommon]] = {"eulerian": MSEulerian, "lagrangian": MSLagrangian}
 
@@ -25,7 +26,20 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="?",
         help="data file to load initial conditions from (first block); if omitted, construct the growing mode",
     )
-    parser.add_argument("-o", "--output", default="output.dat", help="output data file (default: %(default)s)")
+    parser.add_argument(
+        "--snapshot",
+        type=int,
+        default=0,
+        help="which snapshot of the initial conditions file to start from; negative counts from the end "
+        "(default: %(default)s)",
+    )
+    parser.add_argument(
+        "-o",
+        "--output",
+        default="output.dat",
+        help="output file; a .npz suffix selects numpy archive output, anything else gnuplot text "
+        "(default: %(default)s)",
+    )
     parser.add_argument(
         "--scheme", choices=HANDLERS, default="eulerian", help="equations of motion to evolve (default: %(default)s)"
     )
@@ -59,7 +73,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
 
     if args.initial_conditions is not None:
-        driver.load_initial_conditions(args.initial_conditions)
+        driver.load_initial_conditions(args.initial_conditions, snapshot=args.snapshot)
     else:
         grid = makegrid(gridpoints=args.gridpoints, squeeze=args.squeeze, Amax=args.amax)
         deltam0 = compute_deltam0(grid, amplitude=args.amplitude, sigma=args.sigma)
@@ -67,8 +81,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         driver.set_initial_conditions(0.0, r, u, m)
 
     print("Evolver initialized. Beginning evolution!")
-    with open(args.output, "w") as f:
-        driver.drive(output_step=args.output_step, file_handle=f, max_time=args.max_time, write_after=args.write_after)
+    with open_writer(args.output) as writer:
+        driver.drive(output_step=args.output_step, writer=writer, max_time=args.max_time, write_after=args.write_after)
     print(f"Evolution complete! Status: {driver.status.name}")
     return 0 if driver.status in SUCCESS_STATUSES else 1
 
