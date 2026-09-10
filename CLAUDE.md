@@ -1,7 +1,9 @@
-# pbh-python: map for new sessions
+# pbh-python code: map for new sessions
 
 Owner: Jolyon Bloomfield (physicist, author). Spherically symmetric primordial-black-hole formation from a
-perfect-fluid perturbation of flat FRW, Misner-Sharp formalism. This file is the map; the detail lives where it points.
+perfect-fluid perturbation of flat FRW, Misner-Sharp formalism. This repo is the evolution code only; the theory,
+numerics analysis and paper drafts live in the sibling `../analysis/` (its own git repo, not on GitHub). The
+workspace map is `../CLAUDE.md`.
 
 ## Layout
 
@@ -10,10 +12,10 @@ perfect-fluid perturbation of flat FRW, Misner-Sharp formalism. This file is the
 | `src/pbh/` | The evolution code. `ms.py` (Misner-Sharp EOMs, Eulerian and Lagrangian handlers), `base.py` (evolver + cached EOM handler), `derivs.py` (sparse finite-difference stencils), `dopri5.py` (adaptive RK), `initial.py` (grid + growing-mode initial data), `output.py` (gnuplot `.dat` / `.npz` snapshots), `cli.py` (`pbh` entry point). | tracked |
 | `tests/` | Flat pytest functions. Fast suite by default; full evolutions are `-m slow` (golden horizon-formation values live there). | tracked |
 | `README.md` | User-facing: CLI usage, output columns, gnuplot recipes, Lagrangian-vs-Eulerian notes. | tracked |
-| `analysis/` | **Local only, gitignored, never push.** Theory and numerics rebuild plus the paper sources. Start at `analysis/CLAUDE.md` (2-minute orientation), then `analysis/phaseA/README.md` (continuum theory, sympy-verified) and `analysis/phaseB/README.md` (discretisation, numpy-verified). The Phase C implementation spec is `analysis/phaseB/writeup/S_spec.tex`; prototype reference code is `analysis/phaseB/lib/`. | ignored |
+| `../analysis/` | **Outside this repo.** Theory and numerics rebuild plus the paper sources; see `../analysis/CLAUDE.md`. | sibling repo |
 
-Note: `analysis/CLAUDE.md` and the phase READMEs were written when the code lived at `black_holes_python/` and
-ran under a system Python 3.13. Here the code is the root package `src/pbh` and everything runs through uv.
+Note: the phase READMEs in `../analysis` were written when the code lived at `black_holes_python/` and ran under a
+system Python 3.13. Here the code is the root package `src/pbh` and everything runs through uv.
 
 ## Running things
 
@@ -29,11 +31,11 @@ uv run ruff check . && uv run ruff format . && uv run pyright     # pre-commit r
 Analysis suites (from their own directory, using this repo's environment; macOS has no `timeout` command):
 
 ```
-cd analysis/phaseA && uv run --project ../.. python -m pytest tests -q -c pytest.ini                  # 127 tests, ~100 s
-cd analysis/phaseB && uv run --project ../.. python -m pytest tests -q -c pytest.ini -m "not slow"    # 476 tests, ~60 s
+cd ../analysis/phaseA && uv run --project ../../code python -m pytest tests -q -c pytest.ini                # 127 tests, ~100 s
+cd ../analysis/phaseB && uv run --project ../../code python -m pytest tests -q -c pytest.ini -m "not slow"  # 476 tests, ~60 s
 ```
 
-## Conventions (do not relitigate; details in `analysis/CLAUDE.md`)
+## Conventions (do not relitigate; details in `../analysis/CLAUDE.md`)
 
 * Variables: `r` = `Rtilde = R/(a R_H)`, `u` = `Utilde = U/(H a R_H)` (FRW value `r`), `m` = `mtilde` (FRW 1),
   `rho` = `rhotilde` (FRW 1), `xi = ln(t/t_0)`, `H = e^{-xi}`, `a = e^{alpha xi}`, `alpha = 2/(3(1+w))`, units `R_H = 1`.
@@ -55,9 +57,10 @@ lapse error at a shock, formation times unchanged to 5 digits). Output files rec
 
 ## Next steps, in order
 
-1. (done 2026-09-09) Expression cleanup after the `w` refactor: single cached `H = exp(-xi)` and `(H a)^2`, viscous
-   lapse sign fixed, `w` recorded in output and checked on restart, float `w` snapping warns. Goldens re-recorded.
-2. Phase C: implement `analysis/phaseB/writeup/S_spec.tex` as a new staggered core alongside the old handlers, with
-   the acceptance tests in the spec's test table; then the production supercritical run (sigma = 2, amplitude 0.175)
-   reading the mass from the enclosed-energy plateau.
-3. Paper: revise `analysis/updated/` (drop Hernandez-Misner, add Eulerian/excision and numerical-scheme sections).
+1. (done 2026-09-09) `w` as a rational parameter; expression cleanup; viscous-lapse sign fix; `w` recorded in output.
+2. **Theory paper first** (owner's decision 2026-09-09): revise `../analysis/updated/` section by section, the owner
+   verifying each derivation, with the numerical-scheme section written before any of it is implemented. Plan in
+   `../CLAUDE.md`.
+3. Phase C: implement that numerical section as a new staggered core alongside the old handlers, in small verified
+   steps (geometry first), with acceptance tests from `../analysis/phaseB/writeup/S_spec.tex`; then the production
+   supercritical run with the mass read from the enclosed-energy plateau; regression target 0.50 horizon masses.

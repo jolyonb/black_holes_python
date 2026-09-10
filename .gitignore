@@ -22,6 +22,3 @@ htmlcov/
 
 # Simulation output
 *.dat
-
-# Other
-analysis/
