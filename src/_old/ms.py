@@ -10,7 +10,7 @@ from abc import ABC, abstractmethod
 
 import numpy as np
 
-from pbh.base import (
+from _old.base import (
     RADIATION_W,
     BlackHoleEvolver,
     EOMHandler,
@@ -20,7 +20,7 @@ from pbh.base import (
     Status,
     cached_property,
 )
-from pbh.derivs import Derivative
+from _old.derivs import Derivative
 
 
 class MS(BlackHoleEvolver["MSCommon"]):
@@ -65,7 +65,7 @@ class MS(BlackHoleEvolver["MSCommon"]):
             viscosity_buffer_width: Width in r of that envelope.
             debug: Whether to print debugging information.
             w: Equation of state parameter P = w rho (default 1/3, radiation). Rational; see
-                :data:`~pbh.base.EOSParameter`.
+                :data:`~_old.base.EOSParameter`.
         """
         handler = eomhandler(
             viscosity=viscosity, viscosity_buffer=viscosity_buffer, viscosity_buffer_width=viscosity_buffer_width, w=w
@@ -153,7 +153,7 @@ class MSCommon(EOMHandler, ABC):
                 artificial viscosity off near the boundary.
             viscosity_buffer_width: Width in r of that envelope.
             w: Equation of state parameter P = w rho (default 1/3, radiation). Rational; see
-                :data:`~pbh.base.EOSParameter`.
+                :data:`~_old.base.EOSParameter`.
         """
         super().__init__(viscosity, w=w)
         self.viscosity_buffer = viscosity_buffer

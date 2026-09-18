@@ -1,6 +1,6 @@
 """Base classes for handling PDE evolution for black holes.
 
-Relies on the :mod:`pbh.dopri5` module to actually perform time evolution.
+Relies on the :mod:`_old.dopri5` module to actually perform time evolution.
 """
 
 import math
@@ -17,8 +17,8 @@ import numpy as np
 from numpy import pi
 from numpy.typing import NDArray
 
-from pbh.dopri5 import DOPRI5, DopriIntegrationError
-from pbh.output import Snapshot, SnapshotWriter
+from _old.dopri5 import DOPRI5, DopriIntegrationError
+from _old.output import Snapshot, SnapshotWriter
 
 type FloatArray = NDArray[np.float64]
 type Scalar = float | FloatArray

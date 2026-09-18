@@ -9,21 +9,21 @@ workspace map is `../CLAUDE.md`.
 
 | path | what | git |
 |---|---|---|
-| `src/pbh/` | The evolution code. `ms.py` (Misner-Sharp EOMs, Eulerian and Lagrangian handlers), `base.py` (evolver + cached EOM handler), `derivs.py` (sparse finite-difference stencils), `dopri5.py` (adaptive RK), `initial.py` (grid + growing-mode initial data), `output.py` (gnuplot `.dat` / `.npz` snapshots), `cli.py` (`pbh` entry point). | tracked |
-| `tests/` | Flat pytest functions. Fast suite by default; full evolutions are `-m slow` (golden horizon-formation values live there). | tracked |
-| `README.md` | User-facing: CLI usage, output columns, gnuplot recipes, Lagrangian-vs-Eulerian notes. | tracked |
+| `src/pbh/` | **The production code, being built** (since 2026-09-18) from paper sections 7-8 (`../analysis/v4/numerics.tex`, `numerics-excision.tex`) in reviewed bites, one module per subsection. Empty package until bite 1 lands. | tracked |
+| `src/_old/` | **RETIRED** collocated code (the former `src/pbh`, moved 2026-09-18 with its unit tests deleted). Kept for reference, not run, not imported by `pbh`; still passes ruff and pyright strict. `ms.py` (Misner-Sharp EOMs, Eulerian and Lagrangian handlers), `base.py` (evolver + cached EOM handler), `derivs.py` (collocated stencils), `dopri5.py`, `initial.py` (2015 growing-mode data), `output.py`, `cli.py`. | tracked |
+| `tests/` | Empty until bite 1. Flat pytest functions; fast suite by default, evolutions `-m slow`. | tracked |
+| `README.md` | Describes the OLD code's CLI and output; to be rewritten when the new driver exists. | tracked |
 | `../analysis/` | **Outside this repo.** Theory and numerics rebuild plus the paper sources; see `../analysis/CLAUDE.md`. | sibling repo |
 
 Note: the phase READMEs in `../analysis` were written when the code lived at `black_holes_python/` and ran under a
-system Python 3.13. Here the code is the root package `src/pbh` and everything runs through uv.
+system Python 3.13. Here the retired code is `src/_old` and everything runs through uv.
 
 ## Running things
 
 ```
 uv sync                      # Python 3.14; installs the dev and analysis groups (pytest, ruff, pyright, sympy, matplotlib)
-uv run pbh --help            # evolve; .dat or .npz output chosen by suffix; restart from a snapshot with `pbh run.npz --snapshot -1`
-uv run pytest                # fast suite (~2 s)
-uv run pytest -m slow        # full evolutions incl. goldens
+uv run pytest                # fast suite
+uv run pytest -m slow        # evolutions
 uv run pytest -m ''          # everything
 uv run ruff check . && uv run ruff format . && uv run pyright     # pre-commit runs all three
 ```
@@ -49,8 +49,9 @@ cd ../analysis/phaseB && uv run --project ../../code python -m pytest tests -q -
 ## Known numerics (why the rebuild exists)
 
 The old code's "high-frequency instability in rho" is an odd-even sawtooth null mode of the collocated centred
-first-derivative operators, pumped by variable coefficients. `tests/test_operators.py` pins both that defect and the
-good `R^4` flux-form density operator. The structural fix is the staggered layout from Phase B.
+first-derivative operators, pumped by variable coefficients. The old `tests/test_operators.py` pinned that defect and the
+good `R^4` flux-form density operator (deleted 2026-09-18 with the old tests; the demonstration is rebuilt in the new
+stencils bite). The structural fix is the staggered layout from Phase B.
 
 The viscous lapse correction in `MSCommon.ephi` had the wrong sign until 2026-09-09 (fixed; effect was at most a 2%
 lapse error at a shock, formation times unchanged to 5 digits). Output files record `w` (column 17) and restarts check it.
@@ -61,6 +62,8 @@ lapse error at a shock, formation times unchanged to 5 digits). Output files rec
 2. **Theory paper first** (owner's decision 2026-09-09): revise `../analysis/updated/` section by section, the owner
    verifying each derivation, with the numerical-scheme section written before any of it is implemented. Plan in
    `../CLAUDE.md`.
-3. Phase C: implement that numerical section as a new staggered core alongside the old handlers, in small verified
-   steps (geometry first), with acceptance tests from `../analysis/phaseB/writeup/S_spec.tex`; then the production
-   supercritical run with the mass read from the enclosed-energy plateau; regression target 0.50 horizon masses.
+3. **Phase C, IN PROGRESS (from 2026-09-18)**: the production code in `src/pbh`, written from paper sections 7-8 (the
+   spec; `S_spec.tex` is out of date) in small owner-reviewed bites, geometry first. Each run is three files
+   (`name.config.json`, `name.initial.h5`, `name.evolution.h5`; HDF5 via h5py, appendable and readable mid-run).
+   Requirements: every line human-readable and read by the owner; a switch to continue a formed hole WITHOUT
+   excision so the excised run can be shown to agree with it; the mass read as `M_est` (rate-corrected estimate).

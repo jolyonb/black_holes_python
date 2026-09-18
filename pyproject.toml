@@ -10,9 +10,6 @@ dependencies = [
     "scipy>=1.18.1",
 ]
 
-[project.scripts]
-pbh = "pbh.cli:main"
-
 [dependency-groups]
 analysis = [
     "matplotlib>=3.11.1",
@@ -29,6 +26,9 @@ dev = [
 [build-system]
 requires = ["uv_build>=0.8,<0.12"]
 build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = ["pbh", "_old"]
 
 [tool.ruff]
 line-length = 120

@@ -7,8 +7,8 @@ import warnings
 
 import numpy as np
 
-from pbh.base import RADIATION_W, EOSParameter, FloatArray, alpha_of_w, as_rational_w
-from pbh.derivs import Derivative
+from _old.base import RADIATION_W, EOSParameter, FloatArray, alpha_of_w, as_rational_w
+from _old.derivs import Derivative
 
 
 def makegrid(gridpoints: int, squeeze: float = 2, Amax: float = 14) -> FloatArray:
@@ -44,7 +44,7 @@ def growingmode(
         grid: The comoving grid.
         deltam0: The mass perturbation on the grid.
         w: Equation of state parameter P = w rho (default 1/3, radiation). Rational; see
-            :data:`~pbh.base.EOSParameter`.
+            :data:`~_old.base.EOSParameter`.
 
     Returns:
         A tuple (r, u, m) of initial field values on the grid.

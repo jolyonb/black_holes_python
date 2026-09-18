@@ -19,7 +19,7 @@ type Snapshot = dict[str, NDArray[Any] | float]
 
 
 class SnapshotWriter(Protocol):
-    """Anything that can receive snapshots from :meth:`pbh.base.BlackHoleEvolver.drive`."""
+    """Anything that can receive snapshots from :meth:`_old.base.BlackHoleEvolver.drive`."""
 
     def write(self, snapshot: Snapshot) -> None:
         """Record one snapshot."""
