@@ -60,6 +60,7 @@ ignore = [
     "N803",  # argument names: same
     "N806",  # variable names: same
     "N815",  # mixed-case attributes: same
+    "SIM300",  # "Yoda conditions": a capitalised physics name (H, E, U, M, W) is not a constant
 ]
 
 [tool.ruff.lint.per-file-ignores]
