@@ -19,6 +19,7 @@ dev = [
     "pre-commit>=4.0",
     "pyright>=1.1.400",
     "pytest>=8.0",
+    "pytest-cov>=6.0",
     "ruff>=0.12",
     "scipy-stubs>=1.18.1.0",
 ]
@@ -84,6 +85,14 @@ testpaths = ["tests"]
 addopts = "-ra --strict-markers -m 'not slow'"
 markers = ["slow: full evolutions taking around a second each; run with `pytest -m slow` or `pytest -m ''`"]
 filterwarnings = ["error"]
+
+[tool.coverage.run]
+source = ["pbh"]
+
+[tool.coverage.report]
+fail_under = 100  # every line of the production code is exercised by the fast suite; pre-commit enforces it
+show_missing = true
+skip_covered = false
 
 [tool.uv]
 default-groups = ["dev", "analysis"]
