@@ -15,6 +15,7 @@ Choosing `k` so that `j_1(k X_N) = 0` makes `delta_U` vanish at the outer face f
 from dataclasses import dataclass
 
 import numpy as np
+from evolve import evolve
 from scipy.special import spherical_jn
 
 from pbh.eos import RADIATION, Background, EquationOfState
@@ -25,7 +26,7 @@ from pbh.maps import Map
 from pbh.outer import HeldAtFrw
 from pbh.state import State
 from pbh.stencils import FaceClosure
-from pbh.timestep import COURANT_NUMBER, Integrator, Scheme, advance, courant_step
+from pbh.timestep import Scheme
 from pbh.types import FloatArray
 
 #: The first zeros of j_1, so that k = zero / X_N gives a mode with delta_U = 0 at the outer face.
@@ -74,15 +75,8 @@ def mode_errors(m: Map, k_index: int, N: int, settings: KernelSettings, xi_end: 
     mode = BesselMode(k=J1_ZEROS[k_index] / X_N, B=1e-6)
     sch = Scheme(eos, m, Layout(N), FaceClosure.FIRST_ORDER, HeldAtFrw(), settings)
     geo = sch.frame(0.0).geo
-    xi = 0.0
-    dy = sch.layout.pack(mode.state(Background.at(eos, 0.0), geo)) - sch.frw(0.0)
-    while xi < xi_end - 1e-12:
-        res = sch.evaluate(xi, sch.frw(xi) + dy)
-        dxi = min(courant_step(res, geo, sch.layout, COURANT_NUMBER), xi_end - xi)
-        dy = advance(sch, Integrator.RK4, xi, dy, dxi)
-        xi += dxi
-    final = sch.layout.unpack(sch.frw(xi) + dy)
-    exact = mode.state(Background.at(eos, xi), geo)
+    final = evolve(sch, mode.state(Background.at(eos, 0.0), geo), 0.0, xi_end)
+    exact = mode.state(Background.at(eos, xi_end), geo)
     err_E = float(np.sum(np.abs(final.E - exact.E)) / np.sum(np.abs(exact.E - geo.dV)))
     err_U = float(np.sum(np.abs(final.U[1:] - exact.U[1:])) / np.sum(np.abs(exact.U[1:] - geo.X[1:])))
     return err_E, err_U
