@@ -1,6 +1,6 @@
 """Time stepping (paper Section 7.6): RK4 in deviation form, the Courant step, and the step cap.
 
-The method of lines: the stage of `equations.py` turns the state into its rate, and this module advances it in
+The method of lines: `calc_derivs` of `equations.py` turns the state into its rate, and this module advances it in
 time with the classical four-stage Runge-Kutta method (RK4) at a fixed Courant number, the three-stage
 strong-stability-preserving method (SSPRK3) being kept as a switch. Section 7.6 says why not the alternatives: an
 adaptive embedded pair hunts for a stability boundary that a fixed Courant number already respects and costs more
@@ -37,7 +37,7 @@ from fractions import Fraction
 import numpy as np
 
 from pbh.eos import Background, EquationOfState
-from pbh.equations import StageResult, stage
+from pbh.equations import DerivsResult, calc_derivs
 from pbh.geometry import Geometry
 from pbh.layout import Layout
 from pbh.maps import Map
@@ -170,10 +170,10 @@ class Scheme:
         geo, w = self._static_frame if self._static_frame is not None else self._geometry_and_weights(xi)
         return Frame(geo=geo, bg=Background.at(self.eos, xi), w=w)
 
-    def evaluate(self, xi: float, y: FloatArray) -> StageResult:
-        """The stage at time `xi` for the packed state `y`."""
+    def evaluate(self, xi: float, y: FloatArray) -> DerivsResult:
+        """The time derivatives at time `xi` for the packed state `y`, with the fields they came from."""
         f = self.frame(xi)
-        return stage(self.layout.unpack(y), f.geo, f.bg, self.eos, f.w, self.outer)
+        return calc_derivs(self.layout.unpack(y), f.geo, f.bg, self.eos, f.w, self.outer)
 
     def frw(self, xi: float) -> FloatArray:
         """The packed FRW state at time `xi`."""
@@ -209,7 +209,7 @@ def advance(scheme: Scheme, integrator: Integrator, xi: float, dy: FloatArray, d
     return explicit_rk_step(integrator.tableau, scheme.deviation_rate, xi, dy, dxi)
 
 
-def courant_step(result: StageResult, geo: Geometry, layout: Layout, courant_number: float) -> float:
+def courant_step(result: DerivsResult, geo: Geometry, layout: Layout, courant_number: float) -> float:
     """The Courant step `C_CFL min_c Delta X_c / Lambda_hat_c` over the retained cells (eq:num:cfl, first term).
 
     `Lambda_hat_c = max(Lambda_j, Lambda_j+1)` is the faster signal speed at the cell's two faces, so the ratio is the
@@ -243,7 +243,7 @@ class StepChoice:
     limit: StepLimit
 
 
-def step_size(result: StageResult, geo: Geometry, layout: Layout, courant_number: float, cap: float) -> StepChoice:
+def step_size(result: DerivsResult, geo: Geometry, layout: Layout, courant_number: float, cap: float) -> StepChoice:
     """The step of eq:num:cfl: the smaller of the Courant step and the cap, with the limit that bound.
 
     Clipping to an output time is the driver's business and is recorded there as a third kind of limit.

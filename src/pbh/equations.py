@@ -71,8 +71,8 @@ class Speeds:
 
 
 @dataclass(frozen=True)
-class StageResult:
-    """Everything one stage computed: the rate the integrator wants, and the fields the monitors and the finder read.
+class DerivsResult:
+    """What one evaluation computed: the rate the integrator wants, and the fields the monitors and the finder read.
 
     Attributes:
         rate: The time derivative of the state, in the shape of a `State`.
@@ -102,9 +102,9 @@ def speeds(state: State, geo: Geometry, eos: EquationOfState, d: Derived, faces:
     return Speeds(Theta=Theta, cE=cE, a=a, Lam=np.abs(Theta) + a)
 
 
-def stage(
+def calc_derivs(
     state: State, geo: Geometry, bg: Background, eos: EquationOfState, w: StencilWeights, outer: OuterClosure
-) -> StageResult:
+) -> DerivsResult:
     """Evaluate the semi-discrete equations once: the rate of every unknown at this time and state.
 
     Args:
@@ -183,4 +183,4 @@ def stage(
     dE[cells] = -(flux_out - flux_in) + eos.energy_source_rate * state.E[cells]
     dM_e = eos.energy_source_rate * state.M_e - 3.0 * float(F[j_e]) if j_e > 0 else 0.0
 
-    return StageResult(rate=State(E=dE, U=dU, W=rows.dW, M_e=dM_e), derived=d, speeds=sp, F=F)
+    return DerivsResult(rate=State(E=dE, U=dU, W=rows.dW, M_e=dM_e), derived=d, speeds=sp, F=F)

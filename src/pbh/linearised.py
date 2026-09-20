@@ -35,7 +35,7 @@ grid and the outer face held, which is where the paper proves it.
 import numpy as np
 
 from pbh.eos import Background, EquationOfState
-from pbh.equations import stage
+from pbh.equations import calc_derivs
 from pbh.geometry import Geometry
 from pbh.layout import Layout
 from pbh.outer import OuterClosure
@@ -72,7 +72,7 @@ def jacobian(
     scale = np.maximum(np.abs(y0), np.max(np.abs(y0)) * 1e-3)  # a floor for entries that happen to be near zero
 
     def rate(y: FloatArray) -> FloatArray:
-        return layout.pack(stage(layout.unpack(y), geo, bg, eos, w, outer).rate)
+        return layout.pack(calc_derivs(layout.unpack(y), geo, bg, eos, w, outer).rate)
 
     J = np.empty((y0.size, y0.size))
     for k in range(y0.size):
