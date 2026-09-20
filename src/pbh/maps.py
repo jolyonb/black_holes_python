@@ -107,13 +107,15 @@ class SinhStretch(Map):
 
 @dataclass(frozen=True)
 class PinnedMap(Map):
-    """`X = e^(-alpha xi) B(x)`: a static map `B` with every face pinned to a fixed physical radius (test map).
+    """`X = e^(-alpha (xi - xi_on)) B(x)`: a static map `B`, every face pinned to a fixed physical radius from `xi_on`.
 
-    The physical areal radius is `Rbar = e^(alpha xi) X` in units of `R_H`, so on this map `Rbar = B(x)` at every
-    time: the faces stand still in physical radius while the background expands through them, contracting in the
-    scaled coordinate at `d_xi X = -alpha X`. That is what the grid must do next to a black hole, whose radius is fixed
-    in physical units while a comoving grid would run away from it, and the post-formation map of Section 8.1 is
-    exactly this map inside its transition and the static `B` outside, joined by a smooth step.
+    The physical areal radius is `Rbar = e^(alpha xi) X` in units of `R_H`, so on this map `Rbar = e^(alpha xi_on)
+    B(x)` at every time: from the pin-on time `xi_on` the faces stand still in physical radius while the background
+    expands through them, contracting in the scaled coordinate at `d_xi X = -alpha X`. At `xi_on` the map coincides
+    with its base, `X = B(x)`, so a state on the base carries over unchanged when the pin is switched on. That is what
+    the grid must do next to a black hole, whose radius is fixed in physical units while a comoving grid would run
+    away from it, and the post-formation map of Section 8.1 is exactly this map inside its transition and the static
+    `B` outside, joined by a smooth step (with the ramp `T` of eq:numbh:map in place of `xi - xi_on`).
 
     On its own it is a test map only, because it moves the outer face, which Section 8.1 forbids: the outer rows of
     Section 7.5 are written for `(d_xi X)_N = 0`, and the energy estimate of Section 7.4 fails at a moving outer face
@@ -124,10 +126,12 @@ class PinnedMap(Map):
     Attributes:
         base: The static map `B` being pinned, `IdentityMap()` or a `SinhStretch`.
         alpha: The scale-factor exponent `alpha = 2 / (3 (1 + w))` of the fluid.
+        xi_on: The time from which the faces are pinned; the map is its base there.
     """
 
     base: Map
     alpha: float
+    xi_on: float = 0.0
 
     def __post_init__(self) -> None:
         """Only a static map can be pinned; pinning a moving one would compound two motions."""
@@ -140,8 +144,8 @@ class PinnedMap(Map):
         return False
 
     def at(self, xi: float, x: FloatArray) -> MapValues:
-        """`X = e^(-alpha xi) B(x)`, `d_xi X = -alpha X`, `d_x X = e^(-alpha xi) B'(x)`."""
+        """`X = e^(-alpha (xi - xi_on)) B(x)`, `d_xi X = -alpha X`, `d_x X = e^(-alpha (xi - xi_on)) B'(x)`."""
         B, _, B_x = self.base.at(0.0, x)  # the base is static, so its time argument is immaterial
-        contraction = math.exp(-self.alpha * xi)
+        contraction = math.exp(-self.alpha * (xi - self.xi_on))
         X = contraction * B
         return X, -self.alpha * X, contraction * B_x

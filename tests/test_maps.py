@@ -104,17 +104,22 @@ def test_a_non_positive_stretch_scale_is_refused():
 
 
 @pytest.mark.parametrize("base", [IdentityMap(), SinhStretch(scale=2.0)])
-def test_the_pinned_map_holds_every_face_at_fixed_physical_radius(base: Map):
+@pytest.mark.parametrize("xi_on", [0.0, 3.9])
+def test_the_pinned_map_is_its_base_at_the_pin_on_time_and_holds_the_physical_radius_after(base: Map, xi_on: float):
     alpha = 0.5
-    m = PinnedMap(base, alpha=alpha)
+    m = PinnedMap(base, alpha=alpha, xi_on=xi_on)
     x = face_labels(10, 5.0)
     B, _, B_x = base.at(0.0, x)
     assert not m.is_static
-    for xi in (0.0, 0.7, 2.1):
+    X_on, X_xi_on, X_x_on = m.at(xi_on, x)
+    assert np.array_equal(X_on, B)  # the state on the base carries over unchanged at the switch
+    assert np.array_equal(X_x_on, B_x)
+    assert X_xi_on == pytest.approx(-alpha * B)  # but the faces start moving at once
+    for xi in (xi_on + 0.7, xi_on + 2.1):
         X, X_xi, X_x = m.at(xi, x)
-        assert np.exp(alpha * xi) * X == pytest.approx(B)  # Rbar = e^(alpha xi) X = B(x), constant in time
+        assert np.exp(alpha * xi) * X == pytest.approx(np.exp(alpha * xi_on) * B)  # Rbar constant in time
         assert X_xi == pytest.approx(-alpha * X)
-        assert X_x == pytest.approx(np.exp(-alpha * xi) * B_x)
+        assert X_x == pytest.approx(np.exp(-alpha * (xi - xi_on)) * B_x)
 
 
 def test_only_a_static_map_can_be_pinned():
