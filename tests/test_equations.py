@@ -1,5 +1,6 @@
 """Tests of pbh.equations and pbh.outer: FRW exactness, the telescoping mass law, reparametrisation, and the closure."""
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import numpy as np
@@ -9,14 +10,15 @@ from pbh.eos import RADIATION, Background, EquationOfState
 from pbh.equations import stage
 from pbh.geometry import Geometry
 from pbh.layout import Layout
-from pbh.maps import IdentityMap, Map, PinnedMap, SinhStretch, face_labels
+from pbh.maps import IdentityMap, Map, PinnedMap, SinhStretch
 from pbh.outer import HeldAtFrw, OuterClosure, OuterInputs, OuterRows
 from pbh.state import State, frw_rate, frw_state
 from pbh.stencils import FaceClosure, StencilWeights
 
 EOS = EquationOfState(RADIATION)
 HELD = HeldAtFrw()
-STATIC_MAPS: list[Map] = [IdentityMap(), SinhStretch(scale=2.0)]
+type Family = Callable[[float], Map]
+STATIC_FAMILIES: list[Family] = [IdentityMap, lambda R: SinhStretch(R, scale=2.0)]
 
 
 @dataclass(frozen=True)
@@ -26,8 +28,8 @@ class Setup:
     w: StencilWeights
 
     @classmethod
-    def of(cls, m: Map, N: int, x_max: float, xi: float, j_e: int = 0, closure: FaceClosure = FaceClosure.FIRST_ORDER):
-        geo = Geometry.of(*m.at(xi, face_labels(N, x_max)))
+    def of(cls, m: Map, N: int, xi: float, j_e: int = 0, closure: FaceClosure = FaceClosure.FIRST_ORDER):
+        geo = Geometry.of(*m.radii(xi, N))
         return cls(geo, Background.at(EOS, xi), StencilWeights.of(geo, Layout(N, j_e), closure))
 
     def run(self, s: State, outer: OuterClosure = HELD):
@@ -47,10 +49,10 @@ def smooth_state(su: Setup, amplitude: float = 0.02, seed: int = 0) -> State:
 # --- FRW: a fixed point on every static map, the exact solution on every moving one (Section 7.3) ---
 
 
-@pytest.mark.parametrize("m", STATIC_MAPS)
+@pytest.mark.parametrize("family", STATIC_FAMILIES)
 @pytest.mark.parametrize("j_e", [0, 4])
-def test_frw_is_a_fixed_point_on_a_static_map(m: Map, j_e: int):
-    su = Setup.of(m, 40, 6.0, xi=0.8, j_e=j_e)
+def test_frw_is_a_fixed_point_on_a_static_map(family: Family, j_e: int):
+    su = Setup.of(family(6.0), 40, xi=0.8, j_e=j_e)
     r = su.run(frw_state(su.geo, j_e)).rate
     lay = su.w.layout
     assert np.max(np.abs(r.E[lay.cells])) < 1e-12 * np.max(su.geo.dV)
@@ -62,11 +64,11 @@ def test_frw_is_a_fixed_point_on_a_static_map(m: Map, j_e: int):
         assert abs(r.M_e) < 1e-12 * su.geo.X[j_e] ** 3  # (2 - 3 alpha) X_e^3 - 3 alpha w X_e^3 cancels to round-off
 
 
-@pytest.mark.parametrize("base", STATIC_MAPS)
+@pytest.mark.parametrize("family", STATIC_FAMILIES)
 @pytest.mark.parametrize("j_e", [0, 4])
-def test_frw_is_the_exact_solution_on_a_moving_map(base: Map, j_e: int):
-    m = PinnedMap(base, alpha=float(EOS.alpha), xi_on=0.3)
-    su = Setup.of(m, 40, 6.0, xi=0.8, j_e=j_e)
+def test_frw_is_the_exact_solution_on_a_moving_map(family: Family, j_e: int):
+    m = PinnedMap(family(6.0), alpha=float(EOS.alpha), xi_on=0.3)
+    su = Setup.of(m, 40, xi=0.8, j_e=j_e)
     r = su.run(frw_state(su.geo, j_e)).rate
     expected = frw_rate(su.geo, j_e)
     lay = su.w.layout
@@ -76,7 +78,7 @@ def test_frw_is_the_exact_solution_on_a_moving_map(base: Map, j_e: int):
 
 
 def test_on_frw_the_flux_and_face_fields_have_their_printed_values():
-    su = Setup.of(SinhStretch(scale=2.0), 20, 4.0, xi=0.8)
+    su = Setup.of(SinhStretch(4.0, scale=2.0), 20, xi=0.8)
     res = su.run(frw_state(su.geo))
     X, alpha, w = su.geo.X, float(EOS.alpha), float(EOS.w)
     assert res.F == pytest.approx(alpha * w * X**3, rel=1e-13)  # F_j = alpha w X_j^3 - X_j^2 (d_xi X)_j, static map
@@ -89,10 +91,10 @@ def test_on_frw_the_flux_and_face_fields_have_their_printed_values():
 # --- the mass law telescopes: d_xi M_j = (2 - 3 alpha) M_j - 3 F_j at every retained face (Section 8.3) ---
 
 
-@pytest.mark.parametrize("m", STATIC_MAPS)
+@pytest.mark.parametrize("family", STATIC_FAMILIES)
 @pytest.mark.parametrize("j_e", [0, 4])
-def test_the_cumulative_mass_obeys_the_face_mass_law_at_every_retained_face(m: Map, j_e: int):
-    su = Setup.of(m, 40, 6.0, xi=0.8, j_e=j_e)
+def test_the_cumulative_mass_obeys_the_face_mass_law_at_every_retained_face(family: Family, j_e: int):
+    su = Setup.of(family(6.0), 40, xi=0.8, j_e=j_e)
     s = smooth_state(su)
     res = su.run(s)
     lay = su.w.layout
@@ -107,7 +109,7 @@ def test_the_cumulative_mass_obeys_the_face_mass_law_at_every_retained_face(m: M
 
 def test_the_total_energy_bookkeeping_is_exact():
     # Summing the energy rows: d_xi sum E = (2 - 3 alpha) sum E - F_N + F_{j_e} (Section 7.2 with the excised face).
-    su = Setup.of(SinhStretch(scale=2.0), 40, 6.0, xi=0.8, j_e=4)
+    su = Setup.of(SinhStretch(6.0, scale=2.0), 40, xi=0.8, j_e=4)
     s = smooth_state(su)
     res = su.run(s)
     cells = su.w.layout.cells
@@ -116,42 +118,23 @@ def test_the_total_energy_bookkeeping_is_exact():
     assert total == pytest.approx(expected, rel=1e-12)
 
 
-# --- reparametrisation: the scheme sees only the face radii, never the labels (Section 7.1) ---
-
-
-def test_relabelling_the_grid_with_the_same_face_radii_changes_nothing():
-    # The same face radii X_j, once as the identity map on labels x = X and once as a stretch whose labels differ:
-    # the geometry differs only in X_x, which the stage never reads, so the rates are bitwise identical.
-    x = face_labels(30, 5.0)
-    X, X_xi, _ = SinhStretch(scale=2.0).at(0.0, x)
-    geo_as_identity = Geometry.of(X, X_xi, np.ones_like(X))
-    geo_as_stretch = Geometry.of(X, X_xi, np.cosh(x / 2.0))
-    lay = Layout(30)
-    bg = Background.at(EOS, 0.8)
-    s = smooth_state(Setup(geo_as_identity, bg, StencilWeights.of(geo_as_identity, lay, FaceClosure.FIRST_ORDER)))
-    r1 = stage(s, geo_as_identity, bg, EOS, StencilWeights.of(geo_as_identity, lay, FaceClosure.FIRST_ORDER), HELD)
-    r2 = stage(s, geo_as_stretch, bg, EOS, StencilWeights.of(geo_as_stretch, lay, FaceClosure.FIRST_ORDER), HELD)
-    assert np.array_equal(r1.rate.E, r2.rate.E)
-    assert np.array_equal(r1.rate.U[1:], r2.rate.U[1:])
-
-
 # --- the layout of the result ---
 
 
 def test_the_rate_has_nan_below_the_excision_face_and_zero_at_the_origin_velocity():
-    su = Setup.of(IdentityMap(), 20, 4.0, xi=0.8, j_e=3)
+    su = Setup.of(IdentityMap(4.0), 20, xi=0.8, j_e=3)
     r = su.run(smooth_state(su)).rate
     assert np.all(np.isnan(r.E[:3]))
     assert np.all(np.isnan(r.U[:3]))
     assert np.all(np.isfinite(r.E[3:]))
     assert np.all(np.isfinite(r.U[3:]))
-    su0 = Setup.of(IdentityMap(), 20, 4.0, xi=0.8)
+    su0 = Setup.of(IdentityMap(4.0), 20, xi=0.8)
     assert su0.run(smooth_state(su0)).rate.U[0] == 0.0
 
 
 def test_the_second_order_closure_runs_and_differs_only_at_the_excision_face():
-    su1 = Setup.of(SinhStretch(scale=2.0), 30, 5.0, xi=0.8, j_e=5, closure=FaceClosure.FIRST_ORDER)
-    su2 = Setup.of(SinhStretch(scale=2.0), 30, 5.0, xi=0.8, j_e=5, closure=FaceClosure.SECOND_ORDER)
+    su1 = Setup.of(SinhStretch(5.0, scale=2.0), 30, xi=0.8, j_e=5, closure=FaceClosure.FIRST_ORDER)
+    su2 = Setup.of(SinhStretch(5.0, scale=2.0), 30, xi=0.8, j_e=5, closure=FaceClosure.SECOND_ORDER)
     s = smooth_state(su1)
     r1, r2 = su1.run(s), su2.run(s)
     assert r1.rate.U[5] != r2.rate.U[5]
@@ -167,7 +150,7 @@ def test_the_second_order_closure_runs_and_differs_only_at_the_excision_face():
 
 
 def test_the_held_face_follows_the_map_and_uses_the_base_flux():
-    su = Setup.of(PinnedMap(SinhStretch(scale=2.0), alpha=0.5), 20, 4.0, xi=0.8)
+    su = Setup.of(PinnedMap(SinhStretch(4.0, scale=2.0), alpha=0.5), 20, xi=0.8)
     s = smooth_state(su)
     res = su.run(s)
     N = 20
@@ -188,7 +171,7 @@ class RecordingClosure(OuterClosure):
 
 
 def test_the_stage_hands_the_closure_the_face_n_quantities_and_uses_its_rows():
-    su = Setup.of(SinhStretch(scale=2.0), 20, 4.0, xi=0.8)
+    su = Setup.of(SinhStretch(4.0, scale=2.0), 20, xi=0.8)
     s = smooth_state(su)
     closure = RecordingClosure(seen=[])
     res = su.run(s, closure)

@@ -1,23 +1,25 @@
 """The exact geometry of the cells (paper Section 7.2, eq:num:geom, and the geometry rows of Table tab:num:layout).
 
-Three radial coordinates appear in the code, and only the first two appear in this module:
+Two radial coordinates appear in the code:
 
-* The label `x`: the coordinate the grid is uniform in. Faces sit at `x_j = j h`, `j = 0..N`, with `h = x_max / N`.
-  It is pure bookkeeping; the scheme contains no `h` except in the Courant number.
-* The scaled areal radius `X = Rtilde = R / (a R_H)`: the areal radius of a face in units of the comoving Hubble
-  radius, the coordinate every field and stencil of Section 7 is written in. The map of Section 7.1, `X(xi, x)`,
-  gives each face its `X_j` analytically, together with `(d_xi X)_j` (how fast the face moves) and `(d_x X)_j`
-  (the Jacobian). Before BH formation the map is the identity, `X = x`; after it the map pins the faces near the hole.
+* The scaled areal radius `X = Rtilde = R / (a R_H)`: the areal radius in units of the comoving Hubble radius, the
+  coordinate every field and stencil of Section 7 is written in. A map (`maps.py`) gives each face its `X_j`
+  analytically, together with `(d_xi X)_j`, how fast the face moves. Before formation the map is static; after it the
+  map pins the faces near the hole. Its FRW values are everything: the FRW velocity is `X_j`, the FRW mass is `X_j^3`,
+  the FRW cell energy is `dV_c`. The outer face sits at `X_N = Rtilde_max`, a constant of the run.
 * The physical areal radius `R = a R_H X`: what an observer measures. It appears only in the horizon mass and the
   read-out, never in the scheme.
 
+(The paper also carries a continuous label `x` with faces at `x_j = j h`; the code numbers the faces and lets the map
+say where they are, which is the same thing with one coordinate fewer. Nothing in the scheme differences in the
+label.)
+
 The layout, with `N` cells (here `N = 4`):
 
-    label x      0        h        2h       3h       4h = x_max   5h
+    face j       0        1        2        3        4 = N        (5: virtual face)
                  |--------|--------|--------|--------|- - - - - - -|
-    face j       0        1        2        3        4            (5: virtual face)
     cell c           0        1        2        3          (4: virtual cell)
-    radius X    X_0 = 0   X_1      X_2      X_3      X_4          X_5
+    radius X    X_0 = 0   X_1      X_2      X_3      X_4 = Rtilde_max   X_5
 
 Face `0` is the origin, where `X_0 = 0` exactly; face `N` is the outer boundary. Cells are numbered by their inner
 face: cell `c` is the shell between faces `c` and `c + 1`, so at face `j` the cell outside is `j` and the cell inside
@@ -28,11 +30,10 @@ of `s = X^2` over the shell, `int X^4 dX / int X^2 dX`. An even field is a smoot
 average is its point value at `sbar_c` to second order, and exactly when the field is linear in `s`; neither the
 midpoint nor the volume centroid has that property (Section 7.2).
 
-The virtual cell beyond the boundary, between the outer face and one more label step, holds no field; it exists only so
-that the difference of mean-square radii across face `N`, `dS_N`, is defined like every other, and the map is evaluated
-at its outer face too.
+The virtual cell beyond the boundary, between the outer face and one more face the map supplies, holds no field; it
+exists only so that the difference of mean-square radii across face `N`, `dS_N`, is defined like every other.
 
-Array indexing follows the picture. Face arrays (`X`, `X_xi`, `X_x`, `dS`) have `N + 1` entries indexed by `j`; cell
+Array indexing follows the picture. Face arrays (`X`, `X_xi`, `dS`) have `N + 1` entries indexed by `j`; cell
 arrays (`dV`, `dV_xi`, `dX`, `Xm`) have `N` entries indexed by `c`; `sbar` is a cell array with the virtual cell
 appended as entry `N`. An entry that is not a thing (`dS_0`, since no gradient is formed at the origin) is NaN and is
 never read. The same convention carries over to the fields in `layout.py`.
@@ -53,14 +54,12 @@ from pbh.types import FloatArray
 class Geometry:
     """The map at the faces and the exact cell geometry built from it, at one time.
 
-    Build it with `Geometry.of(X, X_xi, X_x)` from the map evaluated at the `N + 2` labels `x_0 .. x_{N+1}`, the last
-    being the virtual face beyond the outer boundary.
+    Build it with `Geometry.of(X, X_xi)` from the map evaluated at the `N + 2` faces `0 .. N+1`, the last being the
+    virtual face beyond the outer boundary.
 
     Attributes:
         X: The scaled areal radius `X_j` of face `j` (faces `0..N`); `X_0 = 0` exactly.
-        X_xi: The velocity of the face, `(d_xi X)_j` at fixed label (faces `0..N`); zero on a static map.
-        X_x: The Jacobian of the map, `(d_x X)_j` (faces `0..N`); it enters the scheme only through the Courant
-            number (eq:num:cfl) and the outer cell width.
+        X_xi: The velocity of the face, `(d_xi X)_j` at fixed face number (faces `0..N`); zero on a static map.
         dV: The shell volume `Delta V_c = int_cell X^2 dX` (cells `0..N-1`), the FRW value of the cell energy. There is
             no `4 pi`: the tilde variables absorb it (`mtilde = m / ((4 pi / 3) rho_b R^3)`, eq:newvariablesm), which is
             why the cumulative mass is `M_j = 3 sum_{i<j} E_i` with FRW value `X_j^3` and no `4 pi` appears anywhere.
@@ -78,7 +77,6 @@ class Geometry:
 
     X: FloatArray
     X_xi: FloatArray
-    X_x: FloatArray
     dV: FloatArray
     dV_xi: FloatArray
     sbar: FloatArray
@@ -92,14 +90,13 @@ class Geometry:
         return self.dV.shape[0]
 
     @classmethod
-    def of(cls, X: FloatArray, X_xi: FloatArray, X_x: FloatArray) -> Self:
+    def of(cls, X: FloatArray, X_xi: FloatArray) -> Self:
         """Build the geometry from the map evaluated at the faces and the virtual face beyond the boundary.
 
         Args:
-            X: `X_j` at the `N + 2` labels `x_0 .. x_{N+1}`; `X_0` must be exactly zero and the radii strictly
-                increasing (the admissibility conditions of the map, Section 7.1).
-            X_xi: `(d_xi X)_j` at the same labels.
-            X_x: `(d_x X)_j` at the same labels.
+            X: `X_j` at the `N + 2` faces `0 .. N+1`; `X_0` must be exactly zero and the radii strictly increasing
+                (the admissibility conditions of the map, Section 7.1).
+            X_xi: `(d_xi X)_j` at the same faces.
 
         Returns:
             The `Geometry` for the `N` cells, with `sbar` carrying the virtual cell as well.
@@ -129,7 +126,6 @@ class Geometry:
         return cls(
             X=X[:-1],
             X_xi=X_xi[:-1],
-            X_x=X_x[:-1],
             dV=dV_all[:-1],
             dV_xi=dV_xi,
             sbar=sbar_all,

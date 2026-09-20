@@ -5,7 +5,7 @@ import pytest
 
 from pbh.geometry import Geometry
 from pbh.layout import Layout
-from pbh.maps import IdentityMap, PinnedMap, SinhStretch, face_labels
+from pbh.maps import IdentityMap, Map, PinnedMap, SinhStretch
 from pbh.state import State, frw_rate, frw_state, is_finite
 
 N = 6
@@ -114,9 +114,9 @@ def test_is_finite_looks_only_at_the_retained_entries(j_e: int):
 # --- the FRW state and rate ---
 
 
-@pytest.mark.parametrize("m", [IdentityMap(), SinhStretch(scale=2.0)])
-def test_the_frw_state_on_a_static_map_has_the_printed_values_and_no_rate(m: IdentityMap | SinhStretch):
-    geo = Geometry.of(*m.at(0.0, face_labels(N, 3.0)))
+@pytest.mark.parametrize("m", [IdentityMap(3.0), SinhStretch(3.0, scale=2.0)])
+def test_the_frw_state_on_a_static_map_has_the_printed_values_and_no_rate(m: Map):
+    geo = Geometry.of(*m.radii(0.0, N))
     s = frw_state(geo, j_e=2)
     assert np.array_equal(s.E, geo.dV)
     assert np.array_equal(s.U, geo.X)
@@ -131,9 +131,8 @@ def test_the_frw_state_on_a_static_map_has_the_printed_values_and_no_rate(m: Ide
 
 def test_the_frw_rate_on_the_pinned_map_is_the_exact_derivative():
     alpha = 0.5
-    m = PinnedMap(SinhStretch(scale=2.0), alpha=alpha)
-    x = face_labels(N, 3.0)
-    geo = Geometry.of(*m.at(0.7, x))
+    m = PinnedMap(SinhStretch(3.0, scale=2.0), alpha=alpha)
+    geo = Geometry.of(*m.radii(0.7, N))
     r = frw_rate(geo, j_e=2)
     # Every radius scales as e^(-alpha xi): dV as e^(-3 alpha xi), X as e^(-alpha xi), X_e^3 as e^(-3 alpha xi).
     assert r.E == pytest.approx(-3.0 * alpha * geo.dV, rel=1e-14)
@@ -141,13 +140,13 @@ def test_the_frw_rate_on_the_pinned_map_is_the_exact_derivative():
     assert r.M_e == pytest.approx(-3.0 * alpha * geo.X[2] ** 3, rel=1e-14)
     # And it is the central difference of the FRW state in time.
     eps = 1e-6
-    later = frw_state(Geometry.of(*m.at(0.7 + eps, x)), j_e=2)
-    earlier = frw_state(Geometry.of(*m.at(0.7 - eps, x)), j_e=2)
+    later = frw_state(Geometry.of(*m.radii(0.7 + eps, N)), j_e=2)
+    earlier = frw_state(Geometry.of(*m.radii(0.7 - eps, N)), j_e=2)
     assert r.E == pytest.approx((later.E - earlier.E) / (2 * eps), rel=1e-8)
     assert r.M_e == pytest.approx((later.M_e - earlier.M_e) / (2 * eps), rel=1e-8)
 
 
 def test_the_deviation_of_frw_from_itself_is_the_zero_vector():
-    geo = Geometry.of(*SinhStretch(scale=2.0).at(0.0, face_labels(N, 3.0)))
+    geo = Geometry.of(*SinhStretch(3.0, scale=2.0).radii(0.0, N))
     lay = Layout(N, j_e=1)
     assert np.all(lay.pack(frw_state(geo, lay.j_e)) - lay.pack(frw_state(geo, lay.j_e)) == 0.0)

@@ -8,10 +8,9 @@ import numpy as np
 import pytest
 
 from pbh.geometry import Geometry
-from pbh.types import FloatArray
+from pbh.maps import IdentityMap, MapValues, SinhStretch
 
-type MapAtFaces = tuple[FloatArray, FloatArray, FloatArray]
-type MakeMap = Callable[[int, float], MapAtFaces]
+type MakeMap = Callable[[int, float], MapValues]
 
 # --- exact integrals: the printed forms of eq:num:geom equal int X^2 dX and int X^4 dX / int X^2 dX ---
 
@@ -39,7 +38,7 @@ def one_shell(a: Fraction, b: Fraction) -> Geometry:
         if a != 0
         else np.array([0.0, float(b), 2 * float(b)])
     )
-    return Geometry.of(X, np.zeros_like(X), np.ones_like(X))
+    return Geometry.of(X, np.zeros_like(X))
 
 
 @pytest.mark.parametrize(("a", "b"), RATIONAL_SHELLS)
@@ -61,18 +60,14 @@ def test_a_field_linear_in_s_has_its_shell_average_at_sbar_exactly(a: Fraction, 
 # --- the assembled geometry on a grid ---
 
 
-def identity_map(N: int, x_max: float) -> MapAtFaces:
-    """X = x at the N + 2 labels 0 .. (N + 1) h: the pre-formation map, static."""
-    X = np.linspace(0.0, x_max, N + 1)
-    X = np.append(X, X[-1] + X[1])
-    return X, np.zeros_like(X), np.ones_like(X)
+def identity_map(N: int, Rtilde_max: float) -> MapValues:
+    """Faces uniform in the radius out to Rtilde_max, plus the virtual face: static."""
+    return IdentityMap(Rtilde_max).radii(0.0, N)
 
 
-def sinh_map(N: int, x_max: float) -> MapAtFaces:
-    """X = 3 sinh(x / 3), the static stretch the paper verifies FRW on (Section 7.3)."""
-    x = np.linspace(0.0, x_max, N + 1)
-    x = np.append(x, x[-1] + x[1])
-    return 3.0 * np.sinh(x / 3.0), np.zeros_like(x), np.cosh(x / 3.0)
+def sinh_map(N: int, Rtilde_max: float) -> MapValues:
+    """The sinh stretch with L = 3, the family the paper verifies FRW on (Section 7.3): static."""
+    return SinhStretch(Rtilde_max, scale=3.0).radii(0.0, N)
 
 
 @pytest.mark.parametrize("make_map", [identity_map, sinh_map])
@@ -80,7 +75,7 @@ def test_shapes_and_the_two_conventions(make_map: MakeMap):
     N = 8
     geo = Geometry.of(*make_map(N, 4.0))
     assert geo.N == N
-    assert geo.X.shape == geo.X_xi.shape == geo.X_x.shape == (N + 1,)
+    assert geo.X.shape == geo.X_xi.shape == (N + 1,)
     assert geo.dV.shape == geo.dV_xi.shape == geo.dX.shape == geo.Xm.shape == (N,)
     assert geo.sbar.shape == (N + 1,)  # the virtual outer cell rides along
     assert geo.dS.shape == (N + 1,)
@@ -94,15 +89,15 @@ def test_shapes_and_the_two_conventions(make_map: MakeMap):
 @pytest.mark.parametrize("make_map", [identity_map, sinh_map])
 def test_the_virtual_cell_enters_only_through_dS_at_the_outer_face(make_map: MakeMap):
     N = 8
-    X, X_xi, X_x = make_map(N, 4.0)
-    geo = Geometry.of(X, X_xi, X_x)
+    X, X_xi = make_map(N, 4.0)
+    geo = Geometry.of(X, X_xi)
     a, b = Fraction(X[-2]), Fraction(X[-1])
     assert geo.sbar[N] == pytest.approx(float(exact_mean_square_radius(a, b)), rel=1e-14)
     assert geo.dS[N] == geo.sbar[N] - geo.sbar[N - 1]
     # Nothing else changes if the virtual face moves.
     X_moved = X.copy()
     X_moved[-1] *= 1.5
-    geo_moved = Geometry.of(X_moved, X_xi, X_x)
+    geo_moved = Geometry.of(X_moved, X_xi)
     for name in ("X", "dV", "dV_xi", "dX", "Xm"):
         assert np.array_equal(getattr(geo, name), getattr(geo_moved, name))
     assert np.array_equal(geo.sbar[:-1], geo_moved.sbar[:-1])
@@ -135,8 +130,8 @@ def test_the_volume_rate_on_a_self_similar_moving_map_is_exact():
     # On X = e^(-alpha xi) x every radius scales together, so Delta V scales as e^(-3 alpha xi) and
     # d_xi Delta V = -3 alpha Delta V exactly.
     alpha = 0.5
-    X, _, X_x = sinh_map(50, 6.0)
-    geo = Geometry.of(X, -alpha * X, X_x)
+    X, _ = sinh_map(50, 6.0)
+    geo = Geometry.of(X, -alpha * X)
     assert geo.dV_xi == pytest.approx(-3.0 * alpha * geo.dV, rel=1e-14)
 
 
@@ -146,17 +141,17 @@ def test_a_static_map_has_no_volume_rate():
 
 
 def test_the_midpoint_and_width_are_what_they_say():
-    X, X_xi, X_x = sinh_map(5, 2.0)
-    geo = Geometry.of(X, X_xi, X_x)
+    X, X_xi = sinh_map(5, 2.0)
+    geo = Geometry.of(X, X_xi)
     assert np.array_equal(geo.dX, X[1:-1] - X[:-2])
     assert np.array_equal(geo.Xm, 0.5 * (X[1:-1] + X[:-2]))
 
 
 def test_an_inadmissible_map_is_refused():
-    X, X_xi, X_x = identity_map(4, 1.0)
+    X, X_xi = identity_map(4, 1.0)
     with pytest.raises(ValueError, match="X_0 = 0"):
-        Geometry.of(X + 1e-3, X_xi, X_x)
+        Geometry.of(X + 1e-3, X_xi)
     X_folded = X.copy()
     X_folded[2] = X_folded[3]
     with pytest.raises(ValueError, match="increase strictly"):
-        Geometry.of(X_folded, X_xi, X_x)
+        Geometry.of(X_folded, X_xi)

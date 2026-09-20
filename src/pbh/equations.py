@@ -31,7 +31,8 @@ gradient `0`, `M_j = X_j^3`, `F_j = alpha w X_j^3 - X_j^2 (d_xi X)_j`, and the r
 and `(d_xi X)_j`, so FRW is a fixed point on every static map and the exact solution on every moving one; the
 constraint holds by construction, since the mass is the cumulative sum; the cumulative mass at every retained face
 obeys `d_xi M_j = (2 - 3 alpha) M_j - 3 F_j` because the energy rows telescope into the face-mass row; and the
-scheme contains neither `h` nor `d_x X`, so a relabelling of the grid that keeps the face radii changes nothing.
+scheme knows nothing about how the faces were placed, only where they are, so two maps with the same face radii give
+the same rates.
 
 The velocity at face `0` is not an unknown; its rate is reported as zero. The face-mass row exists only once cells
 are excised. Indexing and the NaN convention are those of `layout.py`.

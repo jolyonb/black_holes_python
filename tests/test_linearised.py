@@ -9,7 +9,7 @@ from pbh.eos import RADIATION, Background, EquationOfState
 from pbh.geometry import Geometry
 from pbh.layout import Layout
 from pbh.linearised import energy_norm, jacobian, mass_perturbation, relative_scaling
-from pbh.maps import IdentityMap, Map, SinhStretch, face_labels
+from pbh.maps import IdentityMap, Map, SinhStretch
 from pbh.outer import HeldAtFrw
 from pbh.state import frw_state
 from pbh.stencils import FaceClosure, StencilWeights
@@ -18,12 +18,12 @@ from pbh.types import FloatArray
 type ComplexArray = np.ndarray[tuple[int], np.dtype[np.complex128]]
 
 HELD = HeldAtFrw()
-MAPS: list[Map] = [IdentityMap(), SinhStretch(scale=2.0)]
+MAPS: list[Map] = [IdentityMap(4.0), SinhStretch(4.0, scale=2.0)]
 
 
-def linearise_about_frw(m: Map, eos: EquationOfState, N: int = 24, x_max: float = 4.0, xi: float = 0.5):
+def linearise_about_frw(m: Map, eos: EquationOfState, N: int = 24, xi: float = 0.5):
     """The operator L in the relative variables about FRW, with the geometry and background it was built on."""
-    geo = Geometry.of(*m.at(xi, face_labels(N, x_max)))
+    geo = Geometry.of(*m.radii(xi, N))
     bg = Background.at(eos, xi)
     lay = Layout(N)
     w = StencilWeights.of(geo, lay, FaceClosure.FIRST_ORDER)
@@ -43,7 +43,7 @@ def interior(L: FloatArray, N: int) -> FloatArray:
 
 
 def test_the_jacobian_is_insensitive_to_its_step():
-    geo = Geometry.of(*SinhStretch(scale=2.0).at(0.5, face_labels(16, 3.0)))
+    geo = Geometry.of(*SinhStretch(3.0, scale=2.0).radii(0.5, 16))
     eos = EquationOfState(RADIATION)
     bg, lay = Background.at(eos, 0.5), Layout(16)
     w = StencilWeights.of(geo, lay, FaceClosure.FIRST_ORDER)
@@ -55,7 +55,7 @@ def test_the_jacobian_is_insensitive_to_its_step():
 
 
 def test_the_relative_scaling_and_the_mass_map_are_the_printed_definitions():
-    geo = Geometry.of(*IdentityMap().at(0.0, face_labels(6, 3.0)))
+    geo = Geometry.of(*IdentityMap(3.0).radii(0.0, 6))
     lay = Layout(6)
     T = relative_scaling(geo, lay)
     assert np.array_equal(T[:6], 1.0 / geo.dV)
@@ -69,7 +69,7 @@ def test_the_relative_scaling_and_the_mass_map_are_the_printed_definitions():
 
 
 def test_the_relative_variables_need_the_unexcised_grid_and_the_norm_needs_radiation():
-    geo = Geometry.of(*IdentityMap().at(0.0, face_labels(6, 3.0)))
+    geo = Geometry.of(*IdentityMap(3.0).radii(0.0, 6))
     with pytest.raises(ValueError, match="unexcised"):
         relative_scaling(geo, Layout(6, j_e=2))
     dust_like = EquationOfState(RADIATION / 2)
@@ -154,7 +154,7 @@ def sorted_complex(z: ComplexArray) -> ComplexArray:
 @pytest.mark.parametrize("w", [RADIATION, RADIATION / 2, 2 * RADIATION])
 def test_the_spectrum_has_the_isolated_eigenvalue_and_is_symmetric_about_the_printed_real_part(w: Fraction):
     eos = EquationOfState(w)
-    L, _, _, lay = linearise_about_frw(IdentityMap(), eos)
+    L, _, _, lay = linearise_about_frw(IdentityMap(4.0), eos)
     alpha = float(eos.alpha)
     lam = np.linalg.eigvals(interior(L, lay.N)).astype(np.complex128)
     isolated = 2.0 - 3.0 * alpha  # the total mass perturbation, which evolves alone
@@ -170,7 +170,7 @@ def test_the_oscillatory_wavenumbers_are_those_of_the_discrete_radial_laplacian(
     # eq:num:spectrum: the pair for each n has (lambda - (3 - 5 alpha) / 2)^2 = ((1 - alpha) / 2)^2 + alpha
     # - c_s^2 k_n^2, with k_n^2 the eigenvalues of -A_Urho A_rhoU, the Laplacian the same differences define.
     eos = EquationOfState(RADIATION)
-    L, geo, bg, lay = linearise_about_frw(IdentityMap(), eos)
+    L, geo, bg, lay = linearise_about_frw(IdentityMap(4.0), eos)
     N, alpha = lay.N, float(eos.alpha)
     lam = np.linalg.eigvals(interior(L, N))
     lam = np.delete(lam, np.argmin(np.abs(lam - (2.0 - 3.0 * alpha))))
@@ -187,7 +187,7 @@ def test_the_sawtooth_is_the_stiffest_direction_not_a_null_one():
     # 2 c_s / min_c Delta X_c, independently of N, and its singular vectors are the sawtooths.
     eos = EquationOfState(RADIATION)
     for N in (16, 32, 64):
-        geo = Geometry.of(*IdentityMap().at(0.5, face_labels(N, 4.0)))
+        geo = Geometry.of(*IdentityMap(4.0).radii(0.5, N))
         bg = Background.at(eos, 0.5)
         A = acoustic_operator(geo, bg, N)
         h = np.concatenate((2.25 * bg.c_s**2 * geo.dV, 0.5 * geo.X[1:N] ** 3 * geo.dS[1:N]))
@@ -203,6 +203,6 @@ def test_the_sawtooth_is_the_stiffest_direction_not_a_null_one():
 def test_no_eigenvalue_of_the_held_face_operator_grows_faster_than_the_growing_mode():
     # With the face held the bound is ||delta y|| <= e^xi ||delta y(0)||: no eigenvalue has real part above 1.
     eos = EquationOfState(RADIATION)
-    L, _, _, lay = linearise_about_frw(SinhStretch(scale=2.0), eos)
+    L, _, _, lay = linearise_about_frw(SinhStretch(4.0, scale=2.0), eos)
     lam = np.linalg.eigvals(interior(L, lay.N))
     assert np.max(lam.real) <= 1.0 + 1e-8
