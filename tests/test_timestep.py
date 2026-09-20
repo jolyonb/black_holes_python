@@ -6,9 +6,10 @@ from fractions import Fraction
 
 import numpy as np
 import pytest
-from modes import J1_ZEROS, BesselMode
+from modes import J1_ZEROS, BesselMode, mode_errors
 
 from pbh.eos import RADIATION, Background, EquationOfState
+from pbh.kernels import CENTRED_SCHEME
 from pbh.layout import Layout
 from pbh.maps import IdentityMap, Map, PinnedMap, SinhStretch
 from pbh.outer import HeldAtFrw
@@ -33,7 +34,7 @@ EOS = EquationOfState(RADIATION)
 
 
 def scheme(m: Map, N: int, j_e: int = 0) -> Scheme:
-    return Scheme(EOS, m, Layout(N, j_e), FaceClosure.FIRST_ORDER, HeldAtFrw())
+    return Scheme(EOS, m, Layout(N, j_e), FaceClosure.FIRST_ORDER, HeldAtFrw(), CENTRED_SCHEME)
 
 
 # --- the tableaux: order conditions, and the stability polynomials on y' = lambda y ---
@@ -223,33 +224,11 @@ def test_the_step_cap_has_the_printed_values():
 # --- convergence on the exact Bessel modes (Section 7.3; tab:num:tests row 2, base scheme) ---
 
 
-def mode_errors(m: Map, k_index: int, N: int, xi_end: float = 1.0) -> tuple[float, float]:
-    """The L1 errors of the cell contents and the face velocities after evolving a mode from xi = 0 to xi_end."""
-    X_N = float(m.radii(0.0, N)[0][N])
-    # Small enough that the scheme's nonlinear response, of relative order B, stays below the truncation error
-    # being measured (at B = 1e-4 it floors the density error near 1e-5 and the rates fall off).
-    mode = BesselMode(k=J1_ZEROS[k_index] / X_N, B=1e-6)
-    sch = Scheme(EOS, m, Layout(N), FaceClosure.FIRST_ORDER, HeldAtFrw())
-    geo = sch.frame(0.0).geo
-    xi = 0.0
-    dy = sch.layout.pack(mode.state(Background.at(EOS, 0.0), geo)) - sch.frw(0.0)
-    while xi < xi_end - 1e-12:
-        res = sch.evaluate(xi, sch.frw(xi) + dy)
-        dxi = min(courant_step(res, geo, sch.layout, COURANT_NUMBER), xi_end - xi)
-        dy = advance(sch, Integrator.RK4, xi, dy, dxi)
-        xi += dxi
-    final = sch.layout.unpack(sch.frw(xi) + dy)
-    exact = mode.state(Background.at(EOS, xi), geo)
-    err_E = np.sum(np.abs(final.E - exact.E)) / np.sum(np.abs(exact.E - geo.dV))
-    err_U = np.sum(np.abs(final.U[1:] - exact.U[1:])) / np.sum(np.abs(exact.U[1:] - geo.X[1:]))
-    return err_E, err_U
-
-
 @pytest.mark.slow
 @pytest.mark.parametrize("m", [IdentityMap(2.5), SinhStretch(2.5, scale=1.5)])
 @pytest.mark.parametrize("k_index", [0, 1, 2])
 def test_the_base_scheme_converges_at_second_order_on_the_exact_bessel_modes(m: Map, k_index: int):
-    errors = [mode_errors(m, k_index, N) for N in (40, 80, 160)]
+    errors = [mode_errors(m, k_index, N, CENTRED_SCHEME) for N in (40, 80, 160)]
     for field in (0, 1):
         rates = [math.log2(errors[i][field] / errors[i + 1][field]) for i in range(2)]
         assert min(rates) > 1.9, f"field {field}, mode {k_index}: L1 rates {rates} (tab:num:tests asks >= 1.9)"
@@ -257,7 +236,7 @@ def test_the_base_scheme_converges_at_second_order_on_the_exact_bessel_modes(m: 
 
 def test_the_bessel_mode_helper_is_self_consistent():
     # The exact contents are the integral of 1 + delta_rho, and delta_U -> k/3 at the origin by continuity.
-    geo = Scheme(EOS, IdentityMap(2.5), Layout(20), FaceClosure.FIRST_ORDER, HeldAtFrw()).frame(0.0).geo
+    geo = Scheme(EOS, IdentityMap(2.5), Layout(20), FaceClosure.FIRST_ORDER, HeldAtFrw(), CENTRED_SCHEME).frame(0.0).geo
     bg = Background.at(EOS, 0.4)
     mode = BesselMode(k=J1_ZEROS[0] / 2.5, B=1e-3)
     nodes, weights = np.polynomial.legendre.leggauss(12)

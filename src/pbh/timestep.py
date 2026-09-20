@@ -39,6 +39,7 @@ import numpy as np
 from pbh.eos import Background, EquationOfState
 from pbh.equations import DerivsResult, calc_derivs
 from pbh.geometry import Geometry
+from pbh.kernels import KernelSettings
 from pbh.layout import Layout
 from pbh.maps import Map
 from pbh.outer import OuterClosure
@@ -147,6 +148,7 @@ class Scheme:
         layout: Which entries are unknowns; its `N` is the number of cells the map is evaluated for.
         closure: The excision-face closure the stencil weights are built for.
         outer: The outer closure.
+        settings: The kernel switches.
     """
 
     eos: EquationOfState
@@ -154,6 +156,7 @@ class Scheme:
     layout: Layout
     closure: FaceClosure
     outer: OuterClosure
+    settings: KernelSettings
     _static_frame: tuple[Geometry, StencilWeights] | None = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -173,7 +176,7 @@ class Scheme:
     def evaluate(self, xi: float, y: FloatArray) -> DerivsResult:
         """The time derivatives at time `xi` for the packed state `y`, with the fields they came from."""
         f = self.frame(xi)
-        return calc_derivs(self.layout.unpack(y), f.geo, f.bg, self.eos, f.w, self.outer)
+        return calc_derivs(self.layout.unpack(y), f.geo, f.bg, self.eos, f.w, self.outer, self.settings)
 
     def frw(self, xi: float) -> FloatArray:
         """The packed FRW state at time `xi`."""

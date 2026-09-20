@@ -7,6 +7,7 @@ import pytest
 
 from pbh.eos import RADIATION, Background, EquationOfState
 from pbh.geometry import Geometry
+from pbh.kernels import CENTRED_SCHEME
 from pbh.layout import Layout
 from pbh.linearised import energy_norm, jacobian, mass_perturbation, relative_scaling
 from pbh.maps import IdentityMap, Map, SinhStretch
@@ -27,7 +28,7 @@ def linearise_about_frw(m: Map, eos: EquationOfState, N: int = 24, xi: float = 0
     bg = Background.at(eos, xi)
     lay = Layout(N)
     w = StencilWeights.of(geo, lay, FaceClosure.FIRST_ORDER)
-    J = jacobian(frw_state(geo), geo, bg, eos, w, HELD)
+    J = jacobian(frw_state(geo), geo, bg, eos, w, HELD, CENTRED_SCHEME)
     T = relative_scaling(geo, lay)
     L = (T[:, None] * J) / T[None, :]  # T J T^{-1}
     return L, geo, bg, lay
@@ -48,8 +49,8 @@ def test_the_jacobian_is_insensitive_to_its_step():
     bg, lay = Background.at(eos, 0.5), Layout(16)
     w = StencilWeights.of(geo, lay, FaceClosure.FIRST_ORDER)
     s = frw_state(geo)
-    J_a = jacobian(s, geo, bg, eos, w, HELD, relative_step=1e-3)
-    J_b = jacobian(s, geo, bg, eos, w, HELD, relative_step=2e-3)
+    J_a = jacobian(s, geo, bg, eos, w, HELD, CENTRED_SCHEME, relative_step=1e-3)
+    J_b = jacobian(s, geo, bg, eos, w, HELD, CENTRED_SCHEME, relative_step=2e-3)
     # Fourth-order differences: doubling the step changes the result at the truncation level, about 1e-9 relative.
     assert np.max(np.abs(J_a - J_b)) < 1e-8 * np.max(np.abs(J_a))
 

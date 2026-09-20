@@ -1,0 +1,267 @@
+"""The shock-capturing kernels (paper Section 7.7: eq:num:recon, eq:num:hll, eq:num:jump, eq:num:qvisc).
+
+Three kernels turn the centred base scheme of `equations.py` into one that captures shocks, and they replace exactly
+two things there: the energy flux `F_j` and the artificial pressure force `Q_j`. None contains a tunable constant
+beyond `c_v = 1`, none is switched on by a detector, and all reduce to the base scheme on FRW of every map:
+
+(a) The transported density is reconstructed to both sides of every face by a piecewise-linear profile in `s = X^2`
+    with the monotonized-central limiter (eq:num:recon). The reconstruction is in `s` for the reason of Section 7.2:
+    in `X` with mirrored ghosts it would be first order at the first cells. The first and last cells take their single
+    adjacent one-sided difference, unlimited, and every face value is floored at `rho_floor`.
+(b) The energy flux is the HLL flux of the one-sided single-variable flux `F_j(rho)`, which carries the lapse of the
+    same reconstructed density and the work term of the viscous pressure (eq:num:hll). Its derivative with respect
+    to `X^2 rho` is `Theta_j`, which lies between the HLL bounds `Theta_j +- a_j`, so no donor velocity has to be
+    chosen; on FRW it is the centred flux of eq:num:energy.
+(c) The peculiar velocity `upsilon = U - X` is reconstructed to the cell midpoints from both faces with the minmod
+    limiter, and the limited jump across each cell (eq:num:jump), the full jump at a shock and `O(Delta X^2)` where the
+    flow is smooth, is fed back as a viscous pressure on the cells (eq:num:qvisc), normalised like a Rusanov term
+    with the signal speed. It enters the velocity equation as the areal force `Q_j = X_j^-2 (D_s (sbar q))_j` and the
+    energy flux through its face average `<q>_j`. The peculiar velocity is reconstructed, not `U`, because it
+    vanishes on FRW of every map and because it is what makes the momentum dissipation exactly dissipative in the
+    energy weight of Section 7.4; the velocity limiter is minmod and never a compressive one (Section 7.7). The
+    taper `q_{N-1} = 0` is the switch-off the outer closure of Section 7.5 asks for.
+
+At an excision face `j_e` (Section 8.3) the kernels add their own one-sided rows and no others: the reconstructed
+density from inside the face is the value from outside, `rho^L_je = rho^R_je`; the first retained cell's density
+slope is its single one-sided difference and the velocity slope at the face the single adjacent difference, as at
+faces `0` and `N`; the viscous pressure enters the flux with its own cell value, `<q>_je = q_je`, and its force is the
+end row `Q_je = 2 sbar_je q_je / (X_je^2 Delta X_je)`, the one-sided gradient over the half cell with `q` vanishing at
+the face, whatever the closure of the other stencils.
+
+The centred base scheme remains available as a test switch (`Kernels.CENTRED`); Section 7.4 says why it is never a
+production configuration.
+"""
+
+from dataclasses import dataclass
+from enum import Enum
+
+import numpy as np
+
+from pbh.derived import Derived
+from pbh.eos import EquationOfState
+from pbh.geometry import Geometry
+from pbh.state import State
+from pbh.stencils import StencilWeights
+from pbh.types import FloatArray
+
+
+class Kernels(Enum):
+    """Whether the shock-capturing kernels are on (production) or the centred base scheme runs (test switch)."""
+
+    PRODUCTION = "production"
+    """The three kernels of Section 7.7."""
+
+    CENTRED = "centred"
+    """The centred base flux and no artificial pressure: Section 7.3 as printed, a test switch only."""
+
+
+class DensityLimiter(Enum):
+    """The limiter of the density reconstruction (Table tab:num:params: mc recommended, minmod admissible)."""
+
+    MC = "mc"
+    """Monotonized central: monotone in two to three cells."""
+
+    MINMOD = "minmod"
+    """More diffusive by one cell per shock, but with an energy certificate everywhere (Section 7.7)."""
+
+
+@dataclass(frozen=True)
+class KernelSettings:
+    """The kernel switches of Table tab:num:params.
+
+    Attributes:
+        kernels: Production kernels, or the centred base scheme.
+        density_limiter: The limiter of the density reconstruction; the velocity limiter is minmod and not a choice.
+        c_v: The one constant of the viscous pressure, `1`.
+        rho_floor: The floor on every reconstructed face density, `1e-12`.
+    """
+
+    kernels: Kernels = Kernels.PRODUCTION
+    density_limiter: DensityLimiter = DensityLimiter.MC
+    c_v: float = 1.0
+    rho_floor: float = 1e-12
+
+
+PRODUCTION_KERNELS = KernelSettings()
+CENTRED_SCHEME = KernelSettings(kernels=Kernels.CENTRED)
+
+
+@dataclass(frozen=True)
+class KernelResult:
+    """What the kernels produce at one evaluation, for the equations and for the monitors.
+
+    Attributes:
+        rho_L: The density reconstructed to face `j` from the cell inside it (faces; NaN where not formed).
+        rho_R: The density reconstructed to face `j` from the cell outside it.
+        J: The limited jump of the peculiar velocity across each cell (cells).
+        q: The artificial viscous pressure on the cells.
+        q_f: Its face value `<q>_j`.
+        Q: Its force at the faces, the areal form of eq:num:qvisc.
+        F: The HLL energy flux through the retained faces `j < N` (face `N` is the outer closure's).
+    """
+
+    rho_L: FloatArray
+    rho_R: FloatArray
+    J: FloatArray
+    q: FloatArray
+    q_f: FloatArray
+    Q: FloatArray
+    F: FloatArray
+
+
+def minmod(*slopes: FloatArray) -> FloatArray:
+    """The minmod of two or three arrays: the one of smallest modulus where all agree in sign, zero otherwise."""
+    stacked = np.stack(slopes)
+    all_positive = np.all(stacked > 0.0, axis=0)
+    all_negative = np.all(stacked < 0.0, axis=0)
+    smallest = np.min(np.abs(stacked), axis=0)
+    return np.where(all_positive, smallest, np.where(all_negative, -smallest, 0.0))
+
+
+def reconstruct_density(
+    rho: FloatArray, geo: Geometry, w: StencilWeights, limiter: DensityLimiter, floor: float
+) -> tuple[FloatArray, FloatArray]:
+    """The density to both sides of every retained face, piecewise linear in `s = X^2` (eq:num:recon).
+
+    Args:
+        rho: The cell densities.
+        geo: The geometry.
+        w: The stencil weights, for the retained ranges.
+        limiter: mc or minmod for the interior cells.
+        floor: The floor applied to every face value.
+
+    Returns:
+        `(rho_L, rho_R)` at the faces: the value from the cell inside the face and from the cell outside it. At the
+        origin and at an excision face `rho_L = rho_R`; at the outer face `rho_R = rho_L`.
+    """
+    layout = w.layout
+    N, j_e = layout.N, layout.j_e
+    X2, sbar, dS = geo.X**2, geo.sbar, geo.dS
+    # The one-sided slopes d_j across the interior retained faces j_e+1 .. N-1, indexed by face.
+    d = np.full(N + 1, np.nan)
+    d[j_e + 1 : N] = (rho[j_e + 1 : N] - rho[j_e : N - 1]) / dS[j_e + 1 : N]
+    # The limited slope of every retained cell: the interior cells from their two faces, the first and last retained
+    # cells from their single adjacent difference, unlimited.
+    slope = np.full(N, np.nan)
+    c = np.arange(j_e + 1, N - 1)
+    d_in, d_out = d[c], d[c + 1]
+    if limiter is DensityLimiter.MC:
+        r_L = dS[c] / (sbar[c] - X2[c])
+        r_R = dS[c + 1] / (X2[c + 1] - sbar[c])
+        slope[c] = minmod(0.5 * (d_in + d_out), r_L * d_in, r_R * d_out)
+    else:
+        slope[c] = minmod(d_in, d_out)
+    slope[j_e] = d[j_e + 1]
+    slope[N - 1] = d[N - 1]
+    rho_L = np.full(N + 1, np.nan)
+    rho_R = np.full(N + 1, np.nan)
+    inside = slice(j_e, N)  # cell c is inside face c + 1 ...
+    rho_L[j_e + 1 : N + 1] = rho[inside] + slope[inside] * (X2[j_e + 1 : N + 1] - sbar[inside])
+    rho_R[j_e:N] = rho[inside] + slope[inside] * (X2[j_e:N] - sbar[inside])  # ... and outside face c
+    rho_L[j_e] = rho_R[j_e]  # nothing inside the innermost face: transmissive (F_0 = 0 anyway at the origin)
+    rho_R[N] = rho_L[N]
+    return np.maximum(rho_L, floor), np.maximum(rho_R, floor)
+
+
+def viscous_pressure(
+    state: State,
+    geo: Geometry,
+    d: Derived,
+    Lam: FloatArray,
+    eos: EquationOfState,
+    w: StencilWeights,
+    c_v: float,
+) -> tuple[FloatArray, FloatArray, FloatArray, FloatArray]:
+    """The limited velocity jump, the viscous pressure, its face value and its areal force (eq:num:jump, qvisc).
+
+    Args:
+        state: The state, for the face velocities.
+        geo: The geometry.
+        d: The derived fields, for the cell density and lapse and the face `Gammabar^2`.
+        Lam: The signal speeds `Lambda_j` at the faces.
+        eos: The equation of state.
+        w: The stencil weights.
+        c_v: The viscosity constant, `1`.
+
+    Returns:
+        `(J, q, q_f, Q)`: the jump and the pressure on the cells, the face value and the force at the faces.
+    """
+    layout = w.layout
+    N, j_e = layout.N, layout.j_e
+    X, Xm, dX = geo.X, geo.Xm, geo.dX
+    alpha, w_eos = float(eos.alpha), float(eos.w)
+    cells = layout.cells
+    # (c) The peculiar velocity, its slope in each cell, and the minmod-limited slope at each face: the single
+    # adjacent difference at the innermost retained face and at the outer face.
+    upsilon = state.U - X
+    g = np.full(N, np.nan)
+    g[cells] = (upsilon[j_e + 1 : N + 1] - upsilon[j_e:N]) / dX[cells]
+    g_f = np.full(N + 1, np.nan)
+    g_f[j_e + 1 : N] = minmod(g[j_e : N - 1], g[j_e + 1 : N])
+    g_f[j_e] = g[j_e]
+    g_f[N] = g[N - 1]
+    # The limited jump across each cell: the profiles from its two faces, evaluated at the midpoint.
+    J = np.full(N, np.nan)
+    inner, outer = slice(j_e, N), slice(j_e + 1, N + 1)
+    J[cells] = (upsilon[outer] + g_f[outer] * (Xm[cells] - X[outer])) - (
+        upsilon[inner] + g_f[inner] * (Xm[cells] - X[inner])
+    )
+    # The viscous pressure on the cells, normalised by the signal speed and the inertia factor, tapered at the edge.
+    Lam_hat = np.maximum(Lam[inner], Lam[outer])
+    Gammabar2_hat = 0.5 * (d.Gammabar2[inner] + d.Gammabar2[outer])
+    q = np.full(N, np.nan)
+    q[cells] = -0.5 * c_v * Lam_hat * (1.0 + w_eos) * d.rho[cells] / (alpha * d.ephi[cells] * Gammabar2_hat) * J[cells]
+    q[N - 1] = 0.0
+    # Its face value and its areal force: the interior stencils, and the kernels' own rows at the excision face.
+    q_f = w.face_average(q)
+    Q = np.full(N + 1, np.nan)
+    Q[j_e + 1 : N] = w.gradient_s(geo.sbar[:-1] * q)[j_e + 1 : N] / X[j_e + 1 : N] ** 2
+    if j_e > 0:
+        q_f[j_e] = q[j_e]
+        Q[j_e] = 2.0 * geo.sbar[j_e] * q[j_e] / (X[j_e] ** 2 * dX[j_e])
+    else:
+        Q[0] = 0.0  # face 0 has no velocity equation
+    return J, q, q_f, Q
+
+
+def hll_flux(
+    rho_L: FloatArray,
+    rho_R: FloatArray,
+    q_f: FloatArray,
+    state: State,
+    geo: Geometry,
+    Theta: FloatArray,
+    a: FloatArray,
+    eos: EquationOfState,
+    w: StencilWeights,
+) -> FloatArray:
+    """The HLL energy flux through the retained faces `j < N` (eq:num:hll); `F_0 = 0` at the origin.
+
+    The one-sided flux `F_j(rho) = [alpha ((1 + w) rho^(-w/(1+w)) U_j - X_j) - (d_xi X)_j] X_j^2 rho
+    + alpha (rho^(-w/(1+w)) U_j - X_j) X_j^2 <q>_j` is evaluated on each reconstructed density with the lapse of
+    that same density, and combined with the signal-speed bounds `Lambda^+ = max(Theta + a, 0)`,
+    `Lambda^- = min(Theta - a, 0)`.
+    """
+    layout = w.layout
+    N, j_e = layout.N, layout.j_e
+    faces = slice(j_e, N)  # the interior faces and the innermost one; face N belongs to the outer closure
+    X, X_xi, U = geo.X[faces], geo.X_xi[faces], state.U[faces]
+    alpha, w_eos = float(eos.alpha), float(eos.w)
+
+    def one_sided(rho: FloatArray) -> FloatArray:
+        ephi = rho**eos.lapse_exponent
+        transport = (alpha * ((1.0 + w_eos) * ephi * U - X) - X_xi) * X**2 * rho
+        work = alpha * (ephi * U - X) * X**2 * q_f[faces]
+        return transport + work
+
+    Lam_plus = np.maximum(Theta[faces] + a[faces], 0.0)
+    Lam_minus = np.minimum(Theta[faces] - a[faces], 0.0)
+    F = np.full(N + 1, np.nan)
+    F[faces] = (
+        Lam_plus * one_sided(rho_L[faces])
+        - Lam_minus * one_sided(rho_R[faces])
+        + Lam_plus * Lam_minus * X**2 * (rho_R[faces] - rho_L[faces])
+    ) / (Lam_plus - Lam_minus)
+    if j_e == 0:
+        F[0] = 0.0
+    return F

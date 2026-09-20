@@ -17,9 +17,15 @@ from dataclasses import dataclass
 import numpy as np
 from scipy.special import spherical_jn
 
-from pbh.eos import Background
+from pbh.eos import RADIATION, Background, EquationOfState
 from pbh.geometry import Geometry
+from pbh.kernels import KernelSettings
+from pbh.layout import Layout
+from pbh.maps import Map
+from pbh.outer import HeldAtFrw
 from pbh.state import State
+from pbh.stencils import FaceClosure
+from pbh.timestep import COURANT_NUMBER, Integrator, Scheme, advance, courant_step
 from pbh.types import FloatArray
 
 #: The first zeros of j_1, so that k = zero / X_N gives a mode with delta_U = 0 at the outer face.
@@ -54,3 +60,29 @@ class BesselMode:
     def state(self, bg: Background, geo: Geometry) -> State:
         """The exact state of the mode: exact cell contents and face velocities."""
         return State(E=self.cell_contents(bg, geo), U=geo.X * (1.0 + self.delta_U(bg, geo.X)), W=0.0)
+
+
+def mode_errors(m: Map, k_index: int, N: int, settings: KernelSettings, xi_end: float = 1.0) -> tuple[float, float]:
+    """The L1 errors of the cell contents and the face velocities after evolving a mode from xi = 0 to xi_end.
+
+    The mode's wavenumber is chosen so that delta_U vanishes at the outer face, where the held closure is then exact.
+    The amplitude is small enough that the scheme's nonlinear response, of relative order B, stays below the
+    truncation error being measured (at B = 1e-4 it floors the density error near 1e-5 and the rates fall off).
+    """
+    eos = EquationOfState(RADIATION)
+    X_N = float(m.radii(0.0, N)[0][N])
+    mode = BesselMode(k=J1_ZEROS[k_index] / X_N, B=1e-6)
+    sch = Scheme(eos, m, Layout(N), FaceClosure.FIRST_ORDER, HeldAtFrw(), settings)
+    geo = sch.frame(0.0).geo
+    xi = 0.0
+    dy = sch.layout.pack(mode.state(Background.at(eos, 0.0), geo)) - sch.frw(0.0)
+    while xi < xi_end - 1e-12:
+        res = sch.evaluate(xi, sch.frw(xi) + dy)
+        dxi = min(courant_step(res, geo, sch.layout, COURANT_NUMBER), xi_end - xi)
+        dy = advance(sch, Integrator.RK4, xi, dy, dxi)
+        xi += dxi
+    final = sch.layout.unpack(sch.frw(xi) + dy)
+    exact = mode.state(Background.at(eos, xi), geo)
+    err_E = float(np.sum(np.abs(final.E - exact.E)) / np.sum(np.abs(exact.E - geo.dV)))
+    err_U = float(np.sum(np.abs(final.U[1:] - exact.U[1:])) / np.sum(np.abs(exact.U[1:] - geo.X[1:])))
+    return err_E, err_U

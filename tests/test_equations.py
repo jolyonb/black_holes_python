@@ -9,6 +9,7 @@ import pytest
 from pbh.eos import RADIATION, Background, EquationOfState
 from pbh.equations import calc_derivs
 from pbh.geometry import Geometry
+from pbh.kernels import CENTRED_SCHEME
 from pbh.layout import Layout
 from pbh.maps import IdentityMap, Map, PinnedMap, SinhStretch
 from pbh.outer import HeldAtFrw, OuterClosure, OuterInputs, OuterRows
@@ -33,7 +34,7 @@ class Setup:
         return cls(geo, Background.at(EOS, xi), StencilWeights.of(geo, Layout(N, j_e), closure))
 
     def run(self, s: State, outer: OuterClosure = HELD):
-        return calc_derivs(s, self.geo, self.bg, EOS, self.w, outer)
+        return calc_derivs(s, self.geo, self.bg, EOS, self.w, outer, CENTRED_SCHEME)
 
 
 def smooth_state(su: Setup, amplitude: float = 0.02, seed: int = 0) -> State:

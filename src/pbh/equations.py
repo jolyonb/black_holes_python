@@ -20,11 +20,11 @@ then the flux through every face and the four rows:
     face mass d_xi M_e = (2 - 3 alpha) M_e - 3 F_{j_e}                                            eq:numbh:mass
     outer     d_xi U_N, F_N, d_xi W                                                                 from the closure
 
-This module implements the centred base scheme: the flux is `F_j = (cE_j - (d_xi X)_j) X_j^2 <rho>_j` with the
-face-averaged density transported (eq:num:energy) and the artificial pressure force `Q_j` is zero. The paper keeps
-that scheme as a test switch and never runs it in production (Section 7.4: undissipated, the modes the energy norm
-cannot see grow under refinement); the production flux and `Q_j` of Section 7.7 replace the two lines marked below
-in a later bite, and nothing else changes.
+The flux and the artificial pressure force are the two things the shock-capturing kernels of `kernels.py` supply
+(Section 7.7). With the kernels off, the centred base scheme runs: the flux is `F_j = (cE_j - (d_xi X)_j) X_j^2
+<rho>_j` with the face-averaged density transported (eq:num:energy) and `Q_j` is zero. The paper keeps that scheme
+as a test switch and never runs it in production (Section 7.4: undissipated, the modes the energy norm cannot see grow
+under refinement).
 
 What the scheme gets exactly (Section 7.3, all verified there and tested here): on FRW every average is `1`, every
 gradient `0`, `M_j = X_j^3`, `F_j = alpha w X_j^3 - X_j^2 (d_xi X)_j`, and the rows return exactly `d_xi Delta V_c`
@@ -45,6 +45,7 @@ import numpy as np
 from pbh.derived import Derived, derive
 from pbh.eos import Background, EquationOfState
 from pbh.geometry import Geometry
+from pbh.kernels import KernelResult, Kernels, KernelSettings, hll_flux, reconstruct_density, viscous_pressure
 from pbh.outer import OuterClosure, OuterInputs
 from pbh.state import State
 from pbh.stencils import StencilWeights
@@ -80,12 +81,14 @@ class DerivsResult:
         speeds: The speeds of this stage.
         F: The energy flux through every retained face; `F_0 = 0`, `F_N` from the outer closure, and `F_{j_e}` the
             flux that also feeds the face-mass row.
+        kernels: What the shock-capturing kernels produced, or `None` when the centred base scheme ran.
     """
 
     rate: State
     derived: Derived
     speeds: Speeds
     F: FloatArray
+    kernels: KernelResult | None
 
 
 def speeds(state: State, geo: Geometry, eos: EquationOfState, d: Derived, faces: slice) -> Speeds:
@@ -103,7 +106,13 @@ def speeds(state: State, geo: Geometry, eos: EquationOfState, d: Derived, faces:
 
 
 def calc_derivs(
-    state: State, geo: Geometry, bg: Background, eos: EquationOfState, w: StencilWeights, outer: OuterClosure
+    state: State,
+    geo: Geometry,
+    bg: Background,
+    eos: EquationOfState,
+    w: StencilWeights,
+    outer: OuterClosure,
+    settings: KernelSettings,
 ) -> DerivsResult:
     """Evaluate the semi-discrete equations once: the rate of every unknown at this time and state.
 
@@ -114,6 +123,7 @@ def calc_derivs(
         eos: The equation of state.
         w: The stencil weights for this geometry, which carry the layout and the excision closure.
         outer: The closure of the outer face.
+        settings: The kernel switches: production kernels or the centred base scheme, and their constants.
 
     Returns:
         The rate and the fields it was computed from.
@@ -131,14 +141,22 @@ def calc_derivs(
     D_s_rho = w.gradient_s(d.rho)
     D_U = w.velocity_gradient(state.U)
 
-    # The energy flux through every retained face, eq:num:energy: the physical energy flux relative to the moving
-    # face, (cE_j - (d_xi X)_j) X_j^2 <rho>_j. This is the centred base flux; the production flux replaces it later.
-    F = np.full(N + 1, np.nan)
-    flux_velocity = sp.cE[faces] - geo.X_xi[faces]
-    F[faces] = flux_velocity * geo.X[faces] ** 2 * d.rho_f[faces]
-    if j_e == 0:
-        F[0] = 0.0
-    Q = np.zeros(N + 1)  # the artificial pressure force of Section 7.7, zero in the base scheme (replaced later)
+    # The energy flux through the retained faces and the artificial pressure force: from the kernels of Section 7.7,
+    # or, with the kernels off, the centred base flux of eq:num:energy, the physical energy flux relative to the moving
+    # face, (cE_j - (d_xi X)_j) X_j^2 <rho>_j, and no force.
+    if settings.kernels is Kernels.PRODUCTION:
+        rho_L, rho_R = reconstruct_density(d.rho, geo, w, settings.density_limiter, settings.rho_floor)
+        J, q, q_f, Q = viscous_pressure(state, geo, d, sp.Lam, eos, w, settings.c_v)
+        F = hll_flux(rho_L, rho_R, q_f, state, geo, sp.Theta, sp.a, eos, w)
+        kernels = KernelResult(rho_L=rho_L, rho_R=rho_R, J=J, q=q, q_f=q_f, Q=Q, F=F.copy())
+    else:
+        F = np.full(N + 1, np.nan)
+        flux_velocity = sp.cE[faces] - geo.X_xi[faces]
+        F[faces] = flux_velocity * geo.X[faces] ** 2 * d.rho_f[faces]
+        if j_e == 0:
+            F[0] = 0.0
+        Q = np.zeros(N + 1)
+        kernels = None
 
     # The outer face: the closure supplies the rows the interior cannot.
     rows = outer.rows(
@@ -183,4 +201,4 @@ def calc_derivs(
     dE[cells] = -(flux_out - flux_in) + eos.energy_source_rate * state.E[cells]
     dM_e = eos.energy_source_rate * state.M_e - 3.0 * float(F[j_e]) if j_e > 0 else 0.0
 
-    return DerivsResult(rate=State(E=dE, U=dU, W=rows.dW, M_e=dM_e), derived=d, speeds=sp, F=F)
+    return DerivsResult(rate=State(E=dE, U=dU, W=rows.dW, M_e=dM_e), derived=d, speeds=sp, F=F, kernels=kernels)
