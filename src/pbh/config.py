@@ -1,0 +1,287 @@
+"""The run configuration: one YAML file says everything about a run, and its sections build the objects that run it.
+
+A run is three files, `name.config.yaml`, `name.initial.h5` and `name.evolution.h5`, and this module is the first of
+them. The initial data are not configured here: they are the second file, which records the parameters that made them,
+so that the configuration describes the scheme and the run and nothing about the perturbation. The configuration is a
+tree of frozen pydantic models, one per section of the file, and each section knows how to build the runtime object it
+describes: `FluidConfig.build()` is an `EquationOfState`, `GridConfig.build()` a `Map`, `OuterConfig.build()` an
+`OuterClosure`, `ShockConfig.build()` a `KernelSettings`, and `RunConfig.scheme()` the `Scheme` of `timestep.py`
+assembled from all of them. The driver reads the file and never sees a raw string.
+
+    fluid:
+      w: 1/3                    # the equation of state, P = w rho, as an exact rational
+    grid:
+      map: sinh                 # sinh (fine at the origin, coarse outside) or uniform
+      N: 800                    # cells
+      Rtilde_max: 12.0          # the outer face, in the scaled areal radius
+      scale: 3.0                # the sinh stretch's scale; absent for the uniform map
+    outer:
+      closure: outgoing_wave    # outgoing_wave (Section 7.5) or held (U_N = X_N, a test closure)
+      tau_u: 2.0                # the penalty strengths, Section 7.5
+      tau_rho: 1.0
+      tau_W: 0.0
+    shocks:
+      kernels: production       # production (Section 7.7) or centred (the base scheme, a test switch)
+      density_limiter: mc       # mc or minmod
+      c_v: 1.0
+      rho_floor: 1.0e-12
+    excision:
+      face_closure: o1          # o1 (first order, production) or o2 (second order, a switch)
+    stepping:
+      integrator: rk4           # rk4 or ssprk3
+      courant_number: 0.75
+      cap_tolerance: 1.0e-5     # the step cap of eq:num:stepcap: relative error tolerance ...
+      cap_efolds: 4.0           # ... over this many super-horizon e-folds
+    evolution:
+      xi_start: 0.0
+      xi_end: 6.0
+
+Every key has the default shown except `N`, `Rtilde_max` and the evolution times, which a run must state. A file
+may omit any key with a default and may contain nothing else: an unknown key, a wrong type, or a value outside its
+range is an error naming the key, never a warning. `save` writes the complete configuration with every default
+filled in, under a `provenance` section giving the code's git commit and the time of writing; `load` accepts and
+discards that section, so a saved configuration reruns as it was.
+
+The sections are pydantic models in strict mode: a key gets the type it is declared with and nothing else, so `800`
+is an int but `"800"` and `true` are not; an enumeration is given by its value; `w` is given as a string like `1/3`.
+The range checks are validators on the section that owns them.
+
+On YAML: floats need a digit on both sides of the point and after the exponent sign, `1.0e-5` and not `1e-5`,
+which YAML reads as a string; the parser then reports the wrong type.
+"""
+
+import subprocess
+from datetime import UTC, datetime
+from enum import Enum
+from fractions import Fraction
+from pathlib import Path
+from typing import Self, cast
+
+import yaml
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+
+from pbh.eos import RADIATION, EquationOfState, as_rational_w
+from pbh.kernels import DensityLimiter, Kernels, KernelSettings
+from pbh.layout import Layout
+from pbh.maps import IdentityMap, Map, SinhStretch
+from pbh.outer import HeldAtFrw, OuterClosure, OutgoingWave, PenaltyStrengths
+from pbh.stencils import FaceClosure
+from pbh.timestep import COURANT_NUMBER, Integrator, Scheme, step_cap
+
+
+class ConfigError(ValueError):
+    """A configuration file that cannot be used, with the offending keys named."""
+
+
+class Section(BaseModel):
+    """What every section shares: frozen, unknown keys refused, and types taken strictly."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+
+
+# --- the sections ---
+
+
+class FluidConfig(Section):
+    """The `fluid` section: the equation of state."""
+
+    w: Fraction = Field(default=RADIATION, strict=False)
+    """`P = w rho`, an exact rational given as a string like `1/3`; `1/3` is radiation."""
+
+    def build(self) -> EquationOfState:
+        """The equation of state."""
+        return EquationOfState(as_rational_w(self.w))
+
+
+class MapFamily(Enum):
+    """The static base maps of `maps.py` a run can choose."""
+
+    SINH = "sinh"
+    """`SinhStretch`: fine at the origin, coarse in the background; the production map."""
+
+    UNIFORM = "uniform"
+    """`IdentityMap`: cells of equal width; a test convenience."""
+
+
+class GridConfig(Section):
+    """The `grid` section: the map, the number of cells and the outer radius (Section 7.1)."""
+
+    N: int = Field(ge=2)
+    """The number of cells."""
+
+    Rtilde_max: float = Field(gt=0.0)
+    """The scaled areal radius of the outer face."""
+
+    map: MapFamily = Field(default=MapFamily.SINH, strict=False)
+    """The map family."""
+
+    scale: float | None = Field(default=None, gt=0.0)
+    """The sinh stretch's scale, the radius below which the cells are nearly uniform; not given for `uniform`."""
+
+    @model_validator(mode="after")
+    def _scale_belongs_to_the_sinh_map(self) -> Self:
+        if self.map is MapFamily.SINH and self.scale is None:
+            raise ValueError("scale is required for the sinh map")
+        if self.map is MapFamily.UNIFORM and self.scale is not None:
+            raise ValueError("scale has no meaning for the uniform map")
+        return self
+
+    def build(self) -> Map:
+        """The map."""
+        if self.map is MapFamily.SINH:
+            assert self.scale is not None  # the validator requires it
+            return SinhStretch(self.Rtilde_max, scale=self.scale)
+        return IdentityMap(self.Rtilde_max)
+
+
+class OuterChoice(Enum):
+    """The outer closures of `outer.py` a run can choose."""
+
+    OUTGOING_WAVE = "outgoing_wave"
+    """The exact outgoing-wave condition as a penalty (Section 7.5); the production closure."""
+
+    HELD = "held"
+    """The outer face held at FRW, `U_N = X_N`; a test closure that reflects."""
+
+
+class OuterConfig(Section):
+    """The `outer` section: the closure of the outer face and its penalty strengths (Section 7.5)."""
+
+    closure: OuterChoice = Field(default=OuterChoice.OUTGOING_WAVE, strict=False)
+    tau_u: float = 2.0
+    tau_rho: float = 1.0
+    tau_W: float = 0.0
+
+    def build(self) -> OuterClosure:
+        """The outer closure; the strengths are validated by `PenaltyStrengths`."""
+        if self.closure is OuterChoice.HELD:
+            return HeldAtFrw()
+        return OutgoingWave(PenaltyStrengths(self.tau_u, self.tau_rho, self.tau_W))
+
+
+class ShockConfig(Section):
+    """The `shocks` section: the shock-capturing kernels and their constants (Section 7.7)."""
+
+    kernels: Kernels = Field(default=Kernels.PRODUCTION, strict=False)
+    density_limiter: DensityLimiter = Field(default=DensityLimiter.MC, strict=False)
+    c_v: float = 1.0
+    rho_floor: float = 1e-12
+
+    def build(self) -> KernelSettings:
+        """The kernel settings."""
+        return KernelSettings(self.kernels, self.density_limiter, self.c_v, self.rho_floor)
+
+
+class ExcisionConfig(Section):
+    """The `excision` section: for now only the excision-face closure (Section 8.3).
+
+    The horizon finder, the switch-on ramp and the blend map of Section 8 join this section when excision lands.
+    """
+
+    face_closure: FaceClosure = Field(default=FaceClosure.FIRST_ORDER, strict=False)
+
+
+class SteppingConfig(Section):
+    """The `stepping` section: the integrator, the Courant number and the step cap (Section 7.6)."""
+
+    integrator: Integrator = Field(default=Integrator.RK4, strict=False)
+    courant_number: float = Field(default=COURANT_NUMBER, gt=0.0, le=1.0)
+    cap_tolerance: float = 1e-5
+    cap_efolds: float = 4.0
+
+    def cap(self, eos: EquationOfState) -> float:
+        """The step cap `Delta xi_max` of eq:num:stepcap for this equation of state."""
+        return step_cap(eos, self.cap_tolerance, self.cap_efolds)
+
+
+class EvolutionConfig(Section):
+    """The `evolution` section: the time interval of the run."""
+
+    xi_start: float
+    xi_end: float
+
+    @model_validator(mode="after")
+    def _the_interval_is_not_empty(self) -> Self:
+        if not self.xi_end > self.xi_start:
+            raise ValueError(f"xi_end ({self.xi_end}) must exceed xi_start ({self.xi_start})")
+        return self
+
+
+class RunConfig(Section):
+    """The whole configuration: one field per section of the file, in the file's order."""
+
+    fluid: FluidConfig = FluidConfig()
+    grid: GridConfig
+    outer: OuterConfig = OuterConfig()
+    shocks: ShockConfig = ShockConfig()
+    excision: ExcisionConfig = ExcisionConfig()
+    stepping: SteppingConfig = SteppingConfig()
+    evolution: EvolutionConfig
+
+    def scheme(self) -> Scheme:
+        """The scheme this configuration describes, on the unexcised grid."""
+        return Scheme(
+            self.fluid.build(),
+            self.grid.build(),
+            Layout(self.grid.N),
+            self.excision.face_closure,
+            self.outer.build(),
+            self.shocks.build(),
+        )
+
+
+# --- the file ---
+
+
+def load(path: Path) -> RunConfig:
+    """Read a configuration file, refusing unknown keys, wrong types and values out of range."""
+    with path.open() as f:
+        raw: object = yaml.safe_load(f)
+    if not isinstance(raw, dict):
+        raise ConfigError(f"{path}: the file must be a mapping of sections")
+    document = {key: value for key, value in cast(dict[object, object], raw).items() if key != "provenance"}
+    try:  # `provenance` is written by `save` and is not part of the configuration
+        return RunConfig.model_validate(document)
+    except ValidationError as e:
+        raise ConfigError(f"{path}: {e}") from e
+
+
+class Provenance(Section):
+    """The `provenance` section of a saved file: which code wrote it and when. Not part of the configuration."""
+
+    code_commit: str
+    """The git commit of the code, short form, `-dirty` appended if the tree had uncommitted changes, or `unknown`."""
+
+    written: datetime
+    """The time of writing, UTC."""
+
+    @classmethod
+    def now(cls) -> Self:
+        """The provenance of a file written now by this code."""
+        return cls(code_commit=code_commit(), written=datetime.now(UTC))
+
+
+def save(config: RunConfig, path: Path) -> None:
+    """Write the complete configuration, every default filled in, under its provenance."""
+    document = {
+        "provenance": Provenance.now().model_dump(mode="json"),
+        **config.model_dump(mode="json", exclude_none=True),
+    }
+    with path.open("w") as f:
+        yaml.safe_dump(document, f, sort_keys=False)
+
+
+def code_commit() -> str:
+    """The git commit of the code, short form, with `-dirty` appended if the tree has uncommitted changes.
+
+    `unknown` if the code is not in a git checkout.
+    """
+    here = Path(__file__).resolve().parent
+    try:
+        commit = subprocess.run(["git", "rev-parse", "--short=12", "HEAD"], cwd=here, capture_output=True, text=True)
+        status = subprocess.run(["git", "status", "--porcelain"], cwd=here, capture_output=True, text=True)
+    except OSError:
+        return "unknown"
+    if commit.returncode != 0 or status.returncode != 0:
+        return "unknown"
+    return commit.stdout.strip() + ("-dirty" if status.stdout.strip() else "")

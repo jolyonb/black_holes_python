@@ -1,0 +1,39 @@
+# An example run configuration for pbh. Every key is shown with its default value, except the grid size,
+# the outer radius and the evolution times, which every run must state. A file may omit any key with a
+# default. Floats must carry a digit on both sides of the point and after the exponent sign (1.0e-5, not 1e-5).
+# The initial data are not configured here: they live in the run's initial-data file, name.initial.h5, with
+# the parameters that made them. The output section arrives with the output code.
+
+fluid:
+  w: 1/3                      # the equation of state, P = w rho, as an exact rational; 1/3 is radiation
+
+grid:
+  map: sinh                   # sinh (fine at the origin, coarse in the background) or uniform
+  N: 800                      # cells
+  Rtilde_max: 12.0            # the outer face, in the scaled areal radius
+  scale: 3.0                  # the sinh stretch's scale; omit for the uniform map
+
+outer:
+  closure: outgoing_wave      # the exact outgoing-wave condition as a penalty (paper Section 7.5), or held
+  tau_u: 2.0                  # the penalty strengths; (2, 1, 0) is the production choice
+  tau_rho: 1.0
+  tau_W: 0.0
+
+shocks:
+  kernels: production         # the shock-capturing kernels of Section 7.7, or centred for the base scheme
+  density_limiter: mc         # mc or minmod
+  c_v: 1.0                    # the viscosity constant
+  rho_floor: 1.0e-12          # the floor on reconstructed face densities
+
+excision:
+  face_closure: o1            # the excision-face closure: o1 (first order, production) or o2
+
+stepping:
+  integrator: rk4             # rk4 or ssprk3
+  courant_number: 0.75
+  cap_tolerance: 1.0e-5       # the step cap of eq:num:stepcap: relative error tolerance ...
+  cap_efolds: 4.0             # ... over this many super-horizon e-folds
+
+evolution:
+  xi_start: 0.0
+  xi_end: 6.0
