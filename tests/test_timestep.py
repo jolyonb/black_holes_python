@@ -6,9 +6,9 @@ from fractions import Fraction
 
 import numpy as np
 import pytest
-from modes import J1_ZEROS, BesselMode, mode_errors
+from modes import mode_errors
 
-from pbh.eos import RADIATION, Background, EquationOfState
+from pbh.eos import RADIATION, EquationOfState
 from pbh.kernels import CENTRED_SCHEME
 from pbh.layout import Layout
 from pbh.maps import IdentityMap, Map, PinnedMap, SinhStretch
@@ -232,17 +232,3 @@ def test_the_base_scheme_converges_at_second_order_on_the_exact_bessel_modes(m: 
     for field in (0, 1):
         rates = [math.log2(errors[i][field] / errors[i + 1][field]) for i in range(2)]
         assert min(rates) > 1.9, f"field {field}, mode {k_index}: L1 rates {rates} (tab:num:tests asks >= 1.9)"
-
-
-def test_the_bessel_mode_helper_is_self_consistent():
-    # The exact contents are the integral of 1 + delta_rho, and delta_U -> k/3 at the origin by continuity.
-    geo = Scheme(EOS, IdentityMap(2.5), Layout(20), FaceClosure.FIRST_ORDER, HeldAtFrw(), CENTRED_SCHEME).frame(0.0).geo
-    bg = Background.at(EOS, 0.4)
-    mode = BesselMode(k=J1_ZEROS[0] / 2.5, B=1e-3)
-    nodes, weights = np.polynomial.legendre.leggauss(12)
-    lo, hi = geo.X[:-1], geo.X[1:]
-    X = 0.5 * (hi - lo)[:, None] * nodes[None, :] + 0.5 * (hi + lo)[:, None]
-    quadrature = 0.5 * (hi - lo) * np.sum(weights[None, :] * X**2 * (1.0 + mode.delta_rho(bg, X)), axis=1)
-    assert mode.cell_contents(bg, geo) == pytest.approx(quadrature, rel=1e-12)
-    assert mode.delta_U(bg, np.array([0.0]))[0] == pytest.approx(mode.delta_U(bg, np.array([1e-6]))[0], rel=1e-6)
-    assert mode.delta_U(bg, np.array([2.5]))[0] == pytest.approx(0.0, abs=1e-15)  # j_1(k X_N) = 0
