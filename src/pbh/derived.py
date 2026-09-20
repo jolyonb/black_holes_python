@@ -10,7 +10,9 @@ Nothing here is evolved. From the stored cell energies and face velocities a sta
   evolved, it is the sum of what the cells hold;
 * the tilde mass `mt_j = M_j / X_j^3`, unity on FRW;
 * `Gammabar_j^2 = e^(2 (1 - alpha) xi) + U_j^2 - M_j / X_j` (eq:num:facefields, first line; eq:newgamma with
-  `Rtilde^2 mtilde = M / X`), and at the origin `Gammabar_0^2 = e^(2 (1 - alpha) xi)`, the limit of `M / X ~ X^2`.
+  `Rtilde^2 mtilde = M / X`), and at the origin `Gammabar_0^2 = e^(2 (1 - alpha) xi)`, the limit of `M / X ~ X^2`;
+* the face values `<rho>_j` and `<ephi>_j` of the two even cell fields, by the one averaging stencil of
+  eq:num:stencils, which the velocity equation and the fluxes need at the faces.
 
 Two things are asserted here and nowhere else, because they are the hyperbolicity of the system (Section 7.3):
 `rho_c > 0` in every retained cell and `Gammabar_j^2 > 0` at every retained face. Where either fails "the system is
@@ -28,8 +30,8 @@ import numpy as np
 
 from pbh.eos import Background, EquationOfState
 from pbh.geometry import Geometry
-from pbh.layout import Layout
 from pbh.state import State
+from pbh.stencils import StencilWeights
 from pbh.types import FloatArray
 
 
@@ -59,6 +61,8 @@ class Derived:
         M: The cumulative mass `M_j` inside face `j` (faces); `M_0 = 0`, or `M_{j_e} = M_e` once excised.
         mt: The tilde mass `mt_j = M_j / X_j^3` (faces `1..N`; NaN at the origin).
         Gammabar2: `Gammabar_j^2` (faces), the first line of eq:num:facefields.
+        rho_f: The face density `<rho>_j` (faces).
+        ephi_f: The face lapse `<ephi>_j` (faces).
     """
 
     rho: FloatArray
@@ -66,9 +70,11 @@ class Derived:
     M: FloatArray
     mt: FloatArray
     Gammabar2: FloatArray
+    rho_f: FloatArray
+    ephi_f: FloatArray
 
 
-def derive(state: State, geo: Geometry, bg: Background, eos: EquationOfState, layout: Layout) -> Derived:
+def derive(state: State, geo: Geometry, bg: Background, eos: EquationOfState, w: StencilWeights) -> Derived:
     """Form the derived fields of one stage, asserting hyperbolicity on the retained entries.
 
     Args:
@@ -76,7 +82,7 @@ def derive(state: State, geo: Geometry, bg: Background, eos: EquationOfState, la
         geo: The geometry at this stage's time.
         bg: The background at this stage's time (for the FRW `Gammabar^2`).
         eos: The equation of state (for the lapse exponent).
-        layout: Which cells and faces are retained.
+        w: The stencil weights, which carry the layout and average the cell fields to the faces.
 
     Returns:
         The `Derived` fields, full length, NaN below the excision face.
@@ -84,6 +90,7 @@ def derive(state: State, geo: Geometry, bg: Background, eos: EquationOfState, la
     Raises:
         NotHyperbolicError: If any retained `rho_c <= 0` or `Gammabar_j^2 <= 0`.
     """
+    layout = w.layout
     cells, faces = layout.cells, layout.faces
     N = layout.N
 
@@ -110,7 +117,9 @@ def derive(state: State, geo: Geometry, bg: Background, eos: EquationOfState, la
         Gammabar2[0] = bg.Gammabar2  # M / X ~ X^2 -> 0 at the origin, and U_0 = 0
     _assert_positive(Gammabar2, faces, "Gammabar2")
 
-    return Derived(rho=rho, ephi=ephi, M=M, mt=mt, Gammabar2=Gammabar2)
+    return Derived(
+        rho=rho, ephi=ephi, M=M, mt=mt, Gammabar2=Gammabar2, rho_f=w.face_average(rho), ephi_f=w.face_average(ephi)
+    )
 
 
 def _assert_positive(values: FloatArray, retained: slice, name: str) -> None:
