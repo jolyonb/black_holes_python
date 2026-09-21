@@ -18,6 +18,7 @@ from pbh.config import (
 )
 from pbh.driver import RunPaths, far_zone_radius, run
 from pbh.eos import Background
+from pbh.geometry import Geometry
 from pbh.kernels import Kernels
 from pbh.output import RunReader
 from pbh.records import StateRecord, read_initial, write_initial
@@ -171,3 +172,32 @@ def test_a_step_that_produces_a_non_finite_state_aborts_by_the_finiteness_check(
     payload = reader.events[0].payload
     assert (payload["field"], payload["index"]) == ("state", -1)
     assert np.isnan(payload["value"])  # JSON carries NaN
+
+
+def test_a_run_started_from_a_record_with_zones_runs_on_the_blend_and_keeps_the_formation_time(tmp_path: Path):
+    # Until the finder exists a record with zones comes only from a hand-made one; the driver must still build the
+    # blend from it and schedule its snapshots from the carried formation time.
+    from pbh.maps import BlendMap, Zone
+    from pbh.output import next_snapshot_time
+
+    zone = Zone(xi_on=0.1, tau_on=0.3, x_t=0.4, Delta_t=0.1)
+    config = CONFIG.model_copy(update={"evolution": EvolutionConfig(xi_end=0.35)})
+    blend = BlendMap(config.grid.build(), float(config.fluid.build().alpha), (zone,))
+    geo = Geometry.of(*blend.radii(0.1, N))
+    X = geo.X[: N + 1]
+    record = StateRecord(np.zeros(N), np.zeros(N + 1), 0.0, 0.0, X, 0.1, 0, {}, xi_form=0.05, zones=(zone,))
+    paths = RunPaths.of(tmp_path, "zoned")
+    write_initial(paths.initial, record)
+    result = run(config, read_initial(paths.initial), paths)
+    assert result.status == "completed"
+    reader = RunReader(paths.evolution)
+    times = [s.xi for s in reader.snapshots]
+    expected = [0.1]
+    while expected[-1] < 0.35:
+        expected.append(min(next_snapshot_time(expected[-1], 0.05, config.output), 0.35))
+    assert times == expected  # the post-formation schedule, from the carried xi_form
+    last = reader.snapshot(len(times) - 1)
+    assert last.zones == (zone,)
+    assert last.xi_form == 0.05
+    assert np.array_equal(last.X, Geometry.of(*blend.radii(0.35, N)).X[: N + 1])  # the moving grid
+    assert np.max(np.abs(last.delta_E)) < 1e-12  # FRW stays FRW through the ramp on the blend

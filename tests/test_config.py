@@ -63,7 +63,7 @@ fluid: {w: 1/2}
 grid: {map: uniform, N: 10, Rtilde_max: 3}
 outer: {closure: held, tau_u: 1.0, tau_rho: 1.5, tau_W: 0.5}
 shocks: {kernels: centred, density_limiter: minmod, c_v: 0.5, rho_floor: 1.0e-10}
-excision: {face_closure: o2}
+excision: {eta: 0.75, tau_on: 0.4, c_t: 3.0, c_Delta: 1.0, face_closure: o2}
 stepping: {integrator: ssprk3, courant_number: 0.4, cap_tolerance: 1.0e-6, cap_efolds: 3.0}
 output: {snapshot_spacing: 0.1, snapshot_spacing_after: 0.02, flush_every: 50, monitor_every_step: true}
 evolution: {xi_end: 2.5}
@@ -74,6 +74,7 @@ evolution: {xi_end: 2.5}
     assert (c.outer.closure, c.outer.tau_u, c.outer.tau_rho, c.outer.tau_W) == (OuterChoice.HELD, 1.0, 1.5, 0.5)
     assert c.shocks.build() == KernelSettings(Kernels.CENTRED, DensityLimiter.MINMOD, 0.5, 1e-10)
     assert c.excision.face_closure is FaceClosure.SECOND_ORDER
+    assert (c.excision.eta, c.excision.tau_on, c.excision.c_t, c.excision.c_Delta) == (0.75, 0.4, 3.0, 1.0)
     assert (c.stepping.integrator, c.stepping.courant_number) == (Integrator.SSPRK3, 0.4)
     assert (c.stepping.cap_tolerance, c.stepping.cap_efolds) == (1e-6, 3.0)
     assert (c.output.snapshot_spacing, c.output.snapshot_spacing_after) == (0.1, 0.02)
@@ -107,6 +108,7 @@ def test_a_saved_error_names_the_file_and_every_bad_key(tmp_path: Path):
         ("stepping: {integrator: euler}\n", "stepping.integrator\n  Input should be 'rk4' or 'ssprk3'"),
         ("shocks: {kernels: 3}\n", "shocks.kernels\n  Input should be 'production' or 'centred'"),
         ("output: {flush_every: 0}\n", "output.flush_every\n  Input should be greater than or equal to 1"),
+        ("excision: {eta: 1.0}\n", "excision.eta\n  Input should be less than 1"),
     ],
 )
 def test_bad_keys_and_values_are_refused_by_name(tmp_path: Path, extra: str, message: str):

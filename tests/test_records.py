@@ -11,7 +11,7 @@ from pbh import h5
 from pbh.eos import RADIATION, Background, EquationOfState
 from pbh.geometry import Geometry
 from pbh.initial import GrowingMode
-from pbh.maps import IdentityMap, Map, SinhStretch
+from pbh.maps import IdentityMap, Map, SinhStretch, Zone
 from pbh.profiles import Gaussian
 from pbh.records import (
     FORMAT,
@@ -102,3 +102,20 @@ def test_a_state_that_does_not_fit_the_grid_and_a_foreign_file_are_refused(tmp_p
     with pytest.raises(ValueError, match="not a pbh state record"):
         read_initial(foreign)
     assert FORMAT == "pbh-state"
+
+
+def test_the_formation_time_and_the_zones_round_trip(tmp_path: Path):
+    state, geo = gaussian_datum(IdentityMap(12.0))
+    zones = (Zone(xi_on=4.7, tau_on=0.3, x_t=0.2, Delta_t=0.075), Zone(xi_on=6.0, tau_on=0.3, x_t=0.5, Delta_t=0.15))
+    record = StateRecord.of(state, geo.X[: geo.N + 1], 6.5, 0, {}, xi_form=4.6, zones=zones)
+    path = tmp_path / "zoned.initial.h5"
+    write_initial(path, record)
+    again = read_initial(path)
+    assert again.xi_form == 4.6
+    assert again.zones == zones
+    plain = read_initial(tmp_path / "plain.initial.h5") if False else None
+    assert plain is None
+    write_initial(tmp_path / "plain.initial.h5", StateRecord.of(state, geo.X[: geo.N + 1], 0.0, 0, {}))
+    plain = read_initial(tmp_path / "plain.initial.h5")
+    assert plain.xi_form is None
+    assert plain.zones == ()

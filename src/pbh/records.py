@@ -15,13 +15,15 @@ never interprets it.
 
 The layout of a state record in an HDF5 group:
 
-    attrs: format = "pbh-state", version = 1, xi, j_e, W, M_e
+    attrs: format = "pbh-state", version = 1, xi, j_e, W, M_e, xi_form (NaN before formation), zones (JSON)
     delta_E (N cells), delta_U (N + 1 faces), X (N + 1 face radii)
     provenance/  attrs: code_commit, written, details (JSON)
 
 The driver checks the record's `X` against the grid its configuration builds before using the state.
 """
 
+import dataclasses
+import math
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -30,6 +32,7 @@ from typing import Any
 from pbh import h5
 from pbh.config import code_commit
 from pbh.geometry import shell_volumes
+from pbh.maps import Zone
 from pbh.state import State
 from pbh.types import FloatArray
 
@@ -49,6 +52,10 @@ class StateRecord:
         xi: The time.
         j_e: The excision face; `0` while there is no excision.
         provenance: The free-form mapping the maker recorded, plus `code_commit` and `written`.
+        xi_form: The formation time, `None` before formation; the snapshot schedule depends on it.
+        zones: The pinned zones of the post-formation map (Section 8.1), empty before the first switch-on. With the
+            configuration's base map these rebuild the grid the state sits on, so a restart inside or after a
+            switch-on, repeated or not, is complete.
     """
 
     delta_E: FloatArray
@@ -59,9 +66,20 @@ class StateRecord:
     xi: float
     j_e: int
     provenance: dict[str, Any]
+    xi_form: float | None = None
+    zones: tuple[Zone, ...] = ()
 
     @classmethod
-    def of(cls, state: State, X: FloatArray, xi: float, j_e: int, provenance: dict[str, Any]) -> StateRecord:
+    def of(
+        cls,
+        state: State,
+        X: FloatArray,
+        xi: float,
+        j_e: int,
+        provenance: dict[str, Any],
+        xi_form: float | None = None,
+        zones: tuple[Zone, ...] = (),
+    ) -> StateRecord:
         """The record of a state on the faces `X`: the deviation is formed here, once."""
         return cls(
             delta_E=state.E - shell_volumes(X),
@@ -72,6 +90,8 @@ class StateRecord:
             xi=xi,
             j_e=j_e,
             provenance=provenance,
+            xi_form=xi_form,
+            zones=zones,
         )
 
     @property
@@ -101,6 +121,8 @@ def write_record(group: h5.Group, record: StateRecord) -> None:
     h5.write_int(group, "j_e", record.j_e)
     h5.write_float(group, "W", record.W)
     h5.write_float(group, "M_e", record.M_e)
+    h5.write_float(group, "xi_form", float("nan") if record.xi_form is None else record.xi_form)
+    h5.write_mapping(group, "zones", {"zones": zones_as_mappings(record.zones)})
     h5.write_array(group, "delta_E", record.delta_E)
     h5.write_array(group, "delta_U", record.delta_U)
     h5.write_array(group, "X", record.X)
@@ -127,7 +149,24 @@ def read_record(group: h5.Group) -> StateRecord:
         xi=h5.read_float(group, "xi"),
         j_e=h5.read_int(group, "j_e"),
         provenance=provenance,
+        xi_form=none_if_nan(h5.read_float(group, "xi_form")),
+        zones=zones_from_mappings(h5.read_mapping(group, "zones")["zones"]),
     )
+
+
+def none_if_nan(value: float) -> float | None:
+    """A float attribute that stands for `None` when NaN."""
+    return None if math.isnan(value) else value
+
+
+def zones_as_mappings(zones: tuple[Zone, ...]) -> list[dict[str, float]]:
+    """The zones as plain mappings, for a JSON attribute or a snapshot column."""
+    return [dataclasses.asdict(zone) for zone in zones]
+
+
+def zones_from_mappings(mappings: list[dict[str, float]]) -> tuple[Zone, ...]:
+    """The zones back from their mappings."""
+    return tuple(Zone(**mapping) for mapping in mappings)
 
 
 def write_initial(path: Path, record: StateRecord) -> None:

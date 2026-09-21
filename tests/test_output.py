@@ -10,7 +10,9 @@ import pytest
 
 from pbh import h5
 from pbh.config import EvolutionConfig, GridConfig, OutputConfig, RunConfig
+from pbh.geometry import Geometry
 from pbh.layout import Layout
+from pbh.maps import BlendMap, Zone
 from pbh.output import Event, EventRow, RunReader, RunWriter, StepRow, Table, next_snapshot_time, read_table
 from pbh.state import State, frw_state
 from pbh.types import FloatArray
@@ -183,7 +185,7 @@ def test_a_snapshot_round_trips_as_a_restartable_state_on_the_configurations_gri
     sch = CONFIG.scheme()
     xi, j_e = 0.7, 3
     layout = Layout(N, j_e=j_e)
-    geo = sch.frame(xi).geo
+    geo = Geometry.of(*BlendMap(CONFIG.grid.build(), float(sch.eos.alpha), (Zone(0.5, 0.3, 0.4, 0.1),)).radii(xi, N))
     rng = np.random.default_rng(1)
     E = geo.dV * (1.0 + 1e-3 * rng.standard_normal(N))
     U = geo.X[: N + 1] * (1.0 + 1e-3 * rng.standard_normal(N + 1))
@@ -191,9 +193,10 @@ def test_a_snapshot_round_trips_as_a_restartable_state_on_the_configurations_gri
     U[:j_e] = np.nan
     state = State(E=E, U=U, W=0.01, M_e=0.2)
     dy = layout.pack(state) - layout.pack(frw_state(geo, j_e))
+    zone = Zone(xi_on=0.5, tau_on=0.3, x_t=0.4, Delta_t=0.1)
     with RunWriter(path, CONFIG, N=N, row_type=StepRow) as out:
-        out.snapshot(5, 0.2, Layout(N), np.zeros(Layout(N).size))  # FRW, unexcised
-        out.snapshot(40, xi, layout, dy)
+        out.snapshot(5, 0.2, Layout(N), np.zeros(Layout(N).size), None, ())  # FRW, unexcised, before formation
+        out.snapshot(40, xi, layout, dy, 0.5, (zone,))  # after a switch-on at 0.5: the grid is the blend
     run = RunReader(path)
     listing = run.snapshots
     assert [(s.index, s.step, s.xi, s.j_e) for s in listing] == [(0, 5, 0.2, 0), (1, 40, xi, j_e)]
@@ -206,18 +209,24 @@ def test_a_snapshot_round_trips_as_a_restartable_state_on_the_configurations_gri
     assert record.W == pytest.approx(0.01)
     assert record.state.M_e == pytest.approx(0.2)
     assert record.M_e == pytest.approx(0.2 - geo.X[j_e] ** 3)  # the deviation from the FRW excised mass
-    assert np.array_equal(record.X, geo.X[: N + 1])
+    assert np.array_equal(record.X, geo.X[: N + 1])  # the blended grid, rebuilt from the stored zones
     assert (record.xi, record.j_e) == (xi, j_e)
     assert record.provenance == {"source": "run.evolution.h5", "step": 40, "snapshot": 1}
+    assert record.xi_form == 0.5
+    assert record.zones == (zone,)
     frw = run.snapshot(0)
     assert np.array_equal(frw.state.E, run.geometry(0.2).dV)
     assert frw.W == 0.0
+    assert frw.xi_form is None
+    assert frw.zones == ()
 
 
 WRITER_UNTIL_KILLED = """
 import sys, pathlib, numpy as np
 from pbh.config import EvolutionConfig, GridConfig, RunConfig
+from pbh.geometry import Geometry
 from pbh.layout import Layout
+from pbh.maps import BlendMap, Zone
 from pbh.output import RunWriter, StepRow
 cfg = RunConfig(grid=GridConfig(N=40, Rtilde_max=4.0, scale=2.0), evolution=EvolutionConfig(xi_end=1.0))
 out = RunWriter(pathlib.Path(sys.argv[1]), cfg, N=40, row_type=StepRow)

@@ -33,8 +33,8 @@ assembled from all of them. The driver reads the file and never sees a raw strin
       cap_tolerance: 1.0e-5     # the step cap of eq:num:stepcap: relative error tolerance ...
       cap_efolds: 4.0           # ... over this many super-horizon e-folds
     output:
-      snapshot_spacing: 0.05        # snapshots every this much in xi before formation ...
-      snapshot_spacing_after: 0.05  # ... and every this much physical time, in Hubble times at formation, after
+      snapshot_spacing: 0.02        # snapshots every this much in xi before formation ...
+      snapshot_spacing_after: 0.02  # ... and every this much physical time, in Hubble times at formation, after
       flush_every: 200              # steps buffered before the step record is written
       monitor_every_step: false     # the full monitor record every step, not only at snapshots
     evolution:
@@ -177,12 +177,28 @@ class ShockConfig(Section):
 
 
 class ExcisionConfig(Section):
-    """The `excision` section: for now only the excision-face closure (Section 8.3).
+    """The `excision` section: the post-formation map's switch-on and the excision-face closure (Sections 8.1, 8.3).
 
-    The horizon finder, the switch-on ramp and the blend map of Section 8 join this section when excision lands.
+    The defaults are the recommended values of Table tab:numbh:params; the horizon finder and the excision rules
+    join this section with their bites.
     """
 
+    eta: float = Field(default=0.7, gt=0.0, lt=1.0)
+    """The excision radius in units of the apparent-horizon radius at switch-on (admissible `0.7` to `0.8`, with
+    `eta e^(-alpha tau_on)` at least about `0.6`)."""
+
+    tau_on: float = Field(default=0.3, gt=0.0)
+    """The ramp time of the switch-on, in `xi` (admissible `0.2` to `0.5`)."""
+
+    c_t: float = Field(default=4.0, gt=0.0)
+    """The transition's centre in units of the apparent-horizon label at switch-on, `x_t = c_t x_AH`."""
+
+    c_Delta: float = Field(default=1.5, gt=0.0)
+    """The transition's half-width in the same units, `Delta_t = c_Delta x_AH`; `x_t + Delta_t` must stay below `0.8`,
+    which is checked at switch-on."""
+
     face_closure: FaceClosure = Field(default=FaceClosure.FIRST_ORDER, strict=False)
+    """The excision-face closure: first order in production, the second-order rows as a switch."""
 
 
 class SteppingConfig(Section):
@@ -201,10 +217,11 @@ class SteppingConfig(Section):
 class OutputConfig(Section):
     """The `output` section: the snapshot schedule and the flush cadence of the evolution file (`output.py`)."""
 
-    snapshot_spacing: float = Field(default=0.05, gt=0.0)
-    """Before formation, the spacing of snapshots in `xi`."""
+    snapshot_spacing: float = Field(default=0.02, gt=0.0)
+    """Before formation, the spacing of snapshots in `xi`; at N = 2000 a snapshot is 32 KB and costs a few tenths
+    of a millisecond, so this is a few hundred snapshots and ten megabytes over a run."""
 
-    snapshot_spacing_after: float = Field(default=0.05, gt=0.0)
+    snapshot_spacing_after: float = Field(default=0.02, gt=0.0)
     """After formation, the spacing of snapshots in physical time, in units of the Hubble time at formation."""
 
     flush_every: int = Field(default=200, ge=1)
@@ -233,11 +250,11 @@ class RunConfig(Section):
     output: OutputConfig = OutputConfig()
     evolution: EvolutionConfig
 
-    def scheme(self) -> Scheme:
-        """The scheme this configuration describes, on the unexcised grid."""
+    def scheme(self, map: Map | None = None) -> Scheme:
+        """The scheme this configuration describes, on the unexcised grid; `map` replaces the base map when given."""
         return Scheme(
             self.fluid.build(),
-            self.grid.build(),
+            self.grid.build() if map is None else map,
             Layout(self.grid.N),
             self.excision.face_closure,
             self.outer.build(),

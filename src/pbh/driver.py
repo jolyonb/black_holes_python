@@ -10,12 +10,18 @@ steps:
 3. check that the state is finite; record the step's monitors, the full row when the step ends on a snapshot or
    the configuration asks for it every step; write the snapshot when due; flush the step record on its cadence.
 
+The initial state and the final state are always snapshots, whatever the schedule, so that any run can be
+continued from where it stopped.
+
 An abort is a result, not an exception: if a stage finds the state outside the hyperbolic domain, or the step
 produces a non-finite state, the driver records an `abort` event naming what failed, writes a snapshot of the last
 good state, and ends the run with the status `aborted`. The horizon finder and excision join this loop in Sections
 8.2 and 8.3; until then the run has no formation event and the snapshot schedule stays uniform in `xi`.
 
 The far-zone radius of the monitors is read off the initial data: the smallest radius beyond which they are FRW.
+The map is the configuration's base map, blended with the zones the initial record carries if it comes from a
+snapshot after a switch-on, and the formation time it carries drives the snapshot schedule; until the finder and
+excision exist the driver adds neither.
 """
 
 from dataclasses import dataclass
@@ -27,7 +33,7 @@ import numpy as np
 from pbh.config import RunConfig, save
 from pbh.derived import NotHyperbolicError
 from pbh.monitors import MonitoredStep, StageFluxes, StepInputs, monitor_step
-from pbh.output import RunWriter, next_snapshot_time
+from pbh.output import RunWriter, next_snapshot_time, run_map
 from pbh.records import StateRecord, shell_volumes
 from pbh.state import is_finite
 from pbh.timestep import advance_with_stages, step_size
@@ -85,8 +91,9 @@ def run(config: RunConfig, initial: StateRecord, paths: RunPaths) -> RunResult:
     """Run the configuration from the initial state and write the run's files; see the module docstring."""
     if initial.j_e != 0:
         raise ValueError("starting from an excised state arrives with excision (Section 8.3)")
-    sch = config.scheme()
+    sch = config.scheme(run_map(config, initial.zones))
     layout = sch.layout
+    xi_form, zones = initial.xi_form, initial.zones
     xi = initial.xi
     frame = sch.frame(xi)
     if not np.allclose(initial.X, frame.geo.X[: layout.N + 1], rtol=1e-12, atol=0.0):
@@ -102,14 +109,15 @@ def run(config: RunConfig, initial: StateRecord, paths: RunPaths) -> RunResult:
     far_zone = far_zone_radius(initial)
     dy = layout.pack(initial.deviation)  # the integrator's variables, as the record stores them
     step = 0
+    at_snapshot = True  # the initial state is the first snapshot
     next_snapshot = xi  # the initial state is the first snapshot
     F_N_integral = 0.0
     scale = float(np.max(np.abs(sch.frw(xi))))  # the state's scale, for the companion estimate
 
     with RunWriter(paths.evolution, config, layout.N, row_type=MonitoredStep) as out:
         result = sch.evaluate(xi, sch.frw(xi) + dy)
-        out.snapshot(step, xi, layout, dy)
-        next_snapshot = next_snapshot_time(xi, None, output)
+        out.snapshot(step, xi, layout, dy, xi_form, zones)
+        next_snapshot = next_snapshot_time(xi, xi_form, output)
         while xi < xi_end:
             # 1. the step: Courant or cap, clipped to land exactly on the next snapshot time or the end
             choice = step_size(result, sch.frame(xi).geo, layout, config.stepping.courant_number, cap)
@@ -128,7 +136,7 @@ def run(config: RunConfig, initial: StateRecord, paths: RunPaths) -> RunResult:
                 result_new = sch.evaluate(xi_new, sch.frw(xi_new) + dy_new)
             except NotHyperbolicError as failure:
                 out.event(step, xi, "abort", {"field": failure.field, "index": failure.index, "value": failure.value})
-                out.snapshot(step, xi, layout, dy)  # the last good state
+                out.snapshot(step, xi, layout, dy, xi_form, zones)  # the last good state
                 out.close(step, xi, "aborted", reason=str(failure))
                 return RunResult(status="aborted", steps=step, xi=xi, paths=paths)
             # 3. the record
@@ -162,9 +170,11 @@ def run(config: RunConfig, initial: StateRecord, paths: RunPaths) -> RunResult:
             F_N_integral = row.F_N_integral
             out.step(row)
             if at_snapshot:
-                out.snapshot(step, xi, layout, dy)
-                next_snapshot = next_snapshot_time(xi, None, output)
+                out.snapshot(step, xi, layout, dy, xi_form, zones)
+                next_snapshot = next_snapshot_time(xi, xi_form, output)
             if step % output.flush_every == 0:
                 out.flush()
+        if not at_snapshot:
+            out.snapshot(step, xi, layout, dy, xi_form, zones)  # the end is always a snapshot, to continue from
         out.close(step, xi, "completed")
     return RunResult(status="completed", steps=step, xi=xi, paths=paths)

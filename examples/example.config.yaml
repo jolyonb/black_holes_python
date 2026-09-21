@@ -26,6 +26,10 @@ shocks:
   rho_floor: 1.0e-12          # the floor on reconstructed face densities
 
 excision:
+  eta: 0.7                    # the excision radius in units of the apparent-horizon radius at switch-on (0.7-0.8)
+  tau_on: 0.3                 # the switch-on ramp time in xi (0.2-0.5)
+  c_t: 4.0                    # the map's transition centre in units of the horizon label at switch-on ...
+  c_Delta: 1.5                # ... and its half-width; x_t + Delta_t must stay below 0.8, checked at switch-on
   face_closure: o1            # the excision-face closure: o1 (first order, production) or o2
 
 stepping:
@@ -35,8 +39,8 @@ stepping:
   cap_efolds: 4.0             # ... over this many super-horizon e-folds
 
 output:
-  snapshot_spacing: 0.05        # snapshots every this much in xi before formation ...
-  snapshot_spacing_after: 0.05  # ... and every this much physical time, in Hubble times at formation, after it
+  snapshot_spacing: 0.02        # snapshots every this much in xi before formation (32 KB each at N = 2000) ...
+  snapshot_spacing_after: 0.02  # ... and every this much physical time, in Hubble times at formation, after it
   flush_every: 200              # steps buffered before the step record is written to disk
   monitor_every_step: false     # the full monitor record every step rather than only at snapshots (costs ~20%)
 

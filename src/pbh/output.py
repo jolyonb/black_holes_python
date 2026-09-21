@@ -53,7 +53,8 @@ from pbh.config import OutputConfig, RunConfig, code_commit
 from pbh.geometry import Geometry
 from pbh.h5 import Column
 from pbh.layout import Layout
-from pbh.records import StateRecord
+from pbh.maps import BlendMap, Map, Zone
+from pbh.records import StateRecord, none_if_nan, zones_as_mappings, zones_from_mappings
 from pbh.types import FloatArray
 
 FORMAT = "pbh-evolution"
@@ -163,6 +164,10 @@ class SnapshotRow:
     """`E_c - Delta V_c` on the cells, NaN below the excision face."""
     delta_U: FloatArray
     """`U_j - X_j` on the faces, NaN below the excision face."""
+    xi_form: float
+    """The formation time, NaN before formation."""
+    zones: str = field(metadata={"length": 2048})
+    """The pinned zones of the post-formation map as JSON, `[]` before the first switch-on."""
 
 
 @dataclass(frozen=True)
@@ -220,11 +225,21 @@ class RunWriter[R: StepRow]:
         h5.start_single_writer_mode(self.file)
         self.closed = False
 
-    def snapshot(self, step: int, xi: float, layout: Layout, dy: FloatArray) -> None:
+    def snapshot(
+        self, step: int, xi: float, layout: Layout, dy: FloatArray, xi_form: float | None, zones: tuple[Zone, ...]
+    ) -> None:
         """Record a snapshot from the packed deviation `dy` the integrator holds, and flush it at once."""
         deviation = layout.unpack(dy)  # the deviation in the state's shape: delta_E, delta_U, W, M_e
         row = SnapshotRow(
-            step=step, xi=xi, j_e=layout.j_e, W=deviation.W, M_e=deviation.M_e, delta_E=deviation.E, delta_U=deviation.U
+            step=step,
+            xi=xi,
+            j_e=layout.j_e,
+            W=deviation.W,
+            M_e=deviation.M_e,
+            delta_E=deviation.E,
+            delta_U=deviation.U,
+            xi_form=float("nan") if xi_form is None else xi_form,
+            zones=json.dumps(zones_as_mappings(zones)),
         )
         self.snapshots.append(row)
         self.snapshots.flush()
@@ -319,11 +334,11 @@ class RunReader:
         return [SnapshotInfo(i, int(steps[i]), float(xis[i]), int(faces[i])) for i in range(len(steps))]
 
     def snapshot(self, index: int) -> StateRecord:
-        """One snapshot as a state record, on the grid the configuration gives at that time.
+        """One snapshot as a state record, on the grid the configuration and the stored zones give at that time.
 
         The stored deviation goes into the record untouched, so a run started from it carries the integrator's
-        variables to the last bit; the radii come from the configuration's map. The record's provenance names this
-        file and the step.
+        variables to the last bit; the radii come from the configuration's base map with the zones the snapshot
+        carries. The record's provenance names this file and the step.
         """
         with self._open() as f:
             group = h5.subgroup(f, "snapshots")
@@ -334,10 +349,22 @@ class RunReader:
             step, xi, j_e = int(column("step")[index]), float(column("xi")[index]), int(column("j_e")[index])
             W, M_e = float(column("W")[index]), float(column("M_e")[index])
             delta_E, delta_U = column("delta_E")[index], column("delta_U")[index]
-        geo = self.geometry(xi)
+            xi_form = none_if_nan(float(column("xi_form")[index]))
+            zones_column = h5.read_column(group, "zones")
+            assert isinstance(zones_column, list)
+            zones = zones_from_mappings(json.loads(zones_column[index]))
+        geo = self.geometry(xi, zones)
         provenance: dict[str, Any] = {"source": self.path.name, "step": step, "snapshot": index}
-        return StateRecord(delta_E, delta_U, W, M_e, geo.X[: geo.N + 1], xi, j_e, provenance)
+        return StateRecord(delta_E, delta_U, W, M_e, geo.X[: geo.N + 1], xi, j_e, provenance, xi_form, zones)
 
-    def geometry(self, xi: float) -> Geometry:
-        """The grid at time `xi`, from the configuration's map."""
-        return Geometry.of(*self.config.grid.build().radii(xi, self.N))
+    def geometry(self, xi: float, zones: tuple[Zone, ...] = ()) -> Geometry:
+        """The grid at time `xi`: the configuration's base map, blended with the zones if there are any."""
+        return Geometry.of(*run_map(self.config, zones).radii(xi, self.N))
+
+
+def run_map(config: RunConfig, zones: tuple[Zone, ...]) -> Map:
+    """The map a run is on: the configuration's base map before the first switch-on, the blend on it after."""
+    base = config.grid.build()
+    if not zones:
+        return base
+    return BlendMap(base, float(config.fluid.build().alpha), zones)
