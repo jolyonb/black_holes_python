@@ -27,7 +27,7 @@ from pbh.stencils import FaceClosure
 from pbh.timestep import Integrator, step_cap
 
 EXAMPLE = Path(__file__).parent.parent / "examples" / "example.config.yaml"
-EVOLUTION = "evolution: {xi_start: 0.0, xi_end: 1.0}\n"
+EVOLUTION = "evolution: {xi_end: 1.0}\n"
 MINIMAL = "grid: {N: 40, Rtilde_max: 4.0, scale: 2.0}\n" + EVOLUTION
 
 
@@ -42,9 +42,7 @@ def write(tmp_path: Path, text: str) -> Path:
 
 def test_the_example_file_is_the_documented_defaults_with_the_required_keys():
     config = load(EXAMPLE)
-    minimal = RunConfig(
-        grid=GridConfig(N=800, Rtilde_max=12.0, scale=3.0), evolution=EvolutionConfig(xi_start=0.0, xi_end=6.0)
-    )
+    minimal = RunConfig(grid=GridConfig(N=800, Rtilde_max=12.0, scale=3.0), evolution=EvolutionConfig(xi_end=6.0))
     assert config == minimal  # every other section of the example is its default
 
 
@@ -56,7 +54,7 @@ def test_a_minimal_file_takes_every_default(tmp_path: Path):
     assert config.shocks.kernels is Kernels.PRODUCTION
     assert config.excision.face_closure is FaceClosure.FIRST_ORDER
     assert config.stepping.integrator is Integrator.RK4
-    assert config.evolution == EvolutionConfig(xi_start=0.0, xi_end=1.0)
+    assert config.evolution == EvolutionConfig(xi_end=1.0)
 
 
 def test_every_key_can_be_set(tmp_path: Path):
@@ -68,7 +66,7 @@ shocks: {kernels: centred, density_limiter: minmod, c_v: 0.5, rho_floor: 1.0e-10
 excision: {face_closure: o2}
 stepping: {integrator: ssprk3, courant_number: 0.4, cap_tolerance: 1.0e-6, cap_efolds: 3.0}
 output: {snapshot_spacing: 0.1, snapshot_spacing_after: 0.02, flush_every: 50, monitor_every_step: true}
-evolution: {xi_start: -1.0, xi_end: 2.5}
+evolution: {xi_end: 2.5}
 """
     c = load(write(tmp_path, text))
     assert c.fluid.w == Fraction(1, 2)
@@ -80,7 +78,7 @@ evolution: {xi_start: -1.0, xi_end: 2.5}
     assert (c.stepping.cap_tolerance, c.stepping.cap_efolds) == (1e-6, 3.0)
     assert (c.output.snapshot_spacing, c.output.snapshot_spacing_after) == (0.1, 0.02)
     assert (c.output.flush_every, c.output.monitor_every_step) == (50, True)
-    assert c.evolution == EvolutionConfig(xi_start=-1.0, xi_end=2.5)
+    assert c.evolution == EvolutionConfig(xi_end=2.5)
 
 
 def test_an_integer_w_is_read_as_a_rational(tmp_path: Path):
@@ -123,36 +121,32 @@ def test_bad_keys_and_values_are_refused_by_name(tmp_path: Path, extra: str, mes
         ("grid: {N: 40, Rtilde_max: 4.0, scale: 2.0}\n", "evolution\n  Field required"),
         ("grid: {Rtilde_max: 4.0, scale: 2.0}\n" + EVOLUTION, "grid.N\n  Field required"),
         (
-            "grid: {N: 40.5, Rtilde_max: 4.0, scale: 2.0}\nevolution: {xi_start: 0.0, xi_end: 1.0}\n",
+            "grid: {N: 40.5, Rtilde_max: 4.0, scale: 2.0}\nevolution: {xi_end: 1.0}\n",
             "grid.N\n  Input should be a valid integer",
         ),
         (
-            "grid: {N: true, Rtilde_max: 4.0, scale: 2.0}\nevolution: {xi_start: 0.0, xi_end: 1.0}\n",
+            "grid: {N: true, Rtilde_max: 4.0, scale: 2.0}\nevolution: {xi_end: 1.0}\n",
             "grid.N\n  Input should be a valid integer",
         ),
         (
-            "grid: {N: 1, Rtilde_max: 4.0, scale: 2.0}\nevolution: {xi_start: 0.0, xi_end: 1.0}\n",
+            "grid: {N: 1, Rtilde_max: 4.0, scale: 2.0}\nevolution: {xi_end: 1.0}\n",
             "grid.N\n  Input should be greater than or equal to 2",
         ),
         (
-            "grid: {N: 4, Rtilde_max: 0.0, scale: 2.0}\nevolution: {xi_start: 0.0, xi_end: 1.0}\n",
+            "grid: {N: 4, Rtilde_max: 0.0, scale: 2.0}\nevolution: {xi_end: 1.0}\n",
             "grid.Rtilde_max\n  Input should be greater than 0",
         ),
         (
-            "grid: {N: 4, Rtilde_max: 4.0}\nevolution: {xi_start: 0.0, xi_end: 1.0}\n",
+            "grid: {N: 4, Rtilde_max: 4.0}\nevolution: {xi_end: 1.0}\n",
             "grid\n  Value error, scale is required for the sinh map",
         ),
         (
-            "grid: {N: 4, Rtilde_max: 4.0, scale: -1.0}\nevolution: {xi_start: 0.0, xi_end: 1.0}\n",
+            "grid: {N: 4, Rtilde_max: 4.0, scale: -1.0}\nevolution: {xi_end: 1.0}\n",
             "grid.scale\n  Input should be greater than 0",
         ),
         (
-            "grid: {N: 4, Rtilde_max: 4.0, scale: 1.0, map: uniform}\nevolution: {xi_start: 0.0, xi_end: 1.0}\n",
+            "grid: {N: 4, Rtilde_max: 4.0, scale: 1.0, map: uniform}\nevolution: {xi_end: 1.0}\n",
             "grid\n  Value error, scale has no meaning for the uniform map",
-        ),
-        (
-            "grid: {N: 4, Rtilde_max: 4.0, scale: 1.0}\nevolution: {xi_start: 1.0, xi_end: 1.0}\n",
-            "evolution\n  Value error, xi_end .* must exceed",
         ),
         ("- a list\n", "must be a mapping of sections"),
     ],
@@ -183,7 +177,7 @@ def test_a_saved_configuration_is_complete_carries_its_provenance_and_reloads_un
 def test_the_uniform_map_is_saved_without_a_scale(tmp_path: Path):
     config = RunConfig(
         grid=GridConfig(N=10, Rtilde_max=3.0, map=MapFamily.UNIFORM),
-        evolution=EvolutionConfig(xi_start=0.0, xi_end=1.0),
+        evolution=EvolutionConfig(xi_end=1.0),
     )
     out = tmp_path / "uniform.config.yaml"
     save(config, out)
@@ -217,7 +211,7 @@ def test_the_sections_build_the_objects_they_describe():
     assert config.stepping.cap(config.fluid.build()) == step_cap(config.fluid.build(), 1e-5, 4.0)
     held_uniform = RunConfig(
         grid=GridConfig(N=10, Rtilde_max=3.0, map=MapFamily.UNIFORM),
-        evolution=EvolutionConfig(xi_start=0.0, xi_end=1.0),
+        evolution=EvolutionConfig(xi_end=1.0),
         outer=OuterConfig(closure=OuterChoice.HELD),
     )
     assert held_uniform.grid.build() == IdentityMap(3.0)

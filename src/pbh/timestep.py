@@ -212,6 +212,39 @@ def advance(scheme: Scheme, integrator: Integrator, xi: float, dy: FloatArray, d
     return explicit_rk_step(integrator.tableau, scheme.deviation_rate, xi, dy, dxi)
 
 
+@dataclass(frozen=True)
+class Stage:
+    """One stage of a step: its time, the packed state it was evaluated on, and the result."""
+
+    xi: float
+    y: FloatArray
+    result: DerivsResult
+
+
+def advance_with_stages(
+    scheme: Scheme, integrator: Integrator, xi: float, dy: FloatArray, dxi: float, first: DerivsResult | None = None
+) -> tuple[FloatArray, list[Stage]]:
+    """`advance`, also returning every stage, which the driver's monitors and bookkeeping read.
+
+    The first stage of both integrators is the rate at the step's start, `c_1 = 0`; if the driver has already
+    evaluated it, as it has when it chose the step, `first` is reused and not recomputed.
+    """
+    tableau = integrator.tableau
+    stages: list[Stage] = []
+    k: list[FloatArray] = []
+    for n, (c_i, a_i) in enumerate(zip(tableau.c, tableau.a, strict=True)):
+        dy_i = dy.copy()
+        for a_ij, k_j in zip(a_i, k, strict=True):
+            if a_ij:
+                dy_i += dxi * float(a_ij) * k_j
+        xi_i = xi + float(c_i) * dxi
+        y_i = scheme.frw(xi_i) + dy_i
+        result = first if n == 0 and first is not None and c_i == 0 else scheme.evaluate(xi_i, y_i)
+        stages.append(Stage(xi=xi_i, y=y_i, result=result))
+        k.append(scheme.layout.pack(result.rate) - scheme.frw_rate(xi_i))
+    return dy + dxi * sum(float(b_i) * k_i for b_i, k_i in zip(tableau.b, k, strict=True)), stages
+
+
 def courant_step(result: DerivsResult, geo: Geometry, layout: Layout, courant_number: float) -> float:
     """The Courant step `C_CFL min_c Delta X_c / Lambda_hat_c` over the retained cells (eq:num:cfl, first term).
 

@@ -38,10 +38,9 @@ assembled from all of them. The driver reads the file and never sees a raw strin
       flush_every: 200              # steps buffered before the step record is written
       monitor_every_step: false     # the full monitor record every step, not only at snapshots
     evolution:
-      xi_start: 0.0
-      xi_end: 6.0
+      xi_end: 6.0                   # the run starts at the time of its initial data
 
-Every key has the default shown except `N`, `Rtilde_max` and the evolution times, which a run must state. A file
+Every key has the default shown except `N`, `Rtilde_max` and `xi_end`, which a run must state. A file
 may omit any key with a default and may contain nothing else: an unknown key, a wrong type, or a value outside its
 range is an error naming the key, never a warning. `save` writes the complete configuration with every default
 filled in, under a `provenance` section giving the code's git commit and the time of writing; `load` accepts and
@@ -217,16 +216,9 @@ class OutputConfig(Section):
 
 
 class EvolutionConfig(Section):
-    """The `evolution` section: the time interval of the run."""
+    """The `evolution` section: when the run ends; it starts at the time its initial data carry."""
 
-    xi_start: float
     xi_end: float
-
-    @model_validator(mode="after")
-    def _the_interval_is_not_empty(self) -> Self:
-        if not self.xi_end > self.xi_start:
-            raise ValueError(f"xi_end ({self.xi_end}) must exceed xi_start ({self.xi_start})")
-        return self
 
 
 class RunConfig(Section):

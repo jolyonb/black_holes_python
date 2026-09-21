@@ -50,6 +50,17 @@ import numpy as np
 from pbh.types import FloatArray
 
 
+def shell_volumes(X: FloatArray) -> FloatArray:
+    """`Delta V_c = int_cell X^2 dX` between successive faces, the FRW cell energies (eq:num:geom).
+
+    Written as `(X_+ - X_-) (X_-^2 + X_- X_+ + X_+^2) / 3` rather than as a difference of cubes, so that the only
+    cancellation is in the small factor `X_+ - X_-`. The one formula for the cell volume, used by `Geometry` and by
+    the state record, so that the two agree to the bit.
+    """
+    X_minus, X_plus = X[:-1], X[1:]
+    return (X_plus - X_minus) * (X_minus**2 + X_minus * X_plus + X_plus**2) / 3.0
+
+
 @dataclass(frozen=True)
 class Geometry:
     """The map at the faces and the exact cell geometry built from it, at one time.
@@ -116,7 +127,7 @@ class Geometry:
         X_minus2, X_plus2, product = X_minus**2, X_plus**2, X_minus * X_plus
         quadratic = X_minus2 + product + X_plus2  # X_-^2 + X_- X_+ + X_+^2
         quartic = X_minus2**2 + X_plus2**2 + product * (X_minus2 + X_plus2) + product**2  # X_-^4 + ... + X_+^4
-        dV_all = (X_plus - X_minus) * quadratic / 3.0
+        dV_all = shell_volumes(X)
         sbar_all = 0.6 * quartic / quadratic
         # The volume rate on a moving map, eq:num:geom third line, for the real cells only.
         dV_xi = X_plus2[:-1] * X_xi[1:-1] - X_minus2[:-1] * X_xi[:-2]

@@ -54,7 +54,6 @@ from pbh.geometry import Geometry
 from pbh.h5 import Column
 from pbh.layout import Layout
 from pbh.records import StateRecord
-from pbh.state import State, frw_state
 from pbh.types import FloatArray
 
 FORMAT = "pbh-evolution"
@@ -177,15 +176,19 @@ class SnapshotInfo:
 
 
 def next_snapshot_time(xi: float, xi_form: float | None, output: OutputConfig) -> float:
-    """The snapshot time after `xi`: the schedule both the excised and the unexcised run compute.
+    """The first snapshot time after `xi`: the schedule both the excised and the unexcised run compute.
 
-    Before formation the times are `xi_start + k snapshot_spacing`, which `xi` is taken to lie on; from formation on
-    the physical time advances by `snapshot_spacing_after` Hubble times at formation per snapshot,
-    `e^xi_next = e^xi + snapshot_spacing_after e^xi_form`.
+    Before formation the snapshot times are the multiples of `snapshot_spacing`, `k snapshot_spacing`; from
+    formation on they are the times at which the physical time has advanced from formation by whole multiples of
+    `snapshot_spacing_after` Hubble times at formation, `xi_form + ln(1 + m snapshot_spacing_after)`. Each time is
+    computed from its index and never by accumulation, so two runs of the same collapse, or a run and its restart,
+    land on the same floating-point times; a time already reached counts as passed.
     """
     if xi_form is None or xi < xi_form:
-        return xi + output.snapshot_spacing
-    return float(np.log(np.exp(xi) + output.snapshot_spacing_after * np.exp(xi_form)))
+        k = int(np.floor(xi / output.snapshot_spacing + 1e-9)) + 1
+        return k * output.snapshot_spacing
+    m = int(np.floor((np.exp(xi - xi_form) - 1.0) / output.snapshot_spacing_after + 1e-9)) + 1
+    return xi_form + float(np.log1p(m * output.snapshot_spacing_after))
 
 
 # --- writing ---
@@ -316,10 +319,11 @@ class RunReader:
         return [SnapshotInfo(i, int(steps[i]), float(xis[i]), int(faces[i])) for i in range(len(steps))]
 
     def snapshot(self, index: int) -> StateRecord:
-        """One snapshot as a state record: the state itself, on the grid the configuration gives at that time.
+        """One snapshot as a state record, on the grid the configuration gives at that time.
 
-        The state is FRW at that time plus the stored deviation, on the layout with the stored excision face; the
-        radii come from the configuration's map. The record's provenance names this file and the step.
+        The stored deviation goes into the record untouched, so a run started from it carries the integrator's
+        variables to the last bit; the radii come from the configuration's map. The record's provenance names this
+        file and the step.
         """
         with self._open() as f:
             group = h5.subgroup(f, "snapshots")
@@ -331,10 +335,8 @@ class RunReader:
             W, M_e = float(column("W")[index]), float(column("M_e")[index])
             delta_E, delta_U = column("delta_E")[index], column("delta_U")[index]
         geo = self.geometry(xi)
-        frw = frw_state(geo, j_e)
-        state = State(E=frw.E + delta_E, U=frw.U + delta_U, W=frw.W + W, M_e=frw.M_e + M_e)
         provenance: dict[str, Any] = {"source": self.path.name, "step": step, "snapshot": index}
-        return StateRecord(state=state, X=geo.X[: geo.N + 1], xi=xi, j_e=j_e, provenance=provenance)
+        return StateRecord(delta_E, delta_U, W, M_e, geo.X[: geo.N + 1], xi, j_e, provenance)
 
     def geometry(self, xi: float) -> Geometry:
         """The grid at time `xi`, from the configuration's map."""

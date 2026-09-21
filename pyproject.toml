@@ -6,12 +6,16 @@ readme = "README.md"
 authors = [{ name = "Jolyon Bloomfield" }]
 requires-python = ">=3.14"
 dependencies = [
+    "cyclopts>=4.25.3",
     "h5py>=3.16.0",
     "numpy>=2.3",
     "pydantic>=2.13.5",
     "pyyaml>=6.0.3",
     "scipy>=1.18.1",
 ]
+
+[project.scripts]
+pbh = "pbh.cli:main"
 
 [dependency-groups]
 analysis = [
@@ -96,6 +100,7 @@ source = ["pbh"]
 
 [tool.coverage.report]
 fail_under = 100  # every line of the production code is exercised by the fast suite; pre-commit enforces it
+exclude_also = ['if __name__ == "__main__":']  # exercised by a subprocess test, invisible to the in-process report
 show_missing = true
 skip_covered = false
 

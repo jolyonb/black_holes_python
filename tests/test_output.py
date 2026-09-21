@@ -15,9 +15,7 @@ from pbh.output import Event, EventRow, RunReader, RunWriter, StepRow, Table, ne
 from pbh.state import State, frw_state
 from pbh.types import FloatArray
 
-CONFIG = RunConfig(
-    grid=GridConfig(N=40, Rtilde_max=4.0, scale=2.0), evolution=EvolutionConfig(xi_start=0.0, xi_end=1.0)
-)
+CONFIG = RunConfig(grid=GridConfig(N=40, Rtilde_max=4.0, scale=2.0), evolution=EvolutionConfig(xi_end=1.0))
 
 
 @dataclass(frozen=True)
@@ -163,10 +161,12 @@ def test_event_rows_carry_their_payload_as_json():
 
 def test_the_snapshot_schedule_is_uniform_in_xi_before_formation_and_in_physical_time_after():
     output = OutputConfig(snapshot_spacing=0.05, snapshot_spacing_after=0.1)
-    assert next_snapshot_time(0.3, None, output) == pytest.approx(0.35)
-    assert next_snapshot_time(0.3, 0.5, output) == pytest.approx(0.35)  # not yet formed
+    assert next_snapshot_time(0.3, None, output) == 7 * 0.05  # the next multiple, computed from its index
+    assert next_snapshot_time(0.3, 0.5, output) == 7 * 0.05  # not yet formed
+    assert next_snapshot_time(0.32, None, output) == 7 * 0.05
+    assert next_snapshot_time(0.0, None, output) == 0.05  # a time already reached counts as passed
     xi_form = 2.0
-    xi = 2.05
+    xi = xi_form
     times = [xi]
     for _ in range(3):
         xi = next_snapshot_time(xi, xi_form, output)
@@ -174,6 +174,7 @@ def test_the_snapshot_schedule_is_uniform_in_xi_before_formation_and_in_physical
     physical = np.exp(times) / np.exp(xi_form)  # in Hubble times at formation
     assert np.diff(physical) == pytest.approx([0.1, 0.1, 0.1])
     assert np.all(np.diff(np.diff(times)) < 0.0)  # closer and closer in xi, as the steps are
+    assert next_snapshot_time(times[1], xi_form, output) == times[2]  # from any time, the same next time
 
 
 def test_a_snapshot_round_trips_as_a_restartable_state_on_the_configurations_grid(tmp_path: Path):
@@ -197,17 +198,20 @@ def test_a_snapshot_round_trips_as_a_restartable_state_on_the_configurations_gri
     listing = run.snapshots
     assert [(s.index, s.step, s.xi, s.j_e) for s in listing] == [(0, 5, 0.2, 0), (1, 40, xi, j_e)]
     record = run.snapshot(1)
-    assert np.array_equal(record.state.E[j_e:], E[j_e:])
-    assert np.all(np.isnan(record.state.E[:j_e]))
-    assert np.array_equal(record.state.U[j_e:], U[j_e:])
-    assert record.state.W == pytest.approx(0.01)
+    deviation = layout.unpack(dy)
+    assert np.array_equal(record.delta_E[j_e:], deviation.E[j_e:])  # the integrator's variables, bit for bit
+    assert np.all(np.isnan(record.delta_E[:j_e]))
+    assert np.array_equal(record.delta_U[j_e:], deviation.U[j_e:])
+    assert record.state.E[j_e:] == pytest.approx(E[j_e:], rel=1e-15)
+    assert record.W == pytest.approx(0.01)
     assert record.state.M_e == pytest.approx(0.2)
+    assert record.M_e == pytest.approx(0.2 - geo.X[j_e] ** 3)  # the deviation from the FRW excised mass
     assert np.array_equal(record.X, geo.X[: N + 1])
     assert (record.xi, record.j_e) == (xi, j_e)
     assert record.provenance == {"source": "run.evolution.h5", "step": 40, "snapshot": 1}
     frw = run.snapshot(0)
     assert np.array_equal(frw.state.E, run.geometry(0.2).dV)
-    assert frw.state.W == 0.0
+    assert frw.W == 0.0
 
 
 WRITER_UNTIL_KILLED = """
@@ -215,7 +219,7 @@ import sys, pathlib, numpy as np
 from pbh.config import EvolutionConfig, GridConfig, RunConfig
 from pbh.layout import Layout
 from pbh.output import RunWriter, StepRow
-cfg = RunConfig(grid=GridConfig(N=40, Rtilde_max=4.0, scale=2.0), evolution=EvolutionConfig(xi_start=0.0, xi_end=1.0))
+cfg = RunConfig(grid=GridConfig(N=40, Rtilde_max=4.0, scale=2.0), evolution=EvolutionConfig(xi_end=1.0))
 out = RunWriter(pathlib.Path(sys.argv[1]), cfg, N=40, row_type=StepRow)
 s = 0
 while True:
