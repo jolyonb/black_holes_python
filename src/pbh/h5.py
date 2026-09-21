@@ -6,7 +6,8 @@ the output module use these and never touch h5py directly.
 """
 
 import json
-from typing import Any, cast
+from pathlib import Path
+from typing import Any, Literal, cast
 
 import h5py
 import numpy as np
@@ -80,3 +81,77 @@ def _as_builtin(value: object) -> object:
 def create_group(group: Group, name: str) -> Group:
     """Create a subgroup."""
     return group.create_group(name)  # type: ignore[reportUnknownMemberType]
+
+
+def subgroup(group: Group, name: str) -> Group:
+    """An existing subgroup."""
+    found = group[name]
+    if not isinstance(found, h5py.Group):
+        raise KeyError(f"{name!r} is not a group")
+    return found
+
+
+# --- files and columns: what the evolution file's tables are made of ---
+
+
+def create_file(path: Path) -> File:
+    """Create a file for writing, in the format that supports single-writer multiple-reader access."""
+    return h5py.File(path, "w", libver="latest")
+
+
+def open_file(path: Path) -> File:
+    """Open a file for reading, also while another process is writing it."""
+    return h5py.File(path, "r", libver="latest", swmr=True)
+
+
+def start_single_writer_mode(file: File) -> None:
+    """Switch to single-writer multiple-reader mode: readers may open the file, and nothing new may be created."""
+    file.swmr_mode = True
+
+
+type ColumnKind = Literal["float", "int", "str"]
+type IntArray = np.ndarray[tuple[int], np.dtype[np.int64]]
+type Column = FloatArray | IntArray | list[str]
+"""What a column reads back as: floats and arrays as float arrays, ints as an int array, strings as a list."""
+
+
+def create_column(group: Group, name: str, kind: ColumnKind, width: int | None = None, length: int = 64) -> None:
+    """Create an empty column: a dataset unlimited along the rows, chunked, of scalars or of arrays of `width`.
+
+    Strings are stored as fixed-length bytes of at most `length` characters: HDF5's variable-length strings cannot
+    be read by another process while the file is being written.
+    """
+    dtype: object = {"float": np.float64, "int": np.int64, "str": f"S{length}"}[kind]
+    shape: tuple[int, ...] = () if width is None else (width,)
+    chunk = 256 if width is None else max(1, 65536 // (8 * width))  # about 2 KB of scalars or 512 KB of arrays
+    group.create_dataset(  # type: ignore[reportUnknownMemberType]
+        name, shape=(0, *shape), maxshape=(None, *shape), dtype=dtype, chunks=(chunk, *shape)
+    )
+
+
+def append_column(group: Group, name: str, values: list[Any]) -> None:
+    """Append rows to a column and flush them, so that a reader can see them; strings are encoded."""
+    dataset = cast(h5py.Dataset, group[name])
+    if cast(str, cast(Any, dataset).dtype.kind) == "S":
+        values = [str(v).encode() for v in values]
+    n = int(cast(Any, dataset).shape[0])
+    dataset.resize(n + len(values), axis=0)  # type: ignore[reportUnknownMemberType]
+    dataset[n : n + len(values)] = values
+    dataset.flush()
+
+
+def read_column(group: Group, name: str) -> Column:
+    """Read a whole column; what has been flushed."""
+    dataset = cast(h5py.Dataset, group[name])
+    values = cast(Any, dataset[()])
+    kind = cast(str, cast(Any, dataset).dtype.kind)
+    if kind == "S":
+        return [v.decode() for v in cast(list[bytes], list(values))]
+    if kind == "i":
+        return np.asarray(values, dtype=np.int64).reshape(-1)
+    return np.asarray(values, dtype=np.float64)
+
+
+def column_names(group: Group) -> list[str]:
+    """The names of a table's columns."""
+    return [str(cast(object, name)) for name in cast(Any, group)]

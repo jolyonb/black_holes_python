@@ -24,7 +24,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-import h5py
 import numpy as np
 
 from pbh import h5
@@ -85,8 +84,7 @@ def read_record(group: h5.Group) -> StateRecord:
         W=h5.read_float(group, "W"),
         M_e=h5.read_float(group, "M_e"),
     )
-    made = group["provenance"]
-    assert isinstance(made, h5py.Group)
+    made = h5.subgroup(group, "provenance")
     provenance = h5.read_mapping(made, "details")
     provenance["code_commit"] = h5.read_text(made, "code_commit")
     provenance["written"] = h5.read_text(made, "written")
@@ -101,11 +99,11 @@ def read_record(group: h5.Group) -> StateRecord:
 
 def write_initial(path: Path, state: State, geo: Geometry, xi: float, provenance: dict[str, Any]) -> None:
     """Write the initial-data file: the state on the grid `geo` at the time `xi`, with its provenance."""
-    with h5py.File(path, "w") as f:
+    with h5.create_file(path) as f:
         write_record(f, state, np.asarray(geo.X[: geo.N + 1]), xi, 0, provenance)
 
 
 def read_initial(path: Path) -> StateRecord:
     """Read an initial-data file."""
-    with h5py.File(path, "r") as f:
+    with h5.open_file(path) as f:
         return read_record(f)
