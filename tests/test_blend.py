@@ -190,7 +190,7 @@ def test_a_second_zone_continues_the_map_in_value_and_velocity_and_keeps_the_ide
         assert np.all(X_xi[outer] == 0.0)
         assert np.all(np.diff(X) > 0.0)
         assert np.all(ALPHA * X + X_xi >= 0.0)
-        assert np.sum(both.weights(N), axis=0) == pytest.approx(np.ones(N + 2))
+        assert np.sum(both.weights(u), axis=0) == pytest.approx(np.ones(N + 2))
     with pytest.raises(ValueError, match="must not overlap"):
         first.with_zone(Zone(xi_on=6.0, tau_on=0.3, x_t=0.3, Delta_t=0.1))
     with pytest.raises(ValueError, match="cannot be switched on before"):
@@ -221,3 +221,17 @@ def test_frw_passes_through_a_forced_switch_on_in_deviation_form_to_round_off(ba
         assert np.max(np.abs(final.E / geo.dV - 1.0)) < 1e-13
         assert np.max(np.abs(final.U[1:] / geo.X[1 : N + 1] - 1.0)) < 1e-13
         assert abs(final.W) < 1e-13
+
+
+@pytest.mark.parametrize("base", BASES)
+def test_the_analytic_map_at_a_continuous_label_agrees_with_the_faces_on_every_map(base: Map):
+    N = 50
+    u = fractions(N)
+    for m in (base, PinnedMap(base, ALPHA, xi_on=1.0), BlendMap(base, ALPHA, (ZONE,))):
+        for xi in (0.5, 5.0):
+            X, _ = m.radii(xi, N)
+            assert np.array_equal(m.radius_at(xi, u), X)
+            between = m.radius_at(xi, np.array([0.5 / N, 0.31, 0.999]))  # off the faces: monotone, in range
+            assert 0.0 < between[0] < X[1]
+            assert X[15] < between[1] < X[16]
+            assert X[N - 1] < between[2] < X[N]

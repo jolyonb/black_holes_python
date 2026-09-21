@@ -11,6 +11,7 @@ the run.
     steps      one row per step: step, xi, dxi, which limit set the step, and the monitors of the run
     events     one row per event: step, xi, kind, and a JSON payload (formation, switch-on, abort, end, ...)
     snapshots  one row per output time: the integrator's variables only, from which everything else is derived
+    horizon    one row per step: the finder's report, the apparent horizon and the trapping margins
 
 A snapshot stores what the integrator carries and nothing derived: the deviations from FRW of the cell energies and
 the face velocities, `W`, `M_e`, the excision face and the time. Radii, densities, the lapse and the rest are
@@ -52,6 +53,7 @@ from pbh import h5
 from pbh.config import OutputConfig, RunConfig, code_commit
 from pbh.geometry import Geometry
 from pbh.h5 import Column
+from pbh.horizon import HorizonRow
 from pbh.layout import Layout
 from pbh.maps import BlendMap, Map, Zone
 from pbh.records import StateRecord, none_if_nan, zones_as_mappings, zones_from_mappings
@@ -222,6 +224,7 @@ class RunWriter[R: StepRow]:
         self.events = Table(h5.create_group(self.file, "events"), EventRow)
         widths = {"delta_E": N, "delta_U": N + 1}
         self.snapshots = Table(h5.create_group(self.file, "snapshots"), SnapshotRow, widths)
+        self.horizon = Table(h5.create_group(self.file, "horizon"), HorizonRow)
         h5.start_single_writer_mode(self.file)
         self.closed = False
 
@@ -248,6 +251,10 @@ class RunWriter[R: StepRow]:
         """Record one step."""
         self.steps.append(row)
 
+    def horizon_row(self, row: HorizonRow) -> None:
+        """Record the finder's row for a step."""
+        self.horizon.append(row)
+
     def event(self, step: int, xi: float, kind: str, payload: dict[str, Any]) -> None:
         """Record one event; the payload must be JSON-serialisable."""
         self.events.append(EventRow(step=step, xi=xi, kind=kind, payload=json.dumps(payload, sort_keys=True)))
@@ -257,6 +264,7 @@ class RunWriter[R: StepRow]:
         """Write everything buffered to disk."""
         self.steps.flush()
         self.events.flush()
+        self.horizon.flush()
 
     def close(self, step: int, xi: float, status: str, **payload: object) -> None:
         """Record the end of the run with its status (`completed`, `aborted`, ...) and close the file."""
@@ -324,6 +332,11 @@ class RunReader:
         """The end event, or `None` while the run is still going."""
         ends = [e for e in self.events if e.kind == "end"]
         return ends[-1] if ends else None
+
+    @property
+    def horizon(self) -> dict[str, Column]:
+        """The horizon table, column by column."""
+        return self._table("horizon")
 
     @property
     def snapshots(self) -> list[SnapshotInfo]:

@@ -56,6 +56,14 @@ class Map(ABC):
     def radii(self, xi: float, N: int) -> MapValues:
         """`X_j` and `(d_xi X)_j` at the faces `0..N+1` at time `xi`, for a grid of `N` cells."""
 
+    @abstractmethod
+    def radius_at(self, xi: float, u: FloatArray) -> FloatArray:
+        """`X(xi, u)` at any label `u`, the fraction `j / N` continued off the faces to a non-integer face number.
+
+        The horizon finder interpolates the crossing of the trapping function to `j + fraction` and asks the map for
+        the radius there, which is second order on any grid; interpolating the radius between the faces is not.
+        """
+
 
 @dataclass(frozen=True)
 class IdentityMap(Map):
@@ -84,6 +92,10 @@ class IdentityMap(Map):
         """`X_j = Rtilde_max j / N`, `d_xi X = 0`."""
         X = self.Rtilde_max * fractions(N)
         return X, np.zeros_like(X)
+
+    def radius_at(self, xi: float, u: FloatArray) -> FloatArray:
+        """`X = Rtilde_max u`."""
+        return self.Rtilde_max * u
 
 
 @dataclass(frozen=True)
@@ -117,8 +129,11 @@ class SinhStretch(Map):
 
     def radii(self, xi: float, N: int) -> MapValues:
         """`X = L sinh(u asinh(Rtilde_max / L))`, `d_xi X = 0`."""
-        X = self.scale * np.sinh(fractions(N) * math.asinh(self.Rtilde_max / self.scale))
-        return X, np.zeros_like(X)
+        return self.radius_at(xi, fractions(N)), np.zeros(N + 2)
+
+    def radius_at(self, xi: float, u: FloatArray) -> FloatArray:
+        """`X = L sinh(u asinh(Rtilde_max / L))`."""
+        return self.scale * np.sinh(u * math.asinh(self.Rtilde_max / self.scale))
 
 
 @dataclass(frozen=True)
@@ -164,6 +179,10 @@ class PinnedMap(Map):
         B, _ = self.base.radii(0.0, N)  # the base is static, so its time argument is immaterial
         X = math.exp(-self.alpha * (xi - self.xi_on)) * B
         return X, -self.alpha * X
+
+    def radius_at(self, xi: float, u: FloatArray) -> FloatArray:
+        """`X = e^(-alpha (xi - xi_on)) B(u)`."""
+        return math.exp(-self.alpha * (xi - self.xi_on)) * self.base.radius_at(0.0, u)
 
 
 # --- the post-formation map: the base pinned in zones, joined by flat steps, switched on by ramps (Section 8.1) ---
@@ -291,25 +310,32 @@ class BlendMap(Map):
         """The map with a further zone outside the existing ones: a repeated switch-on."""
         return BlendMap(self.base, self.alpha, (*self.zones, zone))
 
-    def weights(self, N: int) -> FloatArray:
-        """The partition of unity `w_k(u)` at the faces, one row per zone and a last row for the static exterior."""
-        u = fractions(N)
+    def weights(self, u: FloatArray) -> FloatArray:
+        """The partition of unity `w_k(u)` at the labels `u`: one row per zone, a last row for the static exterior."""
         steps = [zone.step(u) for zone in self.zones]
         rows = [1.0 - steps[0]]
         rows += [steps[k] - steps[k + 1] for k in range(len(steps) - 1)]
         rows.append(steps[-1])
         return np.array(rows)
 
-    def radii(self, xi: float, N: int) -> MapValues:
-        """`X = B sum_k w_k e^(-alpha T_k)` and `d_xi X = -alpha B sum_k w_k dT_k/dxi e^(-alpha T_k)`."""
-        B, _ = self.base.radii(0.0, N)  # the base is static, so its time argument is immaterial
-        w = self.weights(N)
-        factor = np.zeros_like(B)
-        rate = np.zeros_like(B)
+    def _factors(self, xi: float, u: FloatArray) -> tuple[FloatArray, FloatArray]:
+        """`sum_k w_k e^(-alpha T_k)` and `sum_k w_k dT_k/dxi e^(-alpha T_k)` at the labels `u`."""
+        w = self.weights(u)
+        factor = np.zeros_like(u)
+        rate = np.zeros_like(u)
         for k, zone in enumerate(self.zones):
             T, dT = ramp(xi, zone.xi_on, zone.tau_on)
             pinned = math.exp(-self.alpha * T)
             factor += w[k] * pinned
             rate += w[k] * dT * pinned
-        factor += w[-1]  # the static exterior, T = 0
+        return factor + w[-1], rate  # the static exterior has T = 0
+
+    def radii(self, xi: float, N: int) -> MapValues:
+        """`X = B sum_k w_k e^(-alpha T_k)` and `d_xi X = -alpha B sum_k w_k dT_k/dxi e^(-alpha T_k)`."""
+        B, _ = self.base.radii(0.0, N)  # the base is static, so its time argument is immaterial
+        factor, rate = self._factors(xi, fractions(N))
         return B * factor, -self.alpha * B * rate
+
+    def radius_at(self, xi: float, u: FloatArray) -> FloatArray:
+        """`X(xi, u) = B(u) sum_k w_k(u) e^(-alpha T_k)`."""
+        return self.base.radius_at(0.0, u) * self._factors(xi, u)[0]

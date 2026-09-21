@@ -235,7 +235,7 @@ while True:
     out.step(StepRow(s, 1e-4 * s, 1e-4, "courant"))
     out.flush()
     if s % 20 == 0:
-        out.snapshot(s, 1e-4 * s, Layout(40), np.zeros(Layout(40).size))
+        out.snapshot(s, 1e-4 * s, Layout(40), np.zeros(Layout(40).size), None, ())
     s += 1
 """
 

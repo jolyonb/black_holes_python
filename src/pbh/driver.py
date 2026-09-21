@@ -7,8 +7,10 @@ steps:
 1. evaluate the rate at the state (the first stage of the step), and choose the step: the smaller of the Courant
    step and the cap (eq:num:cfl), clipped to land exactly on the next snapshot time and on the end;
 2. take the Runge-Kutta step in deviation form, keeping every stage's result for the monitors;
-3. check that the state is finite; record the step's monitors, the full row when the step ends on a snapshot or
-   the configuration asks for it every step; write the snapshot when due; flush the step record on its cadence.
+3. check that the state is finite; run the horizon finder on it, recording its row, the formation event at the
+   first trapped face, and an abort if the outer face is trapped; record the step's monitors, the full row when the
+   step ends on a snapshot or the configuration asks for it every step; write the snapshot when due; flush the
+   step record on its cadence.
 
 The initial state and the final state are always snapshots, whatever the schedule, so that any run can be
 continued from where it stopped.
@@ -21,7 +23,7 @@ good state, and ends the run with the status `aborted`. The horizon finder and e
 The far-zone radius of the monitors is read off the initial data: the smallest radius beyond which they are FRW.
 The map is the configuration's base map, blended with the zones the initial record carries if it comes from a
 snapshot after a switch-on, and the formation time it carries drives the snapshot schedule; until the finder and
-excision exist the driver adds neither.
+excision exist the driver sets the formation time and adds no zone.
 """
 
 from dataclasses import dataclass
@@ -32,6 +34,7 @@ import numpy as np
 
 from pbh.config import RunConfig, save
 from pbh.derived import NotHyperbolicError
+from pbh.horizon import HorizonRow, find_horizons
 from pbh.monitors import MonitoredStep, StageFluxes, StepInputs, monitor_step
 from pbh.output import RunWriter, next_snapshot_time, run_map
 from pbh.records import StateRecord, shell_volumes
@@ -145,6 +148,18 @@ def run(config: RunConfig, initial: StateRecord, paths: RunPaths) -> RunResult:
             xi, dy, result = xi_new, dy_new, result_new
             at_snapshot = xi == next_snapshot
             frame = sch.frame(xi)
+            report = find_horizons(state_new, result.derived, frame.geo, frame.bg, sch.eos, sch.map, layout, xi)
+            if report.outer_face_trapped:
+                out.event(step, xi, "abort", {"field": "outer_face_trapped", "index": layout.N, "value": report.h[-1]})
+                out.snapshot(step, xi, layout, dy, xi_form, zones)
+                out.close(step, xi, "aborted", reason="the outer face is trapped: the box is inside the hole")
+                return RunResult(status="aborted", steps=step, xi=xi, paths=paths)
+            if xi_form is None and report.trapped_faces > 0:
+                xi_form = xi
+                a = report.apparent
+                assert a is not None  # a trapped face has an outer boundary once face N is untrapped
+                out.event(step, xi, "formation", {"j_star": a.j, "x_AH": a.x, "X_AH": a.X, "M_AH": report.M_AH})
+            out.horizon_row(HorizonRow.of(step, xi, report, zones[-1].inner_edge if zones else None))
             row = monitor_step(
                 StepInputs(
                     step=step,
