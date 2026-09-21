@@ -262,12 +262,12 @@ class RunConfig(Section):
     output: OutputConfig = OutputConfig()
     evolution: EvolutionConfig
 
-    def scheme(self, map: Map | None = None) -> Scheme:
-        """The scheme this configuration describes, on the unexcised grid; `map` replaces the base map when given."""
+    def scheme(self, map: Map | None = None, layout: Layout | None = None) -> Scheme:
+        """The scheme this configuration describes; `map` replaces the base map and `layout` the unexcised layout."""
         return Scheme(
             self.fluid.build(),
             self.grid.build() if map is None else map,
-            Layout(self.grid.N),
+            Layout(self.grid.N) if layout is None else layout,
             self.excision.face_closure,
             self.outer.build(),
             self.shocks.build(),

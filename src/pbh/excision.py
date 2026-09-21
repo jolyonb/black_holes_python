@@ -71,11 +71,13 @@ class SwitchAttempt:
     Attributes:
         x_AH: The apparent horizon's label the attempt is based on, and `j_star` its face.
         x_e: The excision label of eq:numbh:xe, and `j_e` the candidate face.
-        inside_horizon: Test one, `1 <= j_e < j_star`.
+        inside_horizon: Test one, `1 <= j_e < j_star`; for a run already excised the candidate is the current face
+            if that lies further out, since the face never moves inward.
         margin_positive: Test two, `mu > 0` at `j_e`, with `mu` the value.
         three_trapped: Test three, the faces `j_e` to `j_e + 2` trapped, with `h` their trapping values.
         transition_fits: Test four, `x_t + Delta_t < 0.8`, with the two labels.
-        no_overlap: With existing zones, the new transition starts beyond the last one's end.
+        no_overlap: With existing zones, the new transition starts beyond the last one's end; an extension is placed
+            there if the horizon alone would put it closer in.
     """
 
     x_AH: float
@@ -150,16 +152,18 @@ def attempt_switch_on(
     N = layout.N
     alpha = float(eos.alpha)
     x_e = excision.eta * math.exp(-alpha * excision.tau_on) * apparent.x
-    j_e = math.ceil(N * x_e)
+    j_e = max(math.ceil(N * x_e), layout.j_e)  # a face already further out stays where it is
     inside = 1 <= j_e < apparent.j
-    if inside and layout.excised:
-        inside = j_e > layout.j_e  # a repeated switch-on with the face already inside: it must move outward
     mu = outflow_margin(j_e, state, d, geo, eos, layout) if inside else float("nan")
     h = tuple(float(report.h[j]) if j <= N else float("nan") for j in (j_e, j_e + 1, j_e + 2))
     three = inside and j_e + 2 <= N and all(value < 0.0 for value in h)
-    x_t, Delta_t = excision.c_t * apparent.x, excision.c_Delta * apparent.x
+    # the transition, sized from the horizon; an extension starts it beyond the last zone's end at the least
+    Delta_t = excision.c_Delta * apparent.x
+    x_t = excision.c_t * apparent.x
+    if zones:
+        x_t = max(x_t, zones[-1].outer_edge + Delta_t)
     fits = x_t + Delta_t < OUTER_STATIC_LABEL
-    no_overlap = not zones or x_t - Delta_t >= zones[-1].outer_edge
+    no_overlap = not zones or x_t - Delta_t >= zones[-1].outer_edge - 1e-12 * zones[-1].outer_edge
     return SwitchAttempt(
         x_AH=apparent.x,
         j_star=apparent.j,

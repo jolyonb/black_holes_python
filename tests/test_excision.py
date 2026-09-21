@@ -4,6 +4,7 @@ assertions, re-excision, and the packing of an excised deviation."""
 import dataclasses
 import math
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
@@ -149,13 +150,19 @@ def test_a_repeated_switch_on_must_move_the_face_outward_and_must_not_overlap_th
     _, state, d, geo, _, report, layout = slice_of(reader, config, index)
     attempt = attempt_switch_on(report, state, d, geo, RAD, layout, EXCISION, ())
     assert attempt.passed
-    # the same slice seen from a run already excised beyond the candidate face: refused, the face cannot move in
+    # the same slice seen from a run already excised beyond the candidate face: the face stays where it is
     excised_state, excised_layout = excise(state, layout, attempt.j_e + 2)
     again = attempt_switch_on(report, excised_state, d, geo, RAD, excised_layout, EXCISION, ())
-    assert not again.inside_horizon
-    # and a zone whose transition the new one would overlap
-    overlapping = Zone(xi_on=0.0, tau_on=0.3, x_t=attempt.x_t - attempt.Delta_t, Delta_t=0.5 * attempt.Delta_t)
-    assert not attempt_switch_on(report, state, d, geo, RAD, layout, EXCISION, (overlapping,)).no_overlap
+    assert again.j_e == attempt.j_e + 2
+    assert again.inside_horizon
+    # with an existing zone the new transition starts beyond its end, so the two never overlap ...
+    earlier = Zone(xi_on=0.0, tau_on=0.3, x_t=attempt.x_t - attempt.Delta_t, Delta_t=0.5 * attempt.Delta_t)
+    extension = attempt_switch_on(report, state, d, geo, RAD, layout, EXCISION, (earlier,))
+    assert extension.no_overlap
+    assert extension.x_t - extension.Delta_t == pytest.approx(earlier.outer_edge)
+    # ... unless that puts it past the static outer part, which the fourth test refuses
+    far = Zone(xi_on=0.0, tau_on=0.3, x_t=0.6, Delta_t=0.1)
+    assert not attempt_switch_on(report, state, d, geo, RAD, layout, EXCISION, (far,)).transition_fits
 
 
 # --- excising ---
@@ -326,3 +333,230 @@ def test_the_excision_configuration_has_the_switch_and_the_optional_re_excision(
     assert ExcisionConfig().enabled is True
     assert ExcisionConfig().eta_r == 0.7
     assert ExcisionConfig().zone_extension_at == 0.8
+
+
+# --- the driver: an excised collapse end to end, the comparison with the unexcised run, and restarts ---
+
+
+@pytest.fixture(scope="module")
+def excised(tmp_path_factory: pytest.TempPathFactory) -> tuple[RunReader, Path, Path]:
+    """The same collapse run with excision on, through formation and a zone extension, to xi = 6.5."""
+    directory = tmp_path_factory.mktemp("excised")
+    path = directory / "bh.yaml"
+    path.write_text(
+        "grid: {N: 200, Rtilde_max: 12.0, scale: 3.0}\n"
+        "output: {snapshot_spacing: 0.5, snapshot_spacing_after: 0.05}\n"
+        "evolution: {xi_end: 6.5}\n"
+    )
+    A = 0.515 * math.e / 8.0
+    args = ["initial", "gaussian", "bh", "--config", str(path), "--A", f"{A:.12g}", "--ell", "2.0"]
+    assert main([*args, "--dir", str(directory)]) == 0
+    assert main(["run", str(path), "bh", "--dir", str(directory)]) == 0
+    return RunReader(RunPaths.of(directory, "bh").evolution), path, directory
+
+
+def test_an_excised_collapse_runs_through_formation_and_far_beyond_it(excised: tuple[RunReader, Path, Path]):
+    reader, _, _ = excised
+    end = reader.end
+    assert end is not None
+    assert (
+        end.payload["status"] == "completed"
+    )  # unexcised, the same collapse dies a fifth of an e-fold after formation
+    kinds = [e.kind for e in reader.events]
+    assert kinds[:2] == ["formation", "switch_on"]
+    assert kinds.count("re_excision") >= 3
+    assert "zone_extension" in kinds
+    formation, switch = reader.events[0], reader.events[1]
+    assert 4.7 < formation.xi < 4.9
+    assert switch.xi == formation.xi  # thrown at first detection here: the three faces were already trapped
+    assert switch.payload["j_e"] == math.ceil(200 * switch.payload["x_e"])
+    assert switch.payload["x_e"] == pytest.approx(0.7 * math.exp(-0.15) * switch.payload["x_AH_on"])
+    assert switch.payload["x_t"] + switch.payload["Delta_t"] < 0.8
+    for e in reader.events:
+        if e.kind == "re_excision":
+            assert e.payload["to"] > e.payload["from"]
+            assert (
+                e.payload["M_je_after"] >= e.payload["M_je_before"]
+            )  # the dropped cells' energy joins the mass inside
+    extension = next(e for e in reader.events if e.kind == "zone_extension")
+    assert extension.payload["x_t"] - extension.payload["Delta_t"] >= switch.payload["x_t"] + switch.payload["Delta_t"]
+    # the face stayed in the certified regime at every excised step
+    table = reader.horizon
+    j_e = np.asarray(table["j_e"], dtype=np.int64)
+    rows = j_e >= 0
+    assert rows.sum() > 400
+    assert np.all(np.diff(j_e[rows]) >= 0)
+    assert np.all(np.asarray(table["mu"], dtype=np.float64)[rows] > 0.0)
+    assert np.all(np.asarray(table["Lambda_plus"], dtype=np.float64)[rows] == 0.0)
+    assert np.max(np.asarray(table["a_over_Theta"], dtype=np.float64)[rows]) < math.sqrt(1.0 / 3.0)
+    for name in ("h_e", "h_e1", "h_e2"):
+        assert np.all(np.asarray(table[name], dtype=np.float64)[rows] < 0.0)
+    M_AH = np.asarray(table["M_AH"], dtype=np.float64)
+    assert np.all(np.diff(M_AH[rows]) >= -1e-12)
+    assert 4.0 < M_AH[rows][-1] < 6.0  # the paper's ladder: 5.37 three e-folds on at higher resolution
+    ratio = np.asarray(table["zone_ratio"], dtype=np.float64)
+    assert np.nanmax(ratio) < 1.0
+    # the snapshots after the switch carry the face and the zones
+    later = [s for s in reader.snapshots if s.xi > switch.xi]
+    assert all(s.j_e > 0 for s in later)
+    last = reader.snapshot(later[-1].index)
+    assert len(last.zones) == 2
+    assert last.xi_form == formation.xi
+
+
+def test_the_excised_run_agrees_with_the_unexcised_continuation_outside_the_face(excised: tuple[RunReader, Path, Path]):
+    # The switch-on snapshot is the unexcised state already on the blend: continued with excision off it runs on the
+    # same grid, and dies where the unexcised collapse dies. Outside the face the two agree, the closure's error
+    # confined to the first cells at the face and never propagating outward: that is what excision promises.
+    reader, path, directory = excised
+    switch = reader.events[1]
+    index = next(s.index for s in reader.snapshots if s.xi == switch.xi and s.j_e == 0)
+    off = directory / "off.yaml"
+    off.write_text(path.read_text().replace("xi_end: 6.5", "xi_end: 5.5") + "excision: {enabled: false}\n")
+    status = main(["restart", "bh", "off", "--dir", str(directory), "--snapshot", str(index), "--config", str(off)])
+    assert status == 2  # aborted: the interior breaks the areal coordinate
+    unexcised = RunReader(RunPaths.of(directory, "off").evolution)
+    assert unexcised.snapshot(0).zones == reader.snapshot(index).zones
+    common = {s.xi: s.index for s in unexcised.snapshots}
+    compared = 0
+    for s in reader.snapshots:
+        if s.xi in common and s.xi > switch.xi and s.j_e > 0:
+            a, b = reader.snapshot(s.index), unexcised.snapshot(common[s.xi])
+            scale = float(np.max(np.abs(b.delta_E[a.j_e :])))
+            at_face = np.max(np.abs(a.delta_E[a.j_e : a.j_e + 2] - b.delta_E[a.j_e : a.j_e + 2])) / scale
+            outside = np.max(np.abs(a.delta_E[a.j_e + 16 :] - b.delta_E[a.j_e + 16 :])) / scale
+            assert at_face > 1e-5  # the first-order layer at the face
+            assert outside < 1e-12  # round-off sixteen cells out
+            assert np.max(np.abs(a.delta_U[a.j_e + 16 :] - b.delta_U[a.j_e + 16 :])) < 1e-10
+            compared += 1
+    assert compared >= 3
+
+
+def test_a_restart_from_an_excised_snapshot_reproduces_the_run_bit_for_bit(excised: tuple[RunReader, Path, Path]):
+    reader, _, directory = excised
+    switch = reader.events[1]
+    middle = next(s for s in reader.snapshots if s.j_e > 0 and s.xi > switch.xi + 0.5)
+    assert main(["restart", "bh", "again", "--dir", str(directory), "--snapshot", str(middle.index)]) == 0
+    again = RunReader(RunPaths.of(directory, "again").evolution)
+    assert again.snapshot(0).j_e == middle.j_e
+    final = reader.snapshot(len(reader.snapshots) - 1)
+    final_again = again.snapshot(len(again.snapshots) - 1)
+    assert final.xi == final_again.xi == 6.5
+    assert final.j_e == final_again.j_e
+    assert np.array_equal(final.delta_E[final.j_e :], final_again.delta_E[final.j_e :])
+    assert np.array_equal(final.delta_U[final.j_e :], final_again.delta_U[final.j_e :])
+    assert final.M_e == final_again.M_e
+    assert final.zones == final_again.zones
+    assert [e.kind for e in again.events if e.kind != "end"] == [
+        e.kind for e in reader.events if e.step > middle.step and e.kind != "end"
+    ]
+
+
+def test_a_restart_from_the_switch_on_snapshot_throws_the_switch_again_with_the_stored_zone(
+    excised: tuple[RunReader, Path, Path],
+):
+    reader, path, directory = excised
+    switch = reader.events[1]
+    index = next(s.index for s in reader.snapshots if s.xi == switch.xi and s.j_e == 0)
+    short = directory / "short.yaml"
+    short.write_text(path.read_text().replace("xi_end: 6.5", "xi_end: 5.2"))
+    assert (
+        main(["restart", "bh", "resw", "--dir", str(directory), "--snapshot", str(index), "--config", str(short)]) == 0
+    )
+    resumed = RunReader(RunPaths.of(directory, "resw").evolution)
+    assert next(e.kind for e in resumed.events) == "switch_on"  # at the examination before the first step
+    assert resumed.events[0].payload["j_e"] == switch.payload["j_e"]
+    assert resumed.snapshot(1).zones == reader.snapshot(index).zones  # the stored zone, not a second one
+    assert len(resumed.snapshot(1).zones) == 1
+    common = {s.xi: s.index for s in resumed.snapshots if s.j_e > 0}
+    matched = [(s.index, common[s.xi]) for s in reader.snapshots if s.xi in common]
+    assert matched
+    i, k = matched[-1]
+    a, b = reader.snapshot(i), resumed.snapshot(k)
+    assert np.array_equal(a.delta_E[a.j_e :], b.delta_E[b.j_e :])
+    assert a.j_e == b.j_e
+
+
+# --- the paths a natural run does not reach: forced through the driver's seams ---
+
+
+def restart_short(directory: Path, path: Path, name: str, index: int, xi_end: float) -> RunReader:
+    """Restart the excised run's snapshot `index` as `name`, to `xi_end`, and read it back."""
+    short = directory / f"{name}.yaml"
+    short.write_text(path.read_text().replace("xi_end: 6.5", f"xi_end: {xi_end}"))
+    main(["restart", "bh", name, "--dir", str(directory), "--snapshot", str(index), "--config", str(short)])
+    return RunReader(RunPaths.of(directory, name).evolution)
+
+
+def always(report: HorizonReport, zones: tuple[Zone, ...], fraction: float) -> bool:
+    """A zone-extension trigger that always fires."""
+    return True
+
+
+def excised_index(reader: RunReader) -> int:
+    switch = reader.events[1]
+    return next(s.index for s in reader.snapshots if s.j_e > 0 and s.xi > switch.xi + 0.3)
+
+
+def test_a_refused_zone_extension_is_logged_once_per_change_of_reasons(
+    excised: tuple[RunReader, Path, Path], monkeypatch: pytest.MonkeyPatch
+):
+    import pbh.driver as driver_module
+
+    reader, path, directory = excised
+    monkeypatch.setattr(driver_module, "zone_needs_extension", always)
+    real = driver_module.attempt_switch_on
+
+    def refusing(*args: Any, **kwargs: Any) -> SwitchAttempt:
+        return dataclasses.replace(real(*args, **kwargs), transition_fits=False)
+
+    monkeypatch.setattr(driver_module, "attempt_switch_on", refusing)
+    index = excised_index(reader)
+    resumed = restart_short(directory, path, "refused", index, reader.snapshot(index).xi + 0.05)
+    attempts = [e for e in resumed.events if e.kind == "zone_attempt"]
+    assert len(attempts) == 1  # refused at every step, logged once
+    assert attempts[0].payload["failed"] == ["transition_fits"]
+
+
+def test_a_zone_extension_can_move_the_face_out_to_the_new_horizon(
+    excised: tuple[RunReader, Path, Path], monkeypatch: pytest.MonkeyPatch
+):
+    # An engulfing horizon far outside would give the attempt a face further out than the current one.
+    import pbh.driver as driver_module
+
+    reader, path, directory = excised
+    index = excised_index(reader)
+    record = reader.snapshot(index)
+    monkeypatch.setattr(driver_module, "zone_needs_extension", always)
+    real = driver_module.attempt_switch_on
+
+    def further(*args: Any, **kwargs: Any) -> SwitchAttempt:
+        attempt = dataclasses.replace(real(*args, **kwargs), j_e=record.j_e + 1, x_t=0.55, Delta_t=0.05)
+        return dataclasses.replace(attempt, transition_fits=True, no_overlap=True)
+
+    monkeypatch.setattr(driver_module, "attempt_switch_on", further)
+    resumed = restart_short(directory, path, "moved", index, record.xi + 0.02)
+    kinds = [e.kind for e in resumed.events]
+    assert "zone_extension" in kinds
+    moved = next(e for e in resumed.events if e.kind == "re_excision" and e.payload["trigger"] == "zone_extension")
+    assert moved.payload["to"] == record.j_e + 1
+
+
+def test_a_failed_face_assertion_aborts_the_run_as_a_result(
+    excised: tuple[RunReader, Path, Path], monkeypatch: pytest.MonkeyPatch
+):
+    import pbh.driver as driver_module
+
+    reader, path, directory = excised
+    index = excised_index(reader)
+
+    def failing(*args: Any, **kwargs: Any) -> FaceValues:
+        raise ExcisionError("the outflow margin mu > 0", 17, -0.1)
+
+    monkeypatch.setattr(driver_module, "check_face", failing)
+    resumed = restart_short(directory, path, "failed", index, reader.snapshot(index).xi + 0.05)
+    end = resumed.end
+    assert end is not None
+    assert end.payload["status"] == "aborted"
+    abort = next(e for e in resumed.events if e.kind == "abort")
+    assert abort.payload == {"field": "the outflow margin mu > 0", "index": 17, "value": -0.1}

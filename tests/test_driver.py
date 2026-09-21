@@ -116,15 +116,12 @@ def test_a_non_finite_state_aborts_as_a_result_with_the_last_good_snapshot(tmp_p
     assert len(reader.snapshots) == 2  # the initial state and the last good state, the same here
 
 
-def test_data_off_the_grid_or_excised_or_after_the_end_are_refused(tmp_path: Path):
+def test_data_off_the_grid_or_after_the_end_are_refused(tmp_path: Path):
     paths = RunPaths.of(tmp_path, "bad")
     initial = bessel_initial(paths)
     other = CONFIG.model_copy(update={"grid": GridConfig(N=N, Rtilde_max=5.0, map=MapFamily.UNIFORM)})
     with pytest.raises(ValueError, match="not sampled on the grid"):
         run(other, initial, paths)
-    excised = StateRecord(initial.delta_E, initial.delta_U, 0.0, 0.0, initial.X, 0.0, 3, {})
-    with pytest.raises(ValueError, match="excised state"):
-        run(CONFIG, excised, paths)
     ended = CONFIG.model_copy(update={"evolution": EvolutionConfig(xi_end=0.0)})
     with pytest.raises(ValueError, match="not before the end"):
         run(ended, initial, paths)

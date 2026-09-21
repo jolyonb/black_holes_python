@@ -10,7 +10,7 @@ from scipy.integrate import quad
 from scipy.optimize import brentq
 
 from pbh.cli import main
-from pbh.config import EvolutionConfig, GridConfig, MapFamily, OutputConfig, RunConfig
+from pbh.config import EvolutionConfig, ExcisionConfig, GridConfig, MapFamily, OutputConfig, RunConfig
 from pbh.derived import Derived, derive
 from pbh.driver import RunPaths, run
 from pbh.eos import RADIATION, Background, EquationOfState
@@ -194,6 +194,7 @@ def test_a_collapse_records_its_formation_and_its_horizon_history(tmp_path: Path
     config = RunConfig(
         grid=GridConfig(N=200, Rtilde_max=12.0, map=MapFamily.SINH, scale=3.0),
         output=OutputConfig(snapshot_spacing=0.5),
+        excision=ExcisionConfig(enabled=False),  # the finder alone: the collapse runs on until the interior breaks
         evolution=EvolutionConfig(xi_end=6.0),
     )
     path = tmp_path / "bh.yaml"
@@ -227,7 +228,7 @@ def test_a_collapse_records_its_formation_and_its_horizon_history(tmp_path: Path
     assert formation.payload["j_star"] >= 1
     table = reader.horizon
     xi = np.asarray(table["xi"], dtype=np.float64)
-    assert len(xi) == result.steps
+    assert len(xi) == result.steps + 1  # the examination of the initial state, then one per step
     trapped = np.asarray(table["trapped_faces"], dtype=np.int64)
     first = int(np.flatnonzero(trapped > 0)[0])
     assert xi[first] == formation.xi
@@ -263,18 +264,18 @@ def test_a_run_whose_outer_face_becomes_trapped_aborts_as_a_result(tmp_path: Pat
     write_initial(paths.initial, StateRecord.of(state, geo.X[:61], XI, 0, {"method": "test"}))
     result = run(config, read_initial(paths.initial), paths)
     assert result.status == "aborted"
-    assert result.steps == 1
+    assert result.steps == 0  # seen at the examination before the first step
     reader = RunReader(paths.evolution)
     kinds = [e.kind for e in reader.events]
     assert kinds == ["abort", "end"]
     assert reader.events[0].payload["field"] == "outer_face_trapped"
     assert reader.events[0].payload["index"] == 60
-    assert len(reader.snapshots) == 2  # the initial state and the last good one
+    assert len(reader.snapshots) == 1  # the last good state, which is the initial one
 
 
 def test_formation_is_recorded_on_the_first_step_with_a_trapped_face(tmp_path: Path):
-    # A state that already holds a trapped shell inside an untrapped exterior: the finder sees it after the first
-    # step, the driver writes the formation event, sets the formation time, and the horizon table fills.
+    # A state that already holds a trapped shell inside an untrapped exterior: the finder sees it at the examination
+    # before the first step, the driver writes the formation event, sets the formation time, and the table fills.
     from pbh.records import StateRecord, write_initial
 
     N = 100
@@ -290,10 +291,10 @@ def test_formation_is_recorded_on_the_first_step_with_a_trapped_face(tmp_path: P
     reader = RunReader(paths.evolution)
     formation = reader.events[0]
     assert formation.kind == "formation"
-    assert formation.step == 1
+    assert formation.step == 0  # the examination of the initial state
     assert formation.payload["j_star"] > 0
     assert 3.3 < formation.payload["X_AH"] < 3.6
     table = reader.horizon
-    assert len(table["xi"]) == result.steps
+    assert len(table["xi"]) == result.steps + 1  # the examination of the initial state, then one per step
     assert np.asarray(table["trapped_faces"])[0] > 0
     assert reader.snapshot(len(reader.snapshots) - 1).xi_form == formation.xi
