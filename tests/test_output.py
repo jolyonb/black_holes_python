@@ -9,8 +9,10 @@ import numpy as np
 import pytest
 
 from pbh import h5
-from pbh.config import EvolutionConfig, GridConfig, RunConfig
-from pbh.output import Event, EventRow, RunReader, RunWriter, StepRow, Table, read_table
+from pbh.config import EvolutionConfig, GridConfig, OutputConfig, RunConfig
+from pbh.layout import Layout
+from pbh.output import Event, EventRow, RunReader, RunWriter, StepRow, Table, next_snapshot_time, read_table
+from pbh.state import State, frw_state
 from pbh.types import FloatArray
 
 CONFIG = RunConfig(
@@ -154,3 +156,90 @@ def test_the_file_can_be_read_by_another_process_while_it_is_being_written(tmp_p
 def test_event_rows_carry_their_payload_as_json():
     row = EventRow(step=1, xi=0.5, kind="end", payload='{"status": "completed"}')
     assert row.payload == '{"status": "completed"}'
+
+
+# --- snapshots ---
+
+
+def test_the_snapshot_schedule_is_uniform_in_xi_before_formation_and_in_physical_time_after():
+    output = OutputConfig(snapshot_spacing=0.05, snapshot_spacing_after=0.1)
+    assert next_snapshot_time(0.3, None, output) == pytest.approx(0.35)
+    assert next_snapshot_time(0.3, 0.5, output) == pytest.approx(0.35)  # not yet formed
+    xi_form = 2.0
+    xi = 2.05
+    times = [xi]
+    for _ in range(3):
+        xi = next_snapshot_time(xi, xi_form, output)
+        times.append(xi)
+    physical = np.exp(times) / np.exp(xi_form)  # in Hubble times at formation
+    assert np.diff(physical) == pytest.approx([0.1, 0.1, 0.1])
+    assert np.all(np.diff(np.diff(times)) < 0.0)  # closer and closer in xi, as the steps are
+
+
+def test_a_snapshot_round_trips_as_a_restartable_state_on_the_configurations_grid(tmp_path: Path):
+    path = tmp_path / "run.evolution.h5"
+    N = CONFIG.grid.N
+    sch = CONFIG.scheme()
+    xi, j_e = 0.7, 3
+    layout = Layout(N, j_e=j_e)
+    geo = sch.frame(xi).geo
+    rng = np.random.default_rng(1)
+    E = geo.dV * (1.0 + 1e-3 * rng.standard_normal(N))
+    U = geo.X[: N + 1] * (1.0 + 1e-3 * rng.standard_normal(N + 1))
+    E[:j_e] = np.nan
+    U[:j_e] = np.nan
+    state = State(E=E, U=U, W=0.01, M_e=0.2)
+    dy = layout.pack(state) - layout.pack(frw_state(geo, j_e))
+    with RunWriter(path, CONFIG, N=N, row_type=StepRow) as out:
+        out.snapshot(5, 0.2, Layout(N), np.zeros(Layout(N).size))  # FRW, unexcised
+        out.snapshot(40, xi, layout, dy)
+    run = RunReader(path)
+    listing = run.snapshots
+    assert [(s.index, s.step, s.xi, s.j_e) for s in listing] == [(0, 5, 0.2, 0), (1, 40, xi, j_e)]
+    record = run.snapshot(1)
+    assert np.array_equal(record.state.E[j_e:], E[j_e:])
+    assert np.all(np.isnan(record.state.E[:j_e]))
+    assert np.array_equal(record.state.U[j_e:], U[j_e:])
+    assert record.state.W == pytest.approx(0.01)
+    assert record.state.M_e == pytest.approx(0.2)
+    assert np.array_equal(record.X, geo.X[: N + 1])
+    assert (record.xi, record.j_e) == (xi, j_e)
+    assert record.provenance == {"source": "run.evolution.h5", "step": 40, "snapshot": 1}
+    frw = run.snapshot(0)
+    assert np.array_equal(frw.state.E, run.geometry(0.2).dV)
+    assert frw.state.W == 0.0
+
+
+WRITER_UNTIL_KILLED = """
+import sys, pathlib, numpy as np
+from pbh.config import EvolutionConfig, GridConfig, RunConfig
+from pbh.layout import Layout
+from pbh.output import RunWriter, StepRow
+cfg = RunConfig(grid=GridConfig(N=40, Rtilde_max=4.0, scale=2.0), evolution=EvolutionConfig(xi_start=0.0, xi_end=1.0))
+out = RunWriter(pathlib.Path(sys.argv[1]), cfg, N=40, row_type=StepRow)
+s = 0
+while True:
+    out.step(StepRow(s, 1e-4 * s, 1e-4, "courant"))
+    out.flush()
+    if s % 20 == 0:
+        out.snapshot(s, 1e-4 * s, Layout(40), np.zeros(Layout(40).size))
+    s += 1
+"""
+
+
+@pytest.mark.slow
+def test_a_writer_killed_while_flushing_leaves_a_readable_file_without_an_end(tmp_path: Path):
+    # The single-writer mode keeps the file consistent at every flush: what was flushed survives a SIGKILL, and the
+    # missing end event is how a reader tells a crashed run from a finished one.
+    import signal
+    import time
+
+    path = tmp_path / "killed.evolution.h5"
+    writer = subprocess.Popen([sys.executable, "-c", WRITER_UNTIL_KILLED, str(path)])
+    time.sleep(1.0)
+    writer.send_signal(signal.SIGKILL)
+    writer.wait()
+    run = RunReader(path)
+    assert len(run.steps["step"]) > 10
+    assert len(run.snapshots) >= 1
+    assert run.end is None

@@ -32,6 +32,10 @@ assembled from all of them. The driver reads the file and never sees a raw strin
       courant_number: 0.75
       cap_tolerance: 1.0e-5     # the step cap of eq:num:stepcap: relative error tolerance ...
       cap_efolds: 4.0           # ... over this many super-horizon e-folds
+    output:
+      snapshot_spacing: 0.05        # snapshots every this much in xi before formation ...
+      snapshot_spacing_after: 0.05  # ... and every this much physical time, in Hubble times at formation, after
+      flush_every: 200              # steps buffered before the step record is written
     evolution:
       xi_start: 0.0
       xi_end: 6.0
@@ -194,6 +198,19 @@ class SteppingConfig(Section):
         return step_cap(eos, self.cap_tolerance, self.cap_efolds)
 
 
+class OutputConfig(Section):
+    """The `output` section: the snapshot schedule and the flush cadence of the evolution file (`output.py`)."""
+
+    snapshot_spacing: float = Field(default=0.05, gt=0.0)
+    """Before formation, the spacing of snapshots in `xi`."""
+
+    snapshot_spacing_after: float = Field(default=0.05, gt=0.0)
+    """After formation, the spacing of snapshots in physical time, in units of the Hubble time at formation."""
+
+    flush_every: int = Field(default=200, ge=1)
+    """How many steps the step record is buffered before it is written to disk."""
+
+
 class EvolutionConfig(Section):
     """The `evolution` section: the time interval of the run."""
 
@@ -216,6 +233,7 @@ class RunConfig(Section):
     shocks: ShockConfig = ShockConfig()
     excision: ExcisionConfig = ExcisionConfig()
     stepping: SteppingConfig = SteppingConfig()
+    output: OutputConfig = OutputConfig()
     evolution: EvolutionConfig
 
     def scheme(self) -> Scheme:

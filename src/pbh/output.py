@@ -12,17 +12,27 @@ the run.
     events     one row per event: step, xi, kind, and a JSON payload (formation, switch-on, abort, end, ...)
     snapshots  one row per output time: the integrator's variables only, from which everything else is derived
 
+A snapshot stores what the integrator carries and nothing derived: the deviations from FRW of the cell energies and
+the face velocities, `W`, `M_e`, the excision face and the time. Radii, densities, the lapse and the rest are
+recomputed by the reader with the same functions the run used, so that what is plotted is what the run saw, and
+every snapshot is a state to restart from. The snapshot times are a schedule that depends only on the
+configuration and the formation time, so that two runs of the same collapse, one excised and one not, write their
+snapshots at the same times: uniform in `xi` before formation, and after it uniform in physical time in units of
+the Hubble time at formation, `e^xi` advancing by `snapshot_spacing_after e^(xi_form)` per snapshot, which is the
+clock the hole runs on. The driver clips its steps to land on those times exactly.
+
 The root carries the run's identity as attributes: the format tag and version, the complete text of the
 configuration as saved, the code's commit, the time of writing and the host. A reader rebuilds the `Scheme` from
 that configuration and computes derived fields with the same functions the run used.
 
     with RunWriter(path, config, N, row_type=StepRow) as out:
         out.step(StepRow(step=0, xi=0.0, dxi=0.01, limit="courant"))
+        out.snapshot(step, xi, layout, dy)              # the packed deviation, as the integrator holds it
         out.event(0, 0.0, "formation", {"j_star": 40})
         ...
     # at close, the end event is written and everything is flushed
     run = RunReader(path)
-    run.steps["xi"], run.events, run.end
+    run.steps["xi"], run.events, run.end, run.snapshots, run.snapshot(i)   # a StateRecord, restartable
 """
 
 import dataclasses
@@ -35,11 +45,17 @@ from pathlib import Path
 from types import TracebackType
 from typing import Any, Self
 
+import numpy as np
 import yaml
 
 from pbh import h5
-from pbh.config import RunConfig, code_commit
+from pbh.config import OutputConfig, RunConfig, code_commit
+from pbh.geometry import Geometry
 from pbh.h5 import Column
+from pbh.layout import Layout
+from pbh.records import StateRecord
+from pbh.state import State, frw_state
+from pbh.types import FloatArray
 
 FORMAT = "pbh-evolution"
 VERSION = 1
@@ -135,6 +151,43 @@ class Event:
     payload: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class SnapshotRow:
+    """A snapshot: the integrator's variables at an output time, and where the excision face is."""
+
+    step: int
+    xi: float
+    j_e: int
+    W: float
+    M_e: float
+    delta_E: FloatArray
+    """`E_c - Delta V_c` on the cells, NaN below the excision face."""
+    delta_U: FloatArray
+    """`U_j - X_j` on the faces, NaN below the excision face."""
+
+
+@dataclass(frozen=True)
+class SnapshotInfo:
+    """What the snapshot listing gives without reading the fields."""
+
+    index: int
+    step: int
+    xi: float
+    j_e: int
+
+
+def next_snapshot_time(xi: float, xi_form: float | None, output: OutputConfig) -> float:
+    """The snapshot time after `xi`: the schedule both the excised and the unexcised run compute.
+
+    Before formation the times are `xi_start + k snapshot_spacing`, which `xi` is taken to lie on; from formation on
+    the physical time advances by `snapshot_spacing_after` Hubble times at formation per snapshot,
+    `e^xi_next = e^xi + snapshot_spacing_after e^xi_form`.
+    """
+    if xi_form is None or xi < xi_form:
+        return xi + output.snapshot_spacing
+    return float(np.log(np.exp(xi) + output.snapshot_spacing_after * np.exp(xi_form)))
+
+
 # --- writing ---
 
 
@@ -159,8 +212,19 @@ class RunWriter[R: StepRow]:
         h5.write_int(self.file, "N", N)
         self.steps: Table[R] = Table(h5.create_group(self.file, "steps"), row_type)
         self.events = Table(h5.create_group(self.file, "events"), EventRow)
+        widths = {"delta_E": N, "delta_U": N + 1}
+        self.snapshots = Table(h5.create_group(self.file, "snapshots"), SnapshotRow, widths)
         h5.start_single_writer_mode(self.file)
         self.closed = False
+
+    def snapshot(self, step: int, xi: float, layout: Layout, dy: FloatArray) -> None:
+        """Record a snapshot from the packed deviation `dy` the integrator holds, and flush it at once."""
+        deviation = layout.unpack(dy)  # the deviation in the state's shape: delta_E, delta_U, W, M_e
+        row = SnapshotRow(
+            step=step, xi=xi, j_e=layout.j_e, W=deviation.W, M_e=deviation.M_e, delta_E=deviation.E, delta_U=deviation.U
+        )
+        self.snapshots.append(row)
+        self.snapshots.flush()
 
     def step(self, row: R) -> None:
         """Record one step."""
@@ -242,3 +306,36 @@ class RunReader:
         """The end event, or `None` while the run is still going."""
         ends = [e for e in self.events if e.kind == "end"]
         return ends[-1] if ends else None
+
+    @property
+    def snapshots(self) -> list[SnapshotInfo]:
+        """The snapshots so far: index, step, time and excision face, without reading the fields."""
+        with self._open() as f:
+            group = h5.subgroup(f, "snapshots")
+            steps, xis, faces = (h5.read_column(group, name) for name in ("step", "xi", "j_e"))
+        return [SnapshotInfo(i, int(steps[i]), float(xis[i]), int(faces[i])) for i in range(len(steps))]
+
+    def snapshot(self, index: int) -> StateRecord:
+        """One snapshot as a state record: the state itself, on the grid the configuration gives at that time.
+
+        The state is FRW at that time plus the stored deviation, on the layout with the stored excision face; the
+        radii come from the configuration's map. The record's provenance names this file and the step.
+        """
+        with self._open() as f:
+            group = h5.subgroup(f, "snapshots")
+
+            def column(name: str) -> FloatArray:
+                return np.asarray(h5.read_column(group, name), dtype=np.float64)
+
+            step, xi, j_e = int(column("step")[index]), float(column("xi")[index]), int(column("j_e")[index])
+            W, M_e = float(column("W")[index]), float(column("M_e")[index])
+            delta_E, delta_U = column("delta_E")[index], column("delta_U")[index]
+        geo = self.geometry(xi)
+        frw = frw_state(geo, j_e)
+        state = State(E=frw.E + delta_E, U=frw.U + delta_U, W=frw.W + W, M_e=frw.M_e + M_e)
+        provenance: dict[str, Any] = {"source": self.path.name, "step": step, "snapshot": index}
+        return StateRecord(state=state, X=geo.X[: geo.N + 1], xi=xi, j_e=j_e, provenance=provenance)
+
+    def geometry(self, xi: float) -> Geometry:
+        """The grid at time `xi`, from the configuration's map."""
+        return Geometry.of(*self.config.grid.build().radii(xi, self.N))

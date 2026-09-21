@@ -34,6 +34,11 @@ stepping:
   cap_tolerance: 1.0e-5       # the step cap of eq:num:stepcap: relative error tolerance ...
   cap_efolds: 4.0             # ... over this many super-horizon e-folds
 
+output:
+  snapshot_spacing: 0.05        # snapshots every this much in xi before formation ...
+  snapshot_spacing_after: 0.05  # ... and every this much physical time, in Hubble times at formation, after it
+  flush_every: 200              # steps buffered before the step record is written to disk
+
 evolution:
   xi_start: 0.0
   xi_end: 6.0
