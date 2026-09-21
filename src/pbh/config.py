@@ -36,6 +36,7 @@ assembled from all of them. The driver reads the file and never sees a raw strin
       snapshot_spacing: 0.05        # snapshots every this much in xi before formation ...
       snapshot_spacing_after: 0.05  # ... and every this much physical time, in Hubble times at formation, after
       flush_every: 200              # steps buffered before the step record is written
+      monitor_every_step: false     # the full monitor record every step, not only at snapshots
     evolution:
       xi_start: 0.0
       xi_end: 6.0
@@ -209,6 +210,10 @@ class OutputConfig(Section):
 
     flush_every: int = Field(default=200, ge=1)
     """How many steps the step record is buffered before it is written to disk."""
+
+    monitor_every_step: bool = False
+    """Whether the full monitor record of `monitors.py` is written every step rather than only at snapshots; the
+    cheap first tier, the minima, the bookkeeping and the boundary scalars, is recorded every step regardless."""
 
 
 class EvolutionConfig(Section):

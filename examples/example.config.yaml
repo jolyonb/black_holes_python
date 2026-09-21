@@ -38,6 +38,7 @@ output:
   snapshot_spacing: 0.05        # snapshots every this much in xi before formation ...
   snapshot_spacing_after: 0.05  # ... and every this much physical time, in Hubble times at formation, after it
   flush_every: 200              # steps buffered before the step record is written to disk
+  monitor_every_step: false     # the full monitor record every step rather than only at snapshots (costs ~20%)
 
 evolution:
   xi_start: 0.0

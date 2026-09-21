@@ -67,7 +67,7 @@ outer: {closure: held, tau_u: 1.0, tau_rho: 1.5, tau_W: 0.5}
 shocks: {kernels: centred, density_limiter: minmod, c_v: 0.5, rho_floor: 1.0e-10}
 excision: {face_closure: o2}
 stepping: {integrator: ssprk3, courant_number: 0.4, cap_tolerance: 1.0e-6, cap_efolds: 3.0}
-output: {snapshot_spacing: 0.1, snapshot_spacing_after: 0.02, flush_every: 50}
+output: {snapshot_spacing: 0.1, snapshot_spacing_after: 0.02, flush_every: 50, monitor_every_step: true}
 evolution: {xi_start: -1.0, xi_end: 2.5}
 """
     c = load(write(tmp_path, text))
@@ -78,7 +78,8 @@ evolution: {xi_start: -1.0, xi_end: 2.5}
     assert c.excision.face_closure is FaceClosure.SECOND_ORDER
     assert (c.stepping.integrator, c.stepping.courant_number) == (Integrator.SSPRK3, 0.4)
     assert (c.stepping.cap_tolerance, c.stepping.cap_efolds) == (1e-6, 3.0)
-    assert (c.output.snapshot_spacing, c.output.snapshot_spacing_after, c.output.flush_every) == (0.1, 0.02, 50)
+    assert (c.output.snapshot_spacing, c.output.snapshot_spacing_after) == (0.1, 0.02)
+    assert (c.output.flush_every, c.output.monitor_every_step) == (50, True)
     assert c.evolution == EvolutionConfig(xi_start=-1.0, xi_end=2.5)
 
 
