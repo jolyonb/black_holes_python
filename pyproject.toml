@@ -6,6 +6,7 @@ readme = "README.md"
 authors = [{ name = "Jolyon Bloomfield" }]
 requires-python = ">=3.14"
 dependencies = [
+    "h5py>=3.16.0",
     "numpy>=2.3",
     "pydantic>=2.13.5",
     "pyyaml>=6.0.3",
@@ -82,6 +83,7 @@ pythonVersion = "3.14"
 typeCheckingMode = "strict"
 reportMissingModuleSource = false
 reportConstantRedefinition = false  # physics quantities (Q, P, H) are capitalised by convention
+reportMissingTypeStubs = false  # h5py ships no stubs; pbh.h5 is the one typed shim over it
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
