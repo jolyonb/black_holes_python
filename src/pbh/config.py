@@ -200,6 +200,18 @@ class ExcisionConfig(Section):
     face_closure: FaceClosure = Field(default=FaceClosure.FIRST_ORDER, strict=False)
     """The excision-face closure: first order in production, the second-order rows as a switch."""
 
+    enabled: bool = True
+    """Whether to excise at all. Off, a collapse continues on its grid until the interior breaks the areal
+    coordinate: the switch that lets an excised run be compared with the unexcised one from the same snapshot."""
+
+    eta_r: float | None = Field(default=0.7, gt=0.0, lt=1.0)
+    """The re-excision fraction: the face advances to `ceil(N eta_r x_AH)` as the horizon grows; `null` turns
+    re-excision off (Table tab:numbh:params: optional, equal to `eta` when on)."""
+
+    zone_extension_at: float = Field(default=0.8, gt=0.0, le=1.0)
+    """A further zone is pinned when the horizon's label reaches this fraction of the outermost zone's inner edge,
+    or jumps beyond it to a new trapped region."""
+
 
 class SteppingConfig(Section):
     """The `stepping` section: the integrator, the Courant number and the step cap (Section 7.6)."""

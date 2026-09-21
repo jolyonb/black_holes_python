@@ -31,6 +31,9 @@ excision:
   c_t: 4.0                    # the map's transition centre in units of the horizon label at switch-on ...
   c_Delta: 1.5                # ... and its half-width; x_t + Delta_t must stay below 0.8, checked at switch-on
   face_closure: o1            # the excision-face closure: o1 (first order, production) or o2
+  enabled: true               # false continues a collapse unexcised, to compare with the excised run
+  eta_r: 0.7                  # the re-excision fraction, the face advancing as the horizon grows; null for off
+  zone_extension_at: 0.8      # pin a further zone when the horizon reaches this fraction of the zone's inner edge
 
 stepping:
   integrator: rk4             # rk4 or ssprk3

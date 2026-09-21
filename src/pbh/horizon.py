@@ -156,12 +156,29 @@ class HorizonRow:
     zone_ratio: float
     """`x_AH / (x_t - Delta_t)` of the outermost pinned zone: how close the horizon is to the transition; NaN without
     a zone or a horizon."""
+    # the excision face (Section 8.3), NaN or -1 while unexcised
+    j_e: int
+    mu: float
+    sound_margin: float
+    a_over_Theta: float
+    Lambda_plus: float
+    h_e: float
+    h_e1: float
+    h_e2: float
+    faces_to_horizon: int
+    M_e: float
+    F_e: float
+    R_e_over_M_AH: float
+    physical_margin: float
 
     @classmethod
-    def of(cls, step: int, xi: float, report: HorizonReport, zone_inner_edge: float | None) -> HorizonRow:
-        """The row for a step's report."""
+    def of(
+        cls, step: int, xi: float, report: HorizonReport, zone_inner_edge: float | None, face: FaceValues | None = None
+    ) -> HorizonRow:
+        """The row for a step's report, with the face's monitors once excised."""
         a = report.apparent
         ratio = a.x / zone_inner_edge if a is not None and zone_inner_edge is not None else float("nan")
+        f = face if face is not None else UNEXCISED
         return cls(
             step=step,
             xi=xi,
@@ -177,4 +194,39 @@ class HorizonRow:
             core_margin=report.core_margin,
             core_margin_face=report.core_margin_face,
             zone_ratio=ratio,
+            j_e=f.j_e,
+            mu=f.mu,
+            sound_margin=f.sound_margin,
+            a_over_Theta=f.a_over_Theta,
+            Lambda_plus=f.Lambda_plus,
+            h_e=f.h[0],
+            h_e1=f.h[1],
+            h_e2=f.h[2],
+            faces_to_horizon=f.faces_to_horizon,
+            M_e=f.M_e,
+            F_e=f.F_e,
+            R_e_over_M_AH=f.R_e_over_M_AH,
+            physical_margin=f.physical_margin,
         )
+
+
+@dataclass(frozen=True)
+class FaceValues:
+    """The excision face's monitors as the horizon table stores them; `excision.py` produces them."""
+
+    j_e: int
+    mu: float
+    sound_margin: float
+    a_over_Theta: float
+    Lambda_plus: float
+    h: tuple[float, float, float]
+    faces_to_horizon: int
+    M_e: float
+    F_e: float
+    R_e_over_M_AH: float
+    physical_margin: float
+
+
+NAN = float("nan")
+UNEXCISED = FaceValues(-1, NAN, NAN, NAN, NAN, (NAN, NAN, NAN), -1, NAN, NAN, NAN, NAN)
+"""The face columns while there is no excision face."""
