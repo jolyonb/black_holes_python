@@ -7,6 +7,10 @@ rate of the auxiliary scalar `W` of Section 7.5 when it carries one:
 
     d_xi U_N,   F_N,   d_xi W.
 
+Like the interior rows, the closure returns the first two as deviations from their FRW values, `d_xi U_N - (d_xi X)_N`
+and `F_N - F_FRW,N` with `F_FRW = (alpha w X - d_xi X) X^2`, formed without subtracting anything of the FRW size
+(`equations.py` says why); every closure below is written that way, and `base_flux_deviation` is the shared flux.
+
 `OutgoingWave` is the production closure, the exact outgoing-wave condition of Section 5.3 imposed as a penalty
 (eq:num:sat). Of the two acoustic characteristics at the outer face one leaves the domain and one enters it, so the
 boundary may say one thing, about the incoming amplitude `u_-`, and the exact condition says what it must be: the
@@ -44,12 +48,13 @@ class OuterInputs:
         delta_U_N: The relative velocity deviation at the outer face, `U_N / X_N - 1`.
         delta_rho_N_1: The relative density deviation of the last cell, `rho_{N-1} - 1`, half a cell inside the face.
         rho_f_N: The extrapolated face density `<rho>_N`.
+        delta_rho_f_N: Its deviation, `<rho>_N - 1`.
         ephi_f_N: The extrapolated face lapse `<ephi>_N`.
+        delta_ephi_f_N: Its deviation, `<ephi>_N - 1`.
         mt_N: The tilde mass at the outer face.
         delta_m_N: Its relative deviation, `mt_N - 1`.
-        Theta_N: The grid velocity at the outer face.
-        cE_N: The energy-flux velocity at the outer face (eq:num:facefields).
-        DU_N: The one-sided velocity gradient at the outer face.
+        drift_N: `alpha (<ephi>_N U_N - X_N)`, the fluid's velocity relative to the Hubble flow (`equations.Speeds`).
+        delta_DU_N: The one-sided velocity gradient at the outer face less its FRW value one, `(D_U delta U)_N`.
         dS_N: The difference of mean-square radii across the outer face.
         c_s: The background sound speed at this time.
     """
@@ -62,12 +67,13 @@ class OuterInputs:
     delta_U_N: float
     delta_rho_N_1: float
     rho_f_N: float
+    delta_rho_f_N: float
     ephi_f_N: float
+    delta_ephi_f_N: float
     mt_N: float
     delta_m_N: float
-    Theta_N: float
-    cE_N: float
-    DU_N: float
+    drift_N: float
+    delta_DU_N: float
     dS_N: float
     c_s: float
 
@@ -77,14 +83,26 @@ class OuterRows:
     """What an outer closure returns: the three rows the interior cannot supply.
 
     Attributes:
-        dU_N: `d_xi U_N`.
-        F_N: The energy flux through the outer face into the last cell.
+        delta_dU_N: `d_xi U_N - (d_xi X)_N`, the rate of the face velocity's deviation from FRW.
+        delta_F_N: `F_N - F_FRW,N`, the energy flux through the outer face into the last cell less its FRW value.
         dW: `d_xi W`; zero for a closure that carries no `W`.
     """
 
-    dU_N: float
-    F_N: float
+    delta_dU_N: float
+    delta_F_N: float
     dW: float
+
+
+def base_flux_deviation(
+    X: float, X_xi: float, drift: float, rho_f: float, delta_rho_f: float, eos: EquationOfState
+) -> float:
+    """The base flux of eq:num:energy at a face less the FRW flux, `(cE - d_xi X) X^2 <rho> - (alpha w X - d_xi X) X^2`.
+
+    With `cE = alpha w X + (1 + w) drift` it is `X^2 [(alpha w X - d_xi X) (<rho> - 1) + (1 + w) drift <rho>]`, every
+    term of the size of the deviation. `equations.py` applies the same formula to arrays.
+    """
+    alpha, w = float(eos.alpha), float(eos.w)
+    return X * X * ((alpha * w * X - X_xi) * delta_rho_f + (1.0 + w) * drift * rho_f)
 
 
 class OuterClosure(ABC):
@@ -105,9 +123,10 @@ class HeldAtFrw(OuterClosure):
     """
 
     def rows(self, inputs: OuterInputs, eos: EquationOfState) -> OuterRows:
-        """`d_xi U_N = (d_xi X)_N`, `F_N = (cE_N - (d_xi X)_N) X_N^2 <rho>_N`, `d_xi W = 0`."""
-        F_N = (inputs.cE_N - inputs.X_xi_N) * inputs.X_N**2 * inputs.rho_f_N
-        return OuterRows(dU_N=inputs.X_xi_N, F_N=F_N, dW=0.0)
+        """`d_xi U_N = (d_xi X)_N`, `F_N = (cE_N - (d_xi X)_N) X_N^2 <rho>_N`, `d_xi W = 0`, as deviations."""
+        i = inputs
+        delta_F_N = base_flux_deviation(i.X_N, i.X_xi_N, i.drift_N, i.rho_f_N, i.delta_rho_f_N, eos)
+        return OuterRows(delta_dU_N=0.0, delta_F_N=delta_F_N, dW=0.0)
 
 
 # --- the exact outgoing-wave condition as a penalty (Section 7.5) ---
@@ -200,7 +219,9 @@ class OutgoingWave(OuterClosure):
 
     the velocity row of eq:num:velocity without the pressure difference plus the penalty; the last cell's flux with
     the characteristic face velocity `U*_N`; and the boundary ODE fed with the interior's outgoing amplitude. Every
-    term vanishes on FRW, where `U_N = X_N`, `rho = mt = 1` and `W = 0`.
+    term vanishes on FRW, where `U_N = X_N`, `rho = mt = 1` and `W = 0`. The first two rows are formed as deviations,
+    the velocity row as in `equations.py` and the flux by `base_flux_deviation` with the drift of `U*_N`,
+    `alpha (<ephi>_N U*_N - X_N) = drift_N - alpha <ephi>_N (tau_rho X_N / 2) pen`.
 
     The rows are derived for radiation, the only equation of state besides dust for which the exact condition
     exists. For any other `w` the closure holds `W = 0`, a Sommerfeld-type condition with the same rows, and the
@@ -223,22 +244,23 @@ class OutgoingWave(OuterClosure):
         u_plus, u_minus = characteristic_pair(inputs.delta_U_N, inputs.delta_rho_N_1, X_N, c_s)
         pen = u_minus - inputs.W
 
-        expansion = (1.0 - alpha) * inputs.U_N
-        gravity = -0.5 * alpha * inputs.ephi_f_N * X_N * (inputs.mt_N + 3.0 * w * inputs.rho_f_N)
-        advection = -inputs.Theta_N * inputs.DU_N
-        penalty = -tau.tau_u * c_s * X_N**2 / inputs.dS_N * pen
-        dU_N = expansion + gravity + advection + penalty
+        i = inputs
+        expansion = (1.0 - alpha) * X_N * i.delta_U_N  # (1 - alpha) delta U_N
+        lapse_mass = i.delta_ephi_f_N * (i.mt_N + 3.0 * w * i.rho_f_N) + i.delta_m_N + 3.0 * w * i.delta_rho_f_N
+        gravity = -0.5 * alpha * X_N * lapse_mass  # less its FRW value, which cancels the FRW expansion
+        advection = -i.drift_N * (1.0 + i.delta_DU_N)  # Theta_N (D_U U)_N, with Theta_N = drift_N on a static face
+        penalty = -tau.tau_u * c_s * X_N**2 / i.dS_N * pen
+        delta_dU_N = expansion + gravity + advection + penalty
 
-        U_star = inputs.U_N - 0.5 * tau.tau_rho * X_N * pen
-        flux_velocity = alpha * ((1.0 + w) * inputs.ephi_f_N * U_star - X_N)
-        F_N = flux_velocity * X_N**2 * inputs.rho_f_N
+        drift_star = i.drift_N - alpha * i.ephi_f_N * 0.5 * tau.tau_rho * X_N * pen  # the drift of U*_N
+        delta_F_N = base_flux_deviation(X_N, 0.0, drift_star, i.rho_f_N, i.delta_rho_f_N, eos)
 
         if eos.is_radiation:
             gamma_minus, gamma_plus, gamma_0 = boundary_ode_coefficients(c_s, X_N)
             dW = gamma_minus * inputs.W + gamma_plus * (u_plus - tau.tau_W * pen) + gamma_0 * inputs.delta_m_N
         else:
             dW = 0.0  # W = 0 for every other equation of state
-        return OuterRows(dU_N=dU_N, F_N=F_N, dW=dW)
+        return OuterRows(delta_dU_N=delta_dU_N, delta_F_N=delta_F_N, dW=dW)
 
 
 @dataclass(frozen=True)
@@ -259,8 +281,13 @@ class HeldExterior(OuterClosure):
     ephi_N: float
 
     def rows(self, inputs: OuterInputs, eos: EquationOfState) -> OuterRows:
-        """`d_xi U_N = (1 - alpha) U_N`, `F_N = (cE_N - (d_xi X)_N) X_N^2 rho_N` with the held face values."""
+        """`d_xi U_N = (1 - alpha) U_N`, `F_N = (cE_N - (d_xi X)_N) X_N^2 rho_N` with the held face values.
+
+        Near the hole the deviation from FRW is the state itself, so the FRW values are simply subtracted.
+        """
         alpha, w = float(eos.alpha), float(eos.w)
-        cE_N = alpha * ((1.0 + w) * self.ephi_N * inputs.U_N - inputs.X_N)
-        F_N = (cE_N - inputs.X_xi_N) * inputs.X_N**2 * self.rho_N
-        return OuterRows(dU_N=(1.0 - alpha) * inputs.U_N, F_N=F_N, dW=0.0)
+        X_N, X_xi_N = inputs.X_N, inputs.X_xi_N
+        cE_N = alpha * ((1.0 + w) * self.ephi_N * inputs.U_N - X_N)
+        F_N = (cE_N - X_xi_N) * X_N**2 * self.rho_N
+        F_frw = (alpha * w * X_N - X_xi_N) * X_N**2
+        return OuterRows(delta_dU_N=(1.0 - alpha) * inputs.U_N - X_xi_N, delta_F_N=F_N - F_frw, dW=0.0)

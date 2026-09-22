@@ -9,7 +9,8 @@ excision face (FRW value `X_{j_e}^3`). The indexing and the NaN convention below
 The integrator does not advance the state itself but its deviation from FRW, `delta y = y - y_FRW(xi)` (Section 7.6):
 on a static map the two coincide, and on a moving one the deviation form keeps the far zone FRW to round-off where
 the direct form keeps it only to the truncation error of the map's motion. `frw_state` gives `y_FRW` at a time and
-`frw_rate` its time derivative, which the stage subtracts from its own; both follow from the geometry alone.
+`frw_rate` its time derivative, which the stage adds to its deviation rate for the whole rate; both follow from the
+geometry alone.
 
 A `State` is also the shape of a rate of change: the stage returns `d_xi E_c`, `d_xi U_j`, `d_xi W`, `d_xi M_e` in
 the same container, packed by the same rule.
@@ -76,6 +77,16 @@ def frw_rate(geo: Geometry, j_e: int = 0) -> State:
     """
     X_e, X_xi_e = float(geo.X[j_e]), float(geo.X_xi[j_e])
     return State(E=geo.dV_xi.copy(), U=geo.X_xi.copy(), W=0.0, M_e=3.0 * X_e**2 * X_xi_e)
+
+
+def deviation_from_frw(state: State, geo: Geometry, j_e: int = 0) -> State:
+    """The deviation `state - y_FRW` recovered from a whole state, for callers that do not hold the integrator's.
+
+    The integrator's deviation (Section 7.6) is exact where this one keeps only what survived adding the deviation to
+    `y_FRW`; the two agree to the rounding of the FRW values, and exactly on the FRW state itself.
+    """
+    frw = frw_state(geo, j_e)
+    return State(E=state.E - frw.E, U=state.U - frw.U, W=state.W, M_e=state.M_e - frw.M_e)
 
 
 def is_finite(state: State, j_e: int = 0) -> bool:

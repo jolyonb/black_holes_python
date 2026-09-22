@@ -80,39 +80,43 @@ def test_strengths_without_the_energy_statement_are_refused(tau: tuple[float, fl
 
 
 def inputs_off_frw(W: float = 0.02) -> OuterInputs:
-    """Face-N quantities of a generic non-FRW state on a static outer face."""
+    """Face-N quantities of a generic non-FRW state on a static outer face, for radiation, mutually consistent."""
+    X_N, U_N, rho_f_N, ephi_f_N, mt_N, DU_N = 4.0, 4.3, 1.15, 0.97, 1.1, 1.3
     return OuterInputs(
         xi=0.5,
-        X_N=4.0,
+        X_N=X_N,
         X_xi_N=0.0,
-        U_N=4.3,
+        U_N=U_N,
         W=W,
-        delta_U_N=0.075,  # U_N / X_N - 1
+        delta_U_N=U_N / X_N - 1.0,
         delta_rho_N_1=0.2,
-        rho_f_N=1.15,
-        ephi_f_N=0.97,
-        mt_N=1.1,
-        delta_m_N=0.1,
-        Theta_N=-0.4,
-        cE_N=0.5,
-        DU_N=1.3,
+        rho_f_N=rho_f_N,
+        delta_rho_f_N=rho_f_N - 1.0,
+        ephi_f_N=ephi_f_N,
+        delta_ephi_f_N=ephi_f_N - 1.0,
+        mt_N=mt_N,
+        delta_m_N=mt_N - 1.0,
+        drift_N=0.5 * (ephi_f_N * U_N - X_N),  # alpha (<ephi> U - X), alpha = 1/2
+        delta_DU_N=DU_N - 1.0,
         dS_N=2.1,
         c_s=0.35,
     )
 
 
 def test_the_rows_are_the_printed_formulas_written_out():
-    # A second, independent writing of eq:num:sat, term by term, with generic strengths so that every tau enters.
+    # A second, independent writing of eq:num:sat, term by term and whole, with generic strengths so that every tau
+    # enters; the closure returns the rows less their FRW values, d_xi X = 0 and F_FRW = alpha w X^3.
     i, tau = inputs_off_frw(), GENERIC
     alpha, w = 0.5, 1.0 / 3.0
     kappa = 1.5 * i.c_s / i.X_N
     delta_U, delta_rho, delta_m = i.delta_U_N, i.delta_rho_N_1, i.delta_m_N
     u_plus, u_minus = delta_U + kappa * delta_rho, delta_U - kappa * delta_rho
     pen = u_minus - i.W
+    Theta_N, DU_N = i.drift_N, 1.0 + i.delta_DU_N  # the grid velocity on a static face, and the gradient
     dU_N = (
         (1.0 - alpha) * i.U_N
         - alpha / 2.0 * i.ephi_f_N * i.X_N * (i.mt_N + 3.0 * w * i.rho_f_N)
-        - i.Theta_N * i.DU_N
+        - Theta_N * DU_N
         - tau.tau_u * i.c_s * i.X_N**2 / i.dS_N * pen
     )
     U_star = i.U_N - tau.tau_rho * i.X_N / 2.0 * pen
@@ -120,8 +124,8 @@ def test_the_rows_are_the_printed_formulas_written_out():
     gm, gp, g0 = boundary_ode_coefficients(i.c_s, i.X_N)
     dW = gm * i.W + gp * (u_plus - tau.tau_W * pen) + g0 * delta_m
     rows = OutgoingWave(tau).rows(i, RAD)
-    assert rows.dU_N == pytest.approx(dU_N, rel=1e-14)
-    assert rows.F_N == pytest.approx(F_N, rel=1e-14)
+    assert rows.delta_dU_N == pytest.approx(dU_N, rel=1e-13)
+    assert rows.delta_F_N + alpha * w * i.X_N**3 == pytest.approx(F_N, rel=1e-13)
     assert rows.dW == pytest.approx(dW, rel=1e-14)
 
 
@@ -129,7 +133,7 @@ def test_the_closure_holds_w_at_zero_for_any_other_equation_of_state():
     dust_like = EquationOfState(RADIATION / 2)
     rows = OutgoingWave().rows(inputs_off_frw(W=0.0), dust_like)
     assert rows.dW == 0.0
-    assert rows.dU_N != OutgoingWave().rows(inputs_off_frw(W=0.0), RAD).dU_N  # alpha and w differ, the rows follow
+    assert rows.delta_dU_N != OutgoingWave().rows(inputs_off_frw(W=0.0), RAD).delta_dU_N  # alpha, w differ
 
 
 def test_the_closure_refuses_a_moving_outer_face():

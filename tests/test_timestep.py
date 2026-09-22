@@ -235,12 +235,14 @@ def test_the_base_scheme_converges_at_second_order_on_the_exact_bessel_modes(m: 
         assert min(rates) > 1.9, f"field {field}, mode {k_index}: L1 rates {rates} (tab:num:tests asks >= 1.9)"
 
 
-def test_the_rate_of_a_tiny_deviation_carries_round_off_of_the_deviation_s_size_not_of_frw_s():
-    # The rate is linear in a small deviation, so the central difference (r(s v) - r(-s v)) / 2s is the same at every
-    # small s. Any round-off at the size of the FRW fields shows as noise growing like 1 / s. The velocity rows are
-    # formed from the deviation throughout and stay at the rounding of the deviation itself; the energy rows keep the
-    # flux-differencing floor of Section 7.2, a fixed fraction of the cell content.
+def test_every_row_is_exact_on_frw_and_rounds_at_the_size_of_the_deviation():
+    # Every row is formed as its deviation from the FRW rate, the FRW parts cancelled in the algebra (equations.py). So
+    # the deviation rate of FRW is exactly zero, at any radius, and the rate is linear in a small deviation down to
+    # any size: the central difference (r(s v) - r(-s v)) / 2s agrees between s = 1e-9 and s = 1e-13 to the rounding
+    # of the deviation, where rows formed from the whole state carry round-off of the FRW size, which dominates once
+    # s is small (1.5e-13 of Delta V in the energy rows, 3e-16 of X in the velocity rows).
     sch = Scheme(EOS, SinhStretch(24.0, 3.0), Layout(400), FaceClosure.FIRST_ORDER, OutgoingWave(), PRODUCTION_KERNELS)
+    assert np.all(sch.deviation_rate(0.0, np.zeros(sch.layout.size)) == 0.0)
     geo = sch.frame(0.0).geo
     g = np.exp(-((geo.X / 4.0) ** 2))
     shell = 0.5 * (g[:-1] + g[1:]) * (1.0 - 2.0 / 3.0 * (geo.Xm / 4.0) ** 2)
@@ -249,9 +251,7 @@ def test_the_rate_of_a_tiny_deviation_carries_round_off_of_the_deviation_s_size_
     def linear(s: float) -> FloatArray:
         return (sch.deviation_rate(0.0, s * v) - sch.deviation_rate(0.0, -s * v)) / (2.0 * s)
 
-    reference, tiny, s = linear(1e-5), linear(1e-12), 1e-12
-    N = 400
-    velocity_noise = np.max(np.abs(tiny[N:-1] - reference[N:-1]) * s / geo.X[1:])
-    energy_noise = np.max(np.abs(tiny[:N] - reference[:N]) * s / geo.dV)
-    assert velocity_noise < 2e-15  # 2e-14 here, 1e-12 at N = 2000, while the gradient differenced rho
-    assert energy_noise < 1e-13
+    a, b, N = linear(1e-9), linear(1e-13), 400
+    # the energy rows keep the conditioning of the discrete divergence, a factor of the cell index
+    for rows, bound in [(slice(0, N), 1e-11), (slice(N, -1), 1e-12)]:
+        assert np.max(np.abs(a[rows] - b[rows])) / np.max(np.abs(a[rows])) < bound

@@ -11,7 +11,8 @@ beyond `c_v = 1`, none is switched on by a detector, and all reduce to the base 
 (b) The energy flux is the HLL flux of the one-sided single-variable flux `F_j(rho)`, which carries the lapse of the
     same reconstructed density and the work term of the viscous pressure (eq:num:hll). Its derivative with respect
     to `X^2 rho` is `Theta_j`, which lies between the HLL bounds `Theta_j +- a_j`, so no donor velocity has to be
-    chosen; on FRW it is the centred flux of eq:num:energy.
+    chosen; on FRW it is the centred flux of eq:num:energy. It is returned as its deviation from the FRW flux, which
+    the energy rows need (`equations.py`), and the reconstruction works in the density's deviation for the same reason.
 (c) The peculiar velocity `upsilon = U - X` is reconstructed to the cell midpoints from both faces with the minmod
     limiter, and the limited jump across each cell (eq:num:jump), the full jump at a shock and `O(Delta X^2)` where the
     flow is smooth, is fed back as a viscous pressure on the cells (eq:num:qvisc), normalised like a Rusanov term
@@ -93,6 +94,8 @@ class KernelResult:
     Attributes:
         rho_L: The density reconstructed to face `j` from the cell inside it (faces; NaN where not formed).
         rho_R: The density reconstructed to face `j` from the cell outside it.
+        delta_rho_L: `rho_L - 1`, formed without subtracting one.
+        delta_rho_R: `rho_R - 1`, likewise.
         J: The limited jump of the peculiar velocity across each cell (cells).
         q: The artificial viscous pressure on the cells.
         q_f: Its face value `<q>_j`.
@@ -102,6 +105,8 @@ class KernelResult:
 
     rho_L: FloatArray
     rho_R: FloatArray
+    delta_rho_L: FloatArray
+    delta_rho_R: FloatArray
     J: FloatArray
     q: FloatArray
     q_f: FloatArray
@@ -119,22 +124,25 @@ def minmod(*slopes: FloatArray) -> FloatArray:
 
 
 def reconstruct_density(
-    rho: FloatArray, delta_rho: FloatArray, geo: Geometry, w: StencilWeights, limiter: DensityLimiter, floor: float
-) -> tuple[FloatArray, FloatArray]:
+    delta_rho: FloatArray, geo: Geometry, w: StencilWeights, limiter: DensityLimiter, floor: float
+) -> tuple[FloatArray, FloatArray, FloatArray, FloatArray]:
     """The density to both sides of every retained face, piecewise linear in `s = X^2` (eq:num:recon).
 
+    The reconstruction is linear and the limiters see only differences, so it is carried out on the deviation
+    `rho - 1` and one is added back: in exact arithmetic the same values, without the rounding of `rho` to its FRW
+    size in the slopes and in the flux that uses the deviations.
+
     Args:
-        rho: The cell densities.
-        delta_rho: Their deviations `rho - 1`, formed without subtracting one (see `derive`), which the slopes
-            difference: in exact arithmetic the same differences, without the rounding of `rho` to its FRW size.
+        delta_rho: The cell densities' deviations `rho - 1`, formed without subtracting one (see `derive`).
         geo: The geometry.
         w: The stencil weights, for the retained ranges.
         limiter: mc or minmod for the interior cells.
-        floor: The floor applied to every face value.
+        floor: The floor applied to every face density.
 
     Returns:
-        `(rho_L, rho_R)` at the faces: the value from the cell inside the face and from the cell outside it. At the
-        origin and at an excision face `rho_L = rho_R`; at the outer face `rho_R = rho_L`.
+        `(rho_L, rho_R, delta_rho_L, delta_rho_R)` at the faces: the density from the cell inside the face and from
+        the cell outside it, and their deviations; a floored value's deviation is `floor - 1`. At the origin and at an
+        excision face `rho_L = rho_R`; at the outer face `rho_R = rho_L`.
     """
     layout = w.layout
     N, j_e = layout.N, layout.j_e
@@ -155,14 +163,17 @@ def reconstruct_density(
         slope[c] = minmod(d_in, d_out)
     slope[j_e] = d[j_e + 1]
     slope[N - 1] = d[N - 1]
-    rho_L = np.full(N + 1, np.nan)
-    rho_R = np.full(N + 1, np.nan)
+    delta_L = np.full(N + 1, np.nan)
+    delta_R = np.full(N + 1, np.nan)
     inside = slice(j_e, N)  # cell c is inside face c + 1 ...
-    rho_L[j_e + 1 : N + 1] = rho[inside] + slope[inside] * (X2[j_e + 1 : N + 1] - sbar[inside])
-    rho_R[j_e:N] = rho[inside] + slope[inside] * (X2[j_e:N] - sbar[inside])  # ... and outside face c
-    rho_L[j_e] = rho_R[j_e]  # nothing inside the innermost face: transmissive (F_0 = 0 anyway at the origin)
-    rho_R[N] = rho_L[N]
-    return np.maximum(rho_L, floor), np.maximum(rho_R, floor)
+    delta_L[j_e + 1 : N + 1] = delta_rho[inside] + slope[inside] * (X2[j_e + 1 : N + 1] - sbar[inside])
+    delta_R[j_e:N] = delta_rho[inside] + slope[inside] * (X2[j_e:N] - sbar[inside])  # ... and outside face c
+    delta_L[j_e] = delta_R[j_e]  # nothing inside the innermost face: transmissive (F_0 = 0 anyway at the origin)
+    delta_R[N] = delta_L[N]
+    rho_L, rho_R = np.maximum(1.0 + delta_L, floor), np.maximum(1.0 + delta_R, floor)
+    delta_L[1.0 + delta_L < floor] = floor - 1.0
+    delta_R[1.0 + delta_R < floor] = floor - 1.0
+    return rho_L, rho_R, delta_L, delta_R
 
 
 def viscous_pressure(
@@ -231,41 +242,56 @@ def viscous_pressure(
 def hll_flux(
     rho_L: FloatArray,
     rho_R: FloatArray,
+    delta_rho_L: FloatArray,
+    delta_rho_R: FloatArray,
     q_f: FloatArray,
-    state: State,
+    deviation: State,
     geo: Geometry,
     Theta: FloatArray,
     a: FloatArray,
     eos: EquationOfState,
     w: StencilWeights,
 ) -> FloatArray:
-    """The HLL energy flux through the retained faces `j < N` (eq:num:hll); `F_0 = 0` at the origin.
+    """The HLL energy flux through the retained faces `j < N` (eq:num:hll) as its deviation from the FRW flux.
 
     The one-sided flux `F_j(rho) = [alpha ((1 + w) rho^(-w/(1+w)) U_j - X_j) - (d_xi X)_j] X_j^2 rho
     + alpha (rho^(-w/(1+w)) U_j - X_j) X_j^2 <q>_j` is evaluated on each reconstructed density with the lapse of
     that same density, and combined with the signal-speed bounds `Lambda^+ = max(Theta + a, 0)`,
     `Lambda^- = min(Theta - a, 0)`.
+
+    The HLL combination is affine in the one-sided fluxes, with weights `Lambda^+ / (Lambda^+ - Lambda^-)` and
+    `-Lambda^- / (Lambda^+ - Lambda^-)` summing to one, so subtracting the FRW flux `F_FRW = (alpha w X - d_xi X) X^2`
+    from both one-sided fluxes subtracts it from the result. Each one-sided flux is formed as that deviation directly,
+
+        F_j(rho) - F_FRW = X^2 [(alpha w X - d_xi X) (rho - 1) + (1 + w) alpha (e^phi U - X) rho]
+                           + alpha (e^phi U - X) X^2 <q>,        e^phi U - X = X (e^phi - 1) + e^phi delta U,
+
+    in which every term is of the size of the deviation (`equations.py` says why the energy rows need it).
+
+    Returns:
+        `F_j - F_FRW,j` at the retained faces `j < N`; `0` at the origin, where both vanish.
     """
     layout = w.layout
     N, j_e = layout.N, layout.j_e
     faces = slice(j_e, N)  # the interior faces and the innermost one; face N belongs to the outer closure
-    X, X_xi, U = geo.X[faces], geo.X_xi[faces], state.U[faces]
+    X, X_xi, dU = geo.X[faces], geo.X_xi[faces], deviation.U[faces]
     alpha, w_eos = float(eos.alpha), float(eos.w)
+    frw_speed = alpha * w_eos * X - X_xi  # the FRW flux is frw_speed X^2
+    X2 = X * X
 
-    def one_sided(rho: FloatArray) -> FloatArray:
-        ephi = eos.lapse(rho)
-        transport = (alpha * ((1.0 + w_eos) * ephi * U - X) - X_xi) * X**2 * rho
-        work = alpha * (ephi * U - X) * X**2 * q_f[faces]
-        return transport + work
+    def one_sided(rho: FloatArray, delta_rho: FloatArray) -> FloatArray:
+        ephi, delta_ephi = eos.lapse_and_deviation(rho, delta_rho)
+        drift = alpha * (X * delta_ephi + ephi * dU)  # alpha (e^phi U - X)
+        return X2 * (frw_speed * delta_rho + (1.0 + w_eos) * drift * rho + drift * q_f[faces])
 
     Lam_plus = np.maximum(Theta[faces] + a[faces], 0.0)
     Lam_minus = np.minimum(Theta[faces] - a[faces], 0.0)
-    F = np.full(N + 1, np.nan)
-    F[faces] = (
-        Lam_plus * one_sided(rho_L[faces])
-        - Lam_minus * one_sided(rho_R[faces])
-        + Lam_plus * Lam_minus * X**2 * (rho_R[faces] - rho_L[faces])
+    delta_F = np.full(N + 1, np.nan)
+    delta_F[faces] = (
+        Lam_plus * one_sided(rho_L[faces], delta_rho_L[faces])
+        - Lam_minus * one_sided(rho_R[faces], delta_rho_R[faces])
+        + Lam_plus * Lam_minus * X2 * (delta_rho_R[faces] - delta_rho_L[faces])
     ) / (Lam_plus - Lam_minus)
     if j_e == 0:
-        F[0] = 0.0
-    return F
+        delta_F[0] = 0.0
+    return delta_F

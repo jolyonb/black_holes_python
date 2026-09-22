@@ -343,7 +343,7 @@ def run(config: RunConfig, initial: StateRecord, paths: RunPaths) -> RunResult:
                     dxi, limit = landing - r.xi, "output_clip"
                 # 2. the stages, and the state arrived at
                 layout = r.layout
-                M_total_before = StageFluxes.of(result, r.state(), layout).M_total
+                before = StageFluxes.of(result, layout)
                 dy_new, stages = advance_with_stages(r.sch, config.stepping.integrator, r.xi, r.dy, dxi, first=result)
                 xi_new = landing if dxi == landing - r.xi else r.xi + dxi
                 state_new = layout.unpack(r.sch.frw(xi_new) + dy_new)
@@ -352,7 +352,8 @@ def run(config: RunConfig, initial: StateRecord, paths: RunPaths) -> RunResult:
                 result = r.sch.evaluate_deviation(xi_new, dy_new)
                 # 3. the record of the step
                 r.step += 1
-                rate_change = float(np.max(np.abs(layout.pack(result.rate) - layout.pack(stages[-1].result.rate))))
+                change = layout.pack(result.deviation_rate) - layout.pack(stages[-1].result.deviation_rate)
+                rate_change = float(np.max(np.abs(change)))
                 r.xi, r.dy = xi_new, dy_new
                 at_snapshot = r.xi == next_snapshot
                 frame = r.sch.frame(r.xi)
@@ -366,9 +367,9 @@ def run(config: RunConfig, initial: StateRecord, paths: RunPaths) -> RunResult:
                         geo=frame.geo,
                         bg=frame.bg,
                         result=result,
-                        stages=[StageFluxes.of(s.result, layout.unpack(s.y), layout) for s in stages],
+                        stages=[StageFluxes.of(s.result, layout) for s in stages],
                         weights=weights,
-                        M_total_before=M_total_before,
+                        delta_M_total_before=before.delta_M_total,
                         F_N_integral_before=r.F_N_integral,
                         rate_change=rate_change / scale,
                         far_zone_from=r.far_zone,

@@ -5,14 +5,15 @@ from dataclasses import dataclass
 
 import numpy as np
 import pytest
+from whole_state import whole_state_rate
 
 from pbh.eos import RADIATION, Background, EquationOfState
 from pbh.equations import calc_derivs
 from pbh.geometry import Geometry
-from pbh.kernels import CENTRED_SCHEME
+from pbh.kernels import CENTRED_SCHEME, PRODUCTION_KERNELS, KernelSettings
 from pbh.layout import Layout
 from pbh.maps import IdentityMap, Map, PinnedMap, SinhStretch
-from pbh.outer import HeldAtFrw, OuterClosure, OuterInputs, OuterRows
+from pbh.outer import PRODUCTION_STRENGTHS, HeldAtFrw, OuterClosure, OuterInputs, OuterRows, OutgoingWave
 from pbh.state import State, frw_rate, frw_state
 from pbh.stencils import FaceClosure, StencilWeights
 
@@ -156,7 +157,7 @@ def test_the_held_face_follows_the_map_and_uses_the_base_flux():
     res = su.run(s)
     N = 20
     assert res.rate.U[N] == su.geo.X_xi[N]
-    assert res.F[N] == (res.speeds.cE[N] - su.geo.X_xi[N]) * su.geo.X[N] ** 2 * res.derived.rho_f[N]
+    assert res.F[N] == pytest.approx((res.speeds.cE[N] - su.geo.X_xi[N]) * su.geo.X[N] ** 2 * res.derived.rho_f[N])
     assert res.rate.W == 0.0
 
 
@@ -168,7 +169,7 @@ class RecordingClosure(OuterClosure):
 
     def rows(self, inputs: OuterInputs, eos: EquationOfState) -> OuterRows:
         self.seen.append(inputs)
-        return OuterRows(dU_N=1.5, F_N=-2.5, dW=0.25)
+        return OuterRows(delta_dU_N=1.5, delta_F_N=-2.5, dW=0.25)
 
 
 def test_the_stage_hands_the_closure_the_face_n_quantities_and_uses_its_rows():
@@ -184,14 +185,56 @@ def test_the_stage_hands_the_closure_the_face_n_quantities_and_uses_its_rows():
     assert inputs.delta_U_N == res.derived.delta_U[N]
     assert inputs.delta_rho_N_1 == res.derived.delta_rho[N - 1]
     assert inputs.rho_f_N == res.derived.rho_f[N]
+    assert inputs.delta_rho_f_N == res.derived.delta_rho_f[N]
     assert inputs.ephi_f_N == res.derived.ephi_f[N]
+    assert inputs.delta_ephi_f_N == res.derived.delta_ephi_f[N]
     assert inputs.mt_N == res.derived.mt[N]
     assert inputs.delta_m_N == res.derived.delta_m[N]
-    assert inputs.Theta_N == res.speeds.Theta[N]
-    assert inputs.cE_N == res.speeds.cE[N]
+    assert inputs.drift_N == res.speeds.drift[N]
+    assert inputs.delta_DU_N == pytest.approx(su.w.velocity_gradient(s.U)[N] - 1.0, abs=1e-12)
     assert inputs.dS_N == su.geo.dS[N]
     assert inputs.c_s == su.bg.c_s
-    assert res.rate.U[N] == 1.5
-    assert res.F[N] == -2.5
+    # the rows come back as deviations from the FRW rows, which are added back for the whole rate
+    assert res.deviation_rate.U[N] == 1.5
+    assert res.rate.U[N] == 1.5 + su.geo.X_xi[N]
+    assert res.delta_F[N] == -2.5
+    assert res.F[N] == pytest.approx(-2.5 + EOS.alpha * EOS.w * su.geo.X[N] ** 3)
     assert res.rate.W == 0.25
-    assert res.rate.E[N - 1] == -(-2.5 - res.F[N - 1]) + EOS.energy_source_rate * s.E[N - 1]
+    delta_E = s.E[N - 1] - su.geo.dV[N - 1]
+    assert res.deviation_rate.E[N - 1] == -(-2.5 - res.delta_F[N - 1]) + EOS.energy_source_rate * delta_E
+
+
+# --- the deviation form against the stage written as printed, on strongly nonlinear states ---
+
+
+@pytest.mark.parametrize("settings", [PRODUCTION_KERNELS, CENTRED_SCHEME])
+@pytest.mark.parametrize("j_e", [0, 5])
+@pytest.mark.parametrize("sat", [False, True])
+def test_the_deviation_form_is_the_printed_stage_on_a_strongly_nonlinear_state(
+    settings: KernelSettings, j_e: int, sat: bool
+):
+    # An order-one overdensity and a strong infall on a sinh grid whose interior moves (the outer face may not, under
+    # the SAT closure). A slip in the rearranged algebra of the deviation form would show here at order one; what is
+    # left is the round-off of the whole-state reference, of the FRW size.
+    N, xi = 60, 0.8
+    radii, _ = SinhStretch(6.0, scale=2.0).radii(xi, N)
+    X_xi = 0.2 * radii * np.exp(-(radii**2))
+    X_xi[N:] = 0.0
+    geo = Geometry.of(radii, X_xi)
+    X = geo.X[: N + 1]
+    bg = Background.at(EOS, xi)
+    w = StencilWeights.of(geo, Layout(N, j_e), FaceClosure.FIRST_ORDER)
+    E = geo.dV * (1.0 + 1.2 * np.exp(-geo.sbar[:-1]) - 0.3 * np.exp(-((geo.Xm - 2.5) ** 2)))
+    U = X * (1.0 - 0.3 * np.exp(-(X**2) / 2.0))
+    state = State(E=E, U=U, W=0.03, M_e=1.4 * float(X[j_e]) ** 3)
+    strengths = PRODUCTION_STRENGTHS if sat else None
+    outer = OutgoingWave(PRODUCTION_STRENGTHS) if sat else HELD
+    res = calc_derivs(state, geo, bg, EOS, w, outer, settings)
+    ref = whole_state_rate(state, geo, bg, EOS, w, strengths, settings)
+    cells, faces = w.layout.cells, w.layout.faces
+    assert np.max(np.abs(res.derived.delta_rho[cells])) > 1.0  # the state is far from FRW
+    assert np.max(np.abs(res.rate.E[cells] - ref.E[cells]) / geo.dV[cells]) < 1e-11
+    assert np.nanmax(np.abs(res.rate.U[faces] - ref.U[faces]) / np.maximum(X[faces], X[1])) < 1e-12
+    assert np.max(np.abs(res.F[faces] - ref.F[faces])) < 1e-12 * X[N] ** 3
+    assert res.rate.W == pytest.approx(ref.W, abs=1e-14)
+    assert res.rate.M_e == pytest.approx(ref.M_e, rel=1e-12, abs=1e-14)

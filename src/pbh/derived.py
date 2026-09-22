@@ -4,7 +4,8 @@ Nothing here is evolved. From the stored cell energies and face velocities a sta
 
 * the cell density `rho_c = E_c / Delta V_c`, the shell average of `rhotilde` (Section 7.1: the stored energy is
   divided by its volume before anything differences it);
-* the cell lapse `ephi_c = rho_c ^ (-w / (1 + w))`, the algebraic lapse of the averaged density (eq:MSphinov);
+* the cell lapse `ephi_c = rho_c ^ (-w / (1 + w))`, the algebraic lapse of the averaged density (eq:MSphinov),
+  and its deviation `ephi_c - 1` formed from `delta_rho` (`EquationOfState.lapse_and_deviation`);
 * the cumulative mass at the faces, `M_j = 3 sum_{i<j} E_i`, or `M_j = M_e + 3 sum_{j_e <= i < j} E_i` once cells
   are excised (Section 8.3), which is how the constraint eq:eul:constraint holds by construction: the mass is never
   evolved, it is the sum of what the cells hold;
@@ -24,7 +25,8 @@ Nothing here is evolved. From the stored cell energies and face velocities a sta
   `delta_m,j = delta M_j / X_j^3`, which are `rho_c - 1`, `U_j / X_j - 1` and `mt_j - 1` formed without subtracting
   one, for the outer closure and the monitors, which work in them;
 * the face values `<rho>_j` and `<ephi>_j` of the two even cell fields, by the one averaging stencil of
-  eq:num:stencils, which the velocity equation and the fluxes need at the faces.
+  eq:num:stencils, which the velocity equation and the fluxes need at the faces, and the same averages of their
+  deviations, `<rho>_j - 1 = <delta_rho>_j` and `<ephi>_j - 1`, since the stencil's weights sum to one.
 
 Two things are asserted here and nowhere else, because they are the hyperbolicity of the system (Section 7.3):
 `rho_c > 0` in every retained cell and `Gammabar_j^2 > 0` at every retained face. Where either fails "the system is
@@ -42,7 +44,7 @@ import numpy as np
 
 from pbh.eos import Background, EquationOfState
 from pbh.geometry import Geometry
-from pbh.state import State, frw_state
+from pbh.state import State, deviation_from_frw
 from pbh.stencils import StencilWeights
 from pbh.types import FloatArray
 
@@ -70,7 +72,9 @@ class Derived:
     Attributes:
         rho: The shell-averaged density `rho_c = E_c / Delta V_c` (cells).
         ephi: The algebraic lapse `ephi_c = rho_c ^ (-w / (1 + w))` (cells).
+        delta_ephi: Its deviation `ephi_c - 1` (cells).
         M: The cumulative mass `M_j` inside face `j` (faces); `M_0 = 0`, or `M_{j_e} = M_e` once excised.
+        delta_M: The mass less its FRW value, `M_j - X_j^3 = delta M_e + 3 sum delta E_i` (faces).
         mt: The tilde mass `mt_j = M_j / X_j^3` (faces `1..N`; NaN at the origin).
         delta_rho: The relative density deviation `rho_c - 1 = delta E_c / Delta V_c` (cells).
         delta_U: The relative velocity deviation `U_j / X_j - 1 = delta U_j / X_j` (faces `1..N`; NaN at the origin).
@@ -78,11 +82,15 @@ class Derived:
         Gammabar2: `Gammabar_j^2` (faces), the first line of eq:num:facefields.
         rho_f: The face density `<rho>_j` (faces).
         ephi_f: The face lapse `<ephi>_j` (faces).
+        delta_rho_f: The face density's deviation `<rho>_j - 1 = <delta_rho>_j` (faces).
+        delta_ephi_f: The face lapse's deviation `<ephi>_j - 1 = <delta_ephi>_j` (faces).
     """
 
     rho: FloatArray
     ephi: FloatArray
+    delta_ephi: FloatArray
     M: FloatArray
+    delta_M: FloatArray
     mt: FloatArray
     delta_rho: FloatArray
     delta_U: FloatArray
@@ -90,6 +98,8 @@ class Derived:
     Gammabar2: FloatArray
     rho_f: FloatArray
     ephi_f: FloatArray
+    delta_rho_f: FloatArray
+    delta_ephi_f: FloatArray
 
 
 def derive(
@@ -121,12 +131,18 @@ def derive(
     cells, faces = layout.cells, layout.faces
     N = layout.N
 
+    if deviation is None:
+        deviation = deviation_from_frw(state, geo, layout.j_e)
+
     rho = np.full(N, np.nan)
     rho[cells] = state.E[cells] / geo.dV[cells]
     _assert_positive(rho, cells, "rho")
+    delta_rho = np.full(N, np.nan)
+    delta_rho[cells] = deviation.E[cells] / geo.dV[cells]
 
     ephi = np.full(N, np.nan)
-    ephi[cells] = eos.lapse(rho[cells])
+    delta_ephi = np.full(N, np.nan)
+    ephi[cells], delta_ephi[cells] = eos.lapse_and_deviation(rho[cells], delta_rho[cells])
 
     # The mass inside each retained face: what is inside the innermost retained face (nothing, or the excised M_e)
     # plus three times the energy of every retained cell inside it (Section 7.2 and 8.3).
@@ -140,15 +156,10 @@ def derive(
     X3 = X * X * X  # a tenth of the cost of X ** 3, which numpy evaluates as a general power
     mt[inner:] = M[inner:] / X3
 
-    if deviation is None:
-        frw = frw_state(geo, layout.j_e)
-        deviation = State(E=state.E - frw.E, U=state.U - frw.U, W=state.W, M_e=state.M_e - frw.M_e)
     dM = np.full(N + 1, np.nan)  # M - X^3, the mass against its FRW value, as a sum of small terms
     dM[layout.j_e] = deviation.M_e
     dM[layout.j_e + 1 :] = deviation.M_e + 3.0 * np.cumsum(deviation.E[cells])
 
-    delta_rho = np.full(N, np.nan)
-    delta_rho[cells] = deviation.E[cells] / geo.dV[cells]
     delta_U = np.full(N + 1, np.nan)
     delta_U[inner:] = deviation.U[inner:] / X
     delta_m = np.full(N + 1, np.nan)
@@ -163,7 +174,9 @@ def derive(
     return Derived(
         rho=rho,
         ephi=ephi,
+        delta_ephi=delta_ephi,
         M=M,
+        delta_M=dM,
         mt=mt,
         delta_rho=delta_rho,
         delta_U=delta_U,
@@ -171,6 +184,8 @@ def derive(
         Gammabar2=Gammabar2,
         rho_f=w.face_average(rho),
         ephi_f=w.face_average(ephi),
+        delta_rho_f=w.face_average(delta_rho),
+        delta_ephi_f=w.face_average(delta_ephi),
     )
 
 

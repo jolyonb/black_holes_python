@@ -226,17 +226,20 @@ def test_the_held_exterior_holds_its_face_values_and_scales_the_velocity():
         delta_U_N=0.0,
         delta_rho_N_1=2.9,
         rho_f_N=3.8,
+        delta_rho_f_N=2.8,
         ephi_f_N=0.69,
+        delta_ephi_f_N=-0.31,
         mt_N=1.0,
         delta_m_N=0.0,
-        Theta_N=-0.1,
-        cE_N=-0.2,
-        DU_N=1.0,
+        drift_N=-0.15,
+        delta_DU_N=0.0,
         dS_N=1e-16,
         c_s=0.3,
     )
     rows = held.rows(inputs, RAD)
-    assert rows.dU_N == pytest.approx((1.0 - ALPHA) * inputs.U_N)
+    # the rows are returned as deviations from the FRW rows, d_xi X and (alpha w X - d_xi X) X^2
+    assert rows.delta_dU_N + inputs.X_xi_N == pytest.approx((1.0 - ALPHA) * inputs.U_N)
     cE = ALPHA * ((1.0 + 1.0 / 3.0) * 0.7 * inputs.U_N - inputs.X_N)
-    assert rows.F_N == pytest.approx((cE - inputs.X_xi_N) * inputs.X_N**2 * 4.0)
+    F_frw = (ALPHA / 3.0 * inputs.X_N - inputs.X_xi_N) * inputs.X_N**2
+    assert rows.delta_F_N + F_frw == pytest.approx((cE - inputs.X_xi_N) * inputs.X_N**2 * 4.0)
     assert rows.dW == 0.0

@@ -44,25 +44,37 @@ from pbh.types import FloatArray
 
 @dataclass(frozen=True)
 class StageFluxes:
-    """The three scalars of a stage that the step's bookkeeping needs; free to collect.
+    """The scalars of a stage that the step's bookkeeping needs; free to collect.
+
+    The total mass obeys `d_xi M_total = (2 - 3 alpha) M_total - 3 F_N` exactly. The outer face is static, so the FRW
+    parts of both sides cancel identically, `(2 - 3 alpha) X_N^3 = 3 alpha w X_N^3`, and the bookkeeping is checked in
+    the deviations, `d_xi delta M_total = (2 - 3 alpha) delta M_total - 3 delta F_N`, where it is limited by the
+    rounding of the deviation rather than of `M_total` itself.
 
     Attributes:
         F_N: The outer flux; `F_je` the flux through the excision face (`0` unexcised).
-        M_total: The total mass in the domain, `M_e + 3 sum E_c`, whose rate is `(2 - 3 alpha) M_total - 3 F_N`.
+        M_total: The total mass in the domain, `M_N = M_e + 3 sum E_c`.
+        delta_F_N: The outer flux less its FRW value.
+        delta_M_total: The total mass less its FRW value `X_N^3`, the cumulative sum of the deviations.
     """
 
     F_N: float
     F_je: float
     M_total: float
+    delta_F_N: float
+    delta_M_total: float
 
     @classmethod
-    def of(cls, result: DerivsResult, state: State, layout: Layout) -> StageFluxes:
+    def of(cls, result: DerivsResult, layout: Layout) -> StageFluxes:
         """Collect the stage's fluxes and total mass."""
-        j_e = layout.j_e
+        N, j_e = layout.N, layout.j_e
+        d = result.derived
         return cls(
-            F_N=float(result.F[layout.N]),
+            F_N=float(result.F[N]),
             F_je=float(result.F[j_e]) if j_e > 0 else 0.0,
-            M_total=state.M_e + 3.0 * float(np.sum(state.E[layout.cells])),
+            M_total=float(d.M[N]),
+            delta_F_N=float(result.delta_F[N]),
+            delta_M_total=float(d.delta_M[N]),
         )
 
 
@@ -86,7 +98,8 @@ class MonitoredStep(StepRow):
     F_N_integral: float
     """The running integral of the outer flux, `int F_N dxi`."""
     bookkeeping_residual: float
-    """`M_total` after the step minus what the weighted stage rates predict, relative to `M_total`: round-off."""
+    """`M_total` after the step minus what the weighted stage rates predict, relative to `M_total`: round-off. Formed
+    in the deviations (`StageFluxes`), so it is the rounding of the deviation, not of `M_total`."""
     rho_0: float
     W: float
     penalty: float
@@ -141,7 +154,7 @@ class StepInputs:
         step, xi, dxi, limit: The step's identification, as in `StepRow`; `xi` the time arrived at.
         state, geo, bg, result: The state arrived at, its geometry and background, and the stage result there.
         stages: The fluxes of the step's stages, in order, and `weights` the tableau's `b`.
-        M_total_before: The total mass before the step, for the bookkeeping residual.
+        delta_M_total_before: The total mass's deviation from FRW before the step, for the bookkeeping residual.
         F_N_integral_before: The running flux integral before the step.
         rate_change: The largest change of the packed rate from the step's last stage to the evaluation at the new
             state, relative to the state's scale; `dxi / 6` times it is the companion estimate.
@@ -158,7 +171,7 @@ class StepInputs:
     result: DerivsResult
     stages: list[StageFluxes]
     weights: tuple[float, ...]
-    M_total_before: float
+    delta_M_total_before: float
     F_N_integral_before: float
     rate_change: float
     far_zone_from: float
@@ -175,10 +188,11 @@ def monitor_step(
     X = geo.X[: N + 1]
 
     # the first tier
-    end = StageFluxes.of(i.result, state, layout)
+    end = StageFluxes.of(i.result, layout)
     F_N = sum(b * s.F_N for b, s in zip(i.weights, i.stages, strict=True))
-    predicted = i.M_total_before + i.dxi * sum(
-        b * (eos.energy_source_rate * s.M_total - 3.0 * s.F_N) for b, s in zip(i.weights, i.stages, strict=True)
+    predicted = i.delta_M_total_before + i.dxi * sum(
+        b * (eos.energy_source_rate * s.delta_M_total - 3.0 * s.delta_F_N)
+        for b, s in zip(i.weights, i.stages, strict=True)
     )
     u_plus, u_minus = characteristic_pair(float(d.delta_U[N]), float(d.delta_rho[N - 1]), float(X[N]), bg.c_s)
     every_step = {
@@ -187,7 +201,7 @@ def monitor_step(
         "M_total": end.M_total,
         "F_N": F_N,
         "F_N_integral": i.F_N_integral_before + i.dxi * F_N,
-        "bookkeeping_residual": abs(end.M_total - predicted) / end.M_total,
+        "bookkeeping_residual": abs(end.delta_M_total - predicted) / end.M_total,
         "rho_0": float(d.rho[j_e]),
         "W": state.W,
         "penalty": u_minus - state.W,
@@ -266,9 +280,10 @@ def full_diagnostics(
     core = slice(j_e, j_e + max(core_cells, 1))
     if kernels is not None:
         viscous = float(np.max(np.abs(kernels.q[core]) / (w * d.rho[core])))
-        clipped = limiter_clipped(d.rho, kernels.rho_L, geo, layout)
+        clipped = limiter_clipped(d.delta_rho, kernels.delta_rho_L, geo, layout)
         first = max(j_e, 1)  # face 0 carries no reconstruction
-        jump = float(np.max(np.abs(kernels.rho_R[first:N] - kernels.rho_L[first:N]) / d.rho_f[first:N]))
+        jumps = kernels.delta_rho_R[first:N] - kernels.delta_rho_L[first:N]
+        jump = float(np.max(np.abs(jumps) / d.rho_f[first:N]))
     else:
         viscous, jump = 0.0, 0.0
         clipped = np.zeros(N, dtype=bool)
@@ -397,26 +412,27 @@ def grid_scale_fraction(f: FloatArray) -> float:
 
 
 def limiter_clipped(
-    rho: FloatArray, rho_L: FloatArray, geo: Geometry, layout: Layout
+    delta_rho: FloatArray, delta_rho_L: FloatArray, geo: Geometry, layout: Layout
 ) -> np.ndarray[tuple[int], np.dtype[np.bool_]]:
     """Which retained interior cells the density limiter clipped: their reconstructed slope in `s` is not centred.
 
     The reconstruction's slope of cell `c` is `(rho_L,c+1 - rho_c) / (X_{c+1}^2 - sbar_c)`; the centred slope is the
-    mean of the two one-sided differences in `sbar`. The first and last retained cells are one-sided by construction
-    and never count.
+    mean of the two one-sided differences in `sbar`. Both are formed from the deviations `rho - 1`, as the
+    reconstruction forms them, so that near FRW no rounding of the density to its FRW size reads as a clipped slope.
+    The first and last retained cells are one-sided by construction and never count.
     """
     N, j_e = layout.N, layout.j_e
     clipped = np.zeros(N, dtype=bool)
     interior = slice(j_e + 1, N - 1)
     X2, sbar = geo.X**2, geo.sbar
     ds = X2[j_e + 2 : N] - sbar[interior]
-    slope = (rho_L[j_e + 2 : N] - rho[interior]) / ds
-    d_in = (rho[interior] - rho[j_e : N - 2]) / (sbar[interior] - sbar[j_e : N - 2])
-    d_out = (rho[j_e + 2 : N] - rho[interior]) / (sbar[j_e + 2 : N] - sbar[interior])
+    slope = (delta_rho_L[j_e + 2 : N] - delta_rho[interior]) / ds
+    d_in = (delta_rho[interior] - delta_rho[j_e : N - 2]) / (sbar[interior] - sbar[j_e : N - 2])
+    d_out = (delta_rho[j_e + 2 : N] - delta_rho[interior]) / (sbar[j_e + 2 : N] - sbar[interior])
     centred = 0.5 * (d_in + d_out)
     # A clipped slope differs from the centred one by a finite fraction of it; an unclipped one only by the round-off
-    # of forming it from a face value, about 1e-16 rho / ds.
-    tolerance = 1e-12 * np.abs(centred) + 1e-13 * rho[interior] / ds
+    # of forming it from a face value, about 1e-16 |delta_rho| / ds.
+    tolerance = 1e-12 * np.abs(centred) + 1e-13 * np.abs(delta_rho[interior]) / ds
     clipped[interior] = np.abs(slope - centred) > tolerance
     return clipped
 

@@ -43,7 +43,7 @@ from pbh.kernels import KernelSettings
 from pbh.layout import Layout
 from pbh.maps import Map
 from pbh.outer import OuterClosure
-from pbh.state import frw_rate, frw_state
+from pbh.state import frw_state
 from pbh.stencils import FaceClosure, StencilWeights
 from pbh.types import FloatArray
 
@@ -193,13 +193,9 @@ class Scheme:
         """The packed FRW state at time `xi`."""
         return self.layout.pack(frw_state(self.frame(xi).geo, self.layout.j_e))
 
-    def frw_rate(self, xi: float) -> FloatArray:
-        """The packed rate of the FRW state at time `xi`."""
-        return self.layout.pack(frw_rate(self.frame(xi).geo, self.layout.j_e))
-
     def deviation_rate(self, xi: float, dy: FloatArray) -> FloatArray:
-        """The right-hand side in deviation form: the stage's rate on `y_FRW + delta y`, minus the FRW rate."""
-        return self.layout.pack(self.evaluate_deviation(xi, dy).rate) - self.frw_rate(xi)
+        """The right-hand side in deviation form: the stage's rate of the deviation at `y_FRW + delta y`."""
+        return self.layout.pack(self.evaluate_deviation(xi, dy).deviation_rate)
 
 
 type Rate = Callable[[float, FloatArray], FloatArray]
@@ -252,7 +248,7 @@ def advance_with_stages(
         y_i = scheme.frw(xi_i) + dy_i
         result = first if n == 0 and first is not None and c_i == 0 else scheme.evaluate_deviation(xi_i, dy_i)
         stages.append(Stage(xi=xi_i, y=y_i, result=result))
-        k.append(scheme.layout.pack(result.rate) - scheme.frw_rate(xi_i))
+        k.append(scheme.layout.pack(result.deviation_rate))
     return dy + dxi * sum(float(b_i) * k_i for b_i, k_i in zip(tableau.b, k, strict=True)), stages
 
 

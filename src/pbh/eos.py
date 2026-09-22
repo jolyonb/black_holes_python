@@ -127,6 +127,28 @@ class EquationOfState:
             return 1.0 / np.sqrt(rho)
         return rho**self.lapse_exponent
 
+    def lapse_and_deviation(self, rho: FloatArray, delta_rho: FloatArray) -> tuple[FloatArray, FloatArray]:
+        """The lapse `e^phi` and its deviation `e^phi - 1` from its FRW value, the latter without subtracting one.
+
+        Near FRW `e^phi - 1` is a small number, and forming it as `e^phi` minus one keeps only the rounding of `e^phi`.
+        It is formed from `delta_rho = rho - 1` instead: for radiation, with `r = rho^(1/4)`,
+        `e^phi - 1 = (1 - r) / r = -delta_rho / (r (1 + r) (1 + r^2))`, since `1 - r^4 = (1 - r)(1 + r)(1 + r^2)`; for
+        the stiff fluid, with `r = rho^(1/2)`, `-delta_rho / (r (1 + r))`; for any other `w`,
+        `expm1(lapse_exponent log1p(delta_rho))`.
+
+        Args:
+            rho: The density.
+            delta_rho: Its deviation `rho - 1`, formed without subtracting one.
+        """
+        if self.lapse_exponent == -0.25:
+            r2 = np.sqrt(rho)
+            r = np.sqrt(r2)
+            return 1.0 / r, -delta_rho / (r * (1.0 + r) * (1.0 + r2))
+        if self.lapse_exponent == -0.5:
+            r = np.sqrt(rho)
+            return 1.0 / r, -delta_rho / (r * (1.0 + r))
+        return rho**self.lapse_exponent, np.expm1(self.lapse_exponent * np.log1p(delta_rho))
+
     @property
     def is_radiation(self) -> bool:
         """Whether `w = 1/3`: the outer closure, the energy norm and the initial-data recipe exist only then."""

@@ -42,9 +42,9 @@ def inputs_for(
     sch: Scheme, xi: float, state: State, stages: list[StageFluxes] | None = None, **kw: float
 ) -> StepInputs:
     f, result = evaluate(sch, xi, state)
-    end = StageFluxes.of(result, state, sch.layout)
+    end = StageFluxes.of(result, sch.layout)
     # four identical stages: the mass before is what makes the weighted rate land exactly on the mass after
-    rate = float(sch.eos.energy_source_rate) * end.M_total - 3.0 * end.F_N
+    rate = float(sch.eos.energy_source_rate) * end.delta_M_total - 3.0 * end.delta_F_N
     return StepInputs(
         step=3,
         xi=xi,
@@ -56,7 +56,7 @@ def inputs_for(
         result=result,
         stages=stages or [end] * 4,
         weights=WEIGHTS,
-        M_total_before=kw.get("M_total_before", end.M_total - 0.01 * rate),
+        delta_M_total_before=kw.get("delta_M_total_before", end.delta_M_total - 0.01 * rate),
         F_N_integral_before=kw.get("F_N_integral_before", 0.0),
         rate_change=kw.get("rate_change", 0.0),
         far_zone_from=kw.get("far_zone_from", 4.0),
@@ -118,7 +118,7 @@ def test_the_full_row_locates_the_minima_and_the_courant_cell():
     assert row.M_total == pytest.approx(3.0 * np.sum(E))
     assert row.courant_cell in range(N)
     assert row.a_at_courant > 0.0
-    fluxes = StageFluxes.of(evaluate(SCHEME, xi, perturbed)[1], perturbed, SCHEME.layout)
+    fluxes = StageFluxes.of(evaluate(SCHEME, xi, perturbed)[1], SCHEME.layout)
     assert fluxes.F_je == 0.0
     assert fluxes.M_total == row.M_total
 
@@ -144,11 +144,11 @@ def test_the_bookkeeping_residual_of_an_rk4_step_is_round_off():
                 y_i += dxi * float(a_ij) * k_j
         xi_i = xi + float(c_i) * dxi
         r_i = sch.evaluate(xi_i, y_i)
-        k.append(sch.layout.pack(r_i.rate))
-        stages.append(StageFluxes.of(r_i, sch.layout.unpack(y_i), sch.layout))
+        k.append(sch.layout.pack(r_i.deviation_rate))
+        stages.append(StageFluxes.of(r_i, sch.layout))
     dy_new = advance(sch, Integrator.RK4, xi, dy, dxi)
     new = sch.layout.unpack(sch.frw(xi + dxi) + dy_new)
-    inputs = inputs_for(sch, xi + dxi, new, stages, M_total_before=stages[0].M_total)
+    inputs = inputs_for(sch, xi + dxi, new, stages, delta_M_total_before=stages[0].delta_M_total)
     inputs = dataclasses.replace(inputs, dxi=dxi)
     row = monitor_step(inputs, RAD, sch.layout, sch.settings)
     assert row.bookkeeping_residual < 1e-13
@@ -302,11 +302,11 @@ def test_the_limiter_clipping_detector_sees_a_kink_and_not_a_smooth_field():
     smooth = State(E=frw.E * (1.0 + 0.01 * geo.sbar[:N] / 36.0), U=frw.U, W=0.0)  # linear in s: exactly reconstructed
     result = sch.evaluate(0.0, layout.pack(smooth))
     assert result.kernels is not None
-    assert not np.any(limiter_clipped(result.derived.rho, result.kernels.rho_L, geo, layout))
+    assert not np.any(limiter_clipped(result.derived.delta_rho, result.kernels.delta_rho_L, geo, layout))
     kinked = State(E=frw.E * np.where(geo.Xm[:N] < 1.0, 1.2, 1.0), U=frw.U, W=0.0)  # a jump between cells 9 and 10
     result = sch.evaluate(0.0, layout.pack(kinked))
     assert result.kernels is not None
-    clipped = limiter_clipped(result.derived.rho, result.kernels.rho_L, geo, layout)
+    clipped = limiter_clipped(result.derived.delta_rho, result.kernels.delta_rho_L, geo, layout)
     assert clipped[9]
     assert clipped[10]
     assert not np.any(clipped[:8])

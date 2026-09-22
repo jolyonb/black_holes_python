@@ -137,7 +137,9 @@ def test_every_sign_change_is_reported_and_the_outermost_outer_boundary_is_the_a
     d = Derived(
         rho=np.ones(N),
         ephi=np.ones(N),
+        delta_ephi=np.zeros(N),
         M=X**3,
+        delta_M=np.zeros(N + 1),
         mt=np.ones(N + 1),
         delta_rho=np.zeros(N),
         delta_U=np.zeros(N + 1),
@@ -145,6 +147,8 @@ def test_every_sign_change_is_reported_and_the_outermost_outer_boundary_is_the_a
         Gammabar2=np.ones(N + 1),
         rho_f=np.ones(N + 1),
         ephi_f=np.ones(N + 1),
+        delta_rho_f=np.zeros(N + 1),
+        delta_ephi_f=np.zeros(N + 1),
     )
     report = find_horizons(state, d, geo, Background.at(RAD, XI), RAD, m, Layout(N), XI)
     assert [round(s.X, 6) for s in report.horizons] == pytest.approx([0.5, 1.5, 2.5, 3.5], abs=2e-4)

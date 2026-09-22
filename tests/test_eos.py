@@ -98,6 +98,19 @@ def test_the_lapse_is_the_power_of_the_density_to_an_ulp(w: Fraction):
 
 
 @pytest.mark.parametrize("w", SEVERAL_W)
+def test_the_lapse_deviation_is_formed_without_subtracting_one(w: Fraction):
+    # Against expm1(k log1p(delta_rho)), accurate to an ulp of the deviation itself, for densities near and far from 1:
+    # radiation and the stiff fluid by their square-root formulas, the rest by that formula.
+    eos = EquationOfState(w)
+    delta_rho = np.concatenate((np.geomspace(1e-12, 1e3, 200), -np.geomspace(1e-12, 0.999, 200)))
+    rho = 1.0 + delta_rho
+    ephi, delta_ephi = eos.lapse_and_deviation(rho, delta_rho)
+    reference = np.expm1(eos.lapse_exponent * np.log1p(delta_rho))
+    assert np.max(np.abs(delta_ephi / reference - 1.0)) < 1e-15
+    assert np.array_equal(ephi, eos.lapse(rho))
+
+
+@pytest.mark.parametrize("w", SEVERAL_W)
 def test_floats_agree_with_the_exact_formulas_for_several_w(w: Fraction):
     eos = EquationOfState(w)
     alpha = eos.alpha
