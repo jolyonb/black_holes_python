@@ -9,10 +9,11 @@ import pytest
 from modes import mode_errors
 
 from pbh.eos import RADIATION, EquationOfState
-from pbh.kernels import CENTRED_SCHEME
+from pbh.kernels import CENTRED_SCHEME, PRODUCTION_KERNELS
 from pbh.layout import Layout
 from pbh.maps import IdentityMap, Map, PinnedMap, SinhStretch
-from pbh.outer import HeldAtFrw
+from pbh.outer import HeldAtFrw, OutgoingWave
+from pbh.state import State
 from pbh.stencils import FaceClosure
 from pbh.timestep import (
     COURANT_NUMBER,
@@ -232,3 +233,25 @@ def test_the_base_scheme_converges_at_second_order_on_the_exact_bessel_modes(m: 
     for field in (0, 1):
         rates = [math.log2(errors[i][field] / errors[i + 1][field]) for i in range(2)]
         assert min(rates) > 1.9, f"field {field}, mode {k_index}: L1 rates {rates} (tab:num:tests asks >= 1.9)"
+
+
+def test_the_rate_of_a_tiny_deviation_carries_round_off_of_the_deviation_s_size_not_of_frw_s():
+    # The rate is linear in a small deviation, so the central difference (r(s v) - r(-s v)) / 2s is the same at every
+    # small s. Any round-off at the size of the FRW fields shows as noise growing like 1 / s. The velocity rows are
+    # formed from the deviation throughout and stay at the rounding of the deviation itself; the energy rows keep the
+    # flux-differencing floor of Section 7.2, a fixed fraction of the cell content.
+    sch = Scheme(EOS, SinhStretch(24.0, 3.0), Layout(400), FaceClosure.FIRST_ORDER, OutgoingWave(), PRODUCTION_KERNELS)
+    geo = sch.frame(0.0).geo
+    g = np.exp(-((geo.X / 4.0) ** 2))
+    shell = 0.5 * (g[:-1] + g[1:]) * (1.0 - 2.0 / 3.0 * (geo.Xm / 4.0) ** 2)
+    v = sch.layout.pack(State(E=geo.dV * shell, U=0.3 * geo.X * g, W=0.0))
+
+    def linear(s: float) -> FloatArray:
+        return (sch.deviation_rate(0.0, s * v) - sch.deviation_rate(0.0, -s * v)) / (2.0 * s)
+
+    reference, tiny, s = linear(1e-5), linear(1e-12), 1e-12
+    N = 400
+    velocity_noise = np.max(np.abs(tiny[N:-1] - reference[N:-1]) * s / geo.X[1:])
+    energy_noise = np.max(np.abs(tiny[:N] - reference[:N]) * s / geo.dV)
+    assert velocity_noise < 2e-15  # 2e-14 here, 1e-12 at N = 2000, while the gradient differenced rho
+    assert energy_noise < 1e-13

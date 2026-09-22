@@ -180,7 +180,7 @@ def monitor_step(
     predicted = i.M_total_before + i.dxi * sum(
         b * (eos.energy_source_rate * s.M_total - 3.0 * s.F_N) for b, s in zip(i.weights, i.stages, strict=True)
     )
-    u_plus, u_minus = characteristic_pair(float(state.U[N]), float(X[N]), float(d.rho[N - 1]), bg.c_s)
+    u_plus, u_minus = characteristic_pair(float(d.delta_U[N]), float(d.delta_rho[N - 1]), float(X[N]), bg.c_s)
     every_step = {
         "rho_min": float(np.min(d.rho[cells])),
         "Gammabar2_min": float(np.min(d.Gammabar2[faces])) / bg.Gammabar2,
@@ -235,8 +235,8 @@ def full_diagnostics(
     # far zone
     far = X[j_e : N + 1] >= i.far_zone_from
     far_cells = far[:-1]  # a cell is far if its inner face is
-    delta_rho = d.rho[cells] - 1.0
-    delta_U = state.U[faces] / X[faces] - 1.0 if j_e > 0 else np.concatenate(([0.0], state.U[1 : N + 1] / X[1:] - 1.0))
+    delta_rho = d.delta_rho[cells]
+    delta_U = d.delta_U[faces] if j_e > 0 else np.concatenate(([0.0], d.delta_U[1:]))
     far_rho = float(np.max(np.abs(delta_rho[far_cells]))) if np.any(far_cells) else 0.0
     far_U = float(np.max(np.abs(delta_U[far]))) if np.any(far) else 0.0
 
@@ -244,7 +244,7 @@ def full_diagnostics(
     energy = boundary_energy(state, d, geo, bg, layout) if eos.is_radiation else float("nan")
 
     # centre and grid scale
-    delta_U_1 = float(state.U[max(j_e, 1)] / X[max(j_e, 1)]) - 1.0
+    delta_U_1 = float(d.delta_U[max(j_e, 1)])
     inner = delta_rho[:4] if j_e == 0 else np.zeros(0)
     odd_even_inner = float(np.max(np.abs(alternating(inner)))) / rho_0 if inner.size >= 3 else 0.0
 
@@ -285,8 +285,8 @@ def full_diagnostics(
         far_zone_delta_U=far_U,
         u_plus=u_plus,
         u_minus=u_minus,
-        delta_m_N=float(d.mt[N]) - 1.0,
-        delta_rho_N_1=float(d.rho[N - 1]) - 1.0,
+        delta_m_N=float(d.delta_m[N]),
+        delta_rho_N_1=float(d.delta_rho[N - 1]),
         boundary_energy=energy,
         delta_U_1=delta_U_1,
         odd_even_inner=odd_even_inner,
@@ -434,9 +434,9 @@ def boundary_energy(state: State, d: Derived, geo: Geometry, bg: Background, lay
     if layout.excised:
         return float("nan")
     X = geo.X[: N + 1]
-    delta_rho = d.rho - 1.0
-    delta_U = state.U[1:] / X[1:] - 1.0
-    delta_m = d.mt[1:] - 1.0
+    delta_rho = d.delta_rho
+    delta_U = d.delta_U[1:]
+    delta_m = d.delta_m[1:]
     face_weight = 0.5 * X[1:] ** 3 * geo.dS[1 : N + 1]
     interior = float(np.sum(2.25 * bg.c_s**2 * geo.dV * delta_rho**2))
     faces = float(np.sum(face_weight * (delta_U**2 + delta_m**2 / 8.0)))

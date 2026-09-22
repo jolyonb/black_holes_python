@@ -119,12 +119,14 @@ def minmod(*slopes: FloatArray) -> FloatArray:
 
 
 def reconstruct_density(
-    rho: FloatArray, geo: Geometry, w: StencilWeights, limiter: DensityLimiter, floor: float
+    rho: FloatArray, delta_rho: FloatArray, geo: Geometry, w: StencilWeights, limiter: DensityLimiter, floor: float
 ) -> tuple[FloatArray, FloatArray]:
     """The density to both sides of every retained face, piecewise linear in `s = X^2` (eq:num:recon).
 
     Args:
         rho: The cell densities.
+        delta_rho: Their deviations `rho - 1`, formed without subtracting one (see `derive`), which the slopes
+            difference: in exact arithmetic the same differences, without the rounding of `rho` to its FRW size.
         geo: The geometry.
         w: The stencil weights, for the retained ranges.
         limiter: mc or minmod for the interior cells.
@@ -139,7 +141,7 @@ def reconstruct_density(
     X2, sbar, dS = geo.X**2, geo.sbar, geo.dS
     # The one-sided slopes d_j across the interior retained faces j_e+1 .. N-1, indexed by face.
     d = np.full(N + 1, np.nan)
-    d[j_e + 1 : N] = (rho[j_e + 1 : N] - rho[j_e : N - 1]) / dS[j_e + 1 : N]
+    d[j_e + 1 : N] = (delta_rho[j_e + 1 : N] - delta_rho[j_e : N - 1]) / dS[j_e + 1 : N]
     # The limited slope of every retained cell: the interior cells from their two faces, the first and last retained
     # cells from their single adjacent difference, unlimited.
     slope = np.full(N, np.nan)
@@ -193,7 +195,9 @@ def viscous_pressure(
     cells = layout.cells
     # (c) The peculiar velocity, its slope in each cell, and the minmod-limited slope at each face: the single
     # adjacent difference at the innermost retained face and at the outer face.
-    upsilon = state.U - X
+    upsilon = X * d.delta_U  # U - X, from the deviation rather than by subtracting (see `derive`)
+    if j_e == 0:
+        upsilon[0] = 0.0  # U_0 = X_0 = 0
     g = np.full(N, np.nan)
     g[cells] = (upsilon[j_e + 1 : N + 1] - upsilon[j_e:N]) / dX[cells]
     g_f = np.full(N + 1, np.nan)
@@ -249,7 +253,7 @@ def hll_flux(
     alpha, w_eos = float(eos.alpha), float(eos.w)
 
     def one_sided(rho: FloatArray) -> FloatArray:
-        ephi = rho**eos.lapse_exponent
+        ephi = eos.lapse(rho)
         transport = (alpha * ((1.0 + w_eos) * ephi * U - X) - X_xi) * X**2 * rho
         work = alpha * (ephi * U - X) * X**2 * q_f[faces]
         return transport + work

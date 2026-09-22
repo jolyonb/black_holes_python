@@ -74,7 +74,7 @@ def test_the_reconstruction_is_exact_on_a_field_linear_in_s(m: Map, limiter: Den
     su = Setup.of(m, 24)
     a, b = 1.0, 0.05
     rho = a + b * su.geo.sbar[:-1]  # the shell average of a + b X^2 is its value at sbar
-    rho_L, rho_R = reconstruct_density(rho, su.geo, su.w, limiter, 1e-12)
+    rho_L, rho_R = reconstruct_density(rho, rho - 1.0, su.geo, su.w, limiter, 1e-12)
     exact = a + b * su.geo.X**2
     assert rho_L[1:] == pytest.approx(exact[1:], rel=1e-12)
     assert rho_R[:-1] == pytest.approx(exact[:-1], rel=1e-12)
@@ -98,7 +98,7 @@ def test_face_values_stay_between_the_neighbouring_cells_on_rough_data(limiter: 
     su = Setup.of(IdentityMap(4.0), 30)
     rng = np.random.default_rng(3)
     rho = rng.uniform(0.5, 2.0, size=30)
-    rho_L, rho_R = reconstruct_density(rho, su.geo, su.w, limiter, 1e-12)
+    rho_L, rho_R = reconstruct_density(rho, rho - 1.0, su.geo, su.w, limiter, 1e-12)
     for j in range(2, 29):  # interior faces whose two cells are both limited
         lo, hi = min(rho[j - 1], rho[j]), max(rho[j - 1], rho[j])
         assert lo - 1e-12 <= rho_L[j] <= hi + 1e-12
@@ -108,7 +108,7 @@ def test_face_values_stay_between_the_neighbouring_cells_on_rough_data(limiter: 
 def test_the_floor_is_applied_to_every_face_value():
     su = Setup.of(IdentityMap(4.0), 10)
     rho = np.full(10, 1e-14)
-    rho_L, rho_R = reconstruct_density(rho, su.geo, su.w, DensityLimiter.MC, 1e-12)
+    rho_L, rho_R = reconstruct_density(rho, rho - 1.0, su.geo, su.w, DensityLimiter.MC, 1e-12)
     assert np.all(rho_L == 1e-12)
     assert np.all(rho_R == 1e-12)
 
@@ -117,7 +117,7 @@ def test_at_an_excision_face_the_inside_value_is_the_outside_one_and_the_first_s
     su = Setup.of(SinhStretch(4.0, scale=2.0), 24, j_e=5)
     rng = np.random.default_rng(4)
     rho = 1.0 + 0.1 * rng.uniform(-1, 1, size=24)
-    rho_L, rho_R = reconstruct_density(rho, su.geo, su.w, DensityLimiter.MC, 1e-12)
+    rho_L, rho_R = reconstruct_density(rho, rho - 1.0, su.geo, su.w, DensityLimiter.MC, 1e-12)
     assert rho_L[5] == rho_R[5]
     slope = (rho[6] - rho[5]) / su.geo.dS[6]  # the first retained cell's single one-sided difference, unlimited
     assert rho_R[5] == pytest.approx(rho[5] + slope * (su.geo.X[5] ** 2 - su.geo.sbar[5]))

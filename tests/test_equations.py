@@ -181,10 +181,12 @@ def test_the_stage_hands_the_closure_the_face_n_quantities_and_uses_its_rows():
     assert inputs.xi == 0.8
     assert inputs.X_N == su.geo.X[N]
     assert inputs.U_N == s.U[N]
-    assert inputs.rho_N_1 == res.derived.rho[N - 1]
+    assert inputs.delta_U_N == res.derived.delta_U[N]
+    assert inputs.delta_rho_N_1 == res.derived.delta_rho[N - 1]
     assert inputs.rho_f_N == res.derived.rho_f[N]
     assert inputs.ephi_f_N == res.derived.ephi_f[N]
     assert inputs.mt_N == res.derived.mt[N]
+    assert inputs.delta_m_N == res.derived.delta_m[N]
     assert inputs.Theta_N == res.speeds.Theta[N]
     assert inputs.cE_N == res.speeds.cE[N]
     assert inputs.dS_N == su.geo.dS[N]

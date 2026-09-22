@@ -148,7 +148,7 @@ class Run:
 
     def evaluate(self) -> DerivsResult:
         """The rate at the current state."""
-        return self.sch.evaluate(self.xi, self.sch.frw(self.xi) + self.dy)
+        return self.sch.evaluate_deviation(self.xi, self.dy)
 
     def snapshot(self) -> None:
         """Write the current state as a snapshot."""
@@ -349,7 +349,7 @@ def run(config: RunConfig, initial: StateRecord, paths: RunPaths) -> RunResult:
                 state_new = layout.unpack(r.sch.frw(xi_new) + dy_new)
                 if not is_finite(state_new, layout.j_e):
                     raise AbortError("state", -1, float("nan"), "the state is not finite")
-                result = r.sch.evaluate(xi_new, r.sch.frw(xi_new) + dy_new)
+                result = r.sch.evaluate_deviation(xi_new, dy_new)
                 # 3. the record of the step
                 r.step += 1
                 rate_change = float(np.max(np.abs(layout.pack(result.rate) - layout.pack(stages[-1].result.rate))))

@@ -275,8 +275,9 @@ def test_the_state_holds_the_mass_exactly_with_the_velocity_corrected_and_w_at_t
     delta_m, first, second = mode.delta_m_derivatives(BG_0, X)
     corrected = mode.delta_U(BG_0, X) + nonlinear_correction(X, delta_m, first, second)
     assert state.U[1:] == pytest.approx(X[1:] * (1.0 + corrected[1:]), rel=1e-14)
-    rho_N_1 = state.E[N - 1] / geo.dV[N - 1]
-    assert state.W == characteristic_pair(float(state.U[N]), float(X[N]), float(rho_N_1), BG_0.c_s)[1]
+    delta_U_N = (state.U[N] - X[N]) / X[N]
+    delta_rho_N_1 = (state.E[N - 1] - geo.dV[N - 1]) / geo.dV[N - 1]
+    assert state.W == characteristic_pair(float(delta_U_N), float(delta_rho_N_1), float(X[N]), BG_0.c_s)[1]
     assert 0.0 < mode.correction_ratio(geo, BG_0) < 0.05
     # and the data are admissible, as derive agrees
     derive(state, geo, BG_0, RAD, StencilWeights.of(geo, Layout(N), FaceClosure.FIRST_ORDER))
@@ -320,8 +321,8 @@ def test_complete_data_from_any_source_go_through_the_same_door():
     assert state.U[0] == 0.0
     assert state.U[1:] == pytest.approx(U[1:])
     assert state.E is E
-    rho_N_1 = E[-1] / geo.dV[-1]
-    assert state.W == characteristic_pair(float(U[-1]), float(X[-1]), float(rho_N_1), bg.c_s)[1]
+    delta_U_N, delta_rho_N_1 = (U[-1] - X[-1]) / X[-1], (E[-1] - geo.dV[-1]) / geo.dV[-1]
+    assert state.W == characteristic_pair(float(delta_U_N), float(delta_rho_N_1), float(X[-1]), bg.c_s)[1]
     assert initial_state(E, U, geo, bg, W=0.25).W == 0.25  # a known incoming amplitude is kept
     with pytest.raises(NotHyperbolicError, match="rho"):
         initial_state(-E, U, geo, bg)

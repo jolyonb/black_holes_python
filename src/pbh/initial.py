@@ -72,9 +72,9 @@ from typing import Literal, Self
 import numpy as np
 from scipy.special import spherical_jn, spherical_yn
 
-from pbh.derived import NotHyperbolicError
+from pbh.derived import NotHyperbolicError, gammabar_squared
 from pbh.eos import Background
-from pbh.geometry import Geometry
+from pbh.geometry import Geometry, shell_volumes
 from pbh.outer import characteristic_pair
 from pbh.state import State
 from pbh.types import FloatArray
@@ -387,7 +387,9 @@ def initial_state(E: FloatArray, U: FloatArray, geo: Geometry, bg: Background, W
     U[0] = 0.0
     check_admissible(E, U, X, bg)
     if W is None:
-        W = characteristic_pair(float(U[N]), float(X[N]), float(E[N - 1] / geo.dV[N - 1]), bg.c_s)[1]
+        delta_U_N = (U[N] - X[N]) / X[N]  # the deviations, formed without subtracting one
+        delta_rho_N_1 = (E[N - 1] - geo.dV[N - 1]) / geo.dV[N - 1]
+        W = characteristic_pair(float(delta_U_N), float(delta_rho_N_1), float(X[N]), bg.c_s)[1]
     return State(E=E, U=U, W=W)
 
 
@@ -396,14 +398,16 @@ def check_admissible(E: FloatArray, U: FloatArray, X: FloatArray, bg: Background
 
     `Gammabar^2 = Gammabar_FRW^2 + U^2 - M / X` with `M = 3 sum E` the tilde mass times `X^3` (eq:eul:gamma): the
     linearised bound eq:lin:gammaconstraint, checked on the nonlinear fields. It is stringent at large radius, where it
-    constrains `X^2 delta_m`, and for a compensated profile it is a constraint on the interior only.
+    constrains `X^2 delta_m`, and for a compensated profile it is a constraint on the interior only. It is formed
+    from the deviations, as a stage forms it (`derive`).
     """
-    rho = E / (np.diff(X**3) / 3.0)
+    dV = shell_volumes(X)
+    rho = E / dV
     if np.any(rho <= 0.0):
         c = int(np.argmin(rho))
         raise NotHyperbolicError("rho", c, float(rho[c]))
-    M = 3.0 * np.cumsum(E)
-    Gammabar2 = bg.Gammabar2 + U[1:] ** 2 - M / X[1:]
+    dM = 3.0 * np.cumsum(E - dV)
+    Gammabar2 = gammabar_squared(bg, X[1:], U[1:], U[1:] - X[1:], dM)
     if np.any(Gammabar2 <= 0.0):
         j = int(np.argmin(Gammabar2))
         raise NotHyperbolicError("Gammabar2", j + 1, float(Gammabar2[j]))

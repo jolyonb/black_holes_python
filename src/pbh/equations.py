@@ -113,6 +113,7 @@ def calc_derivs(
     w: StencilWeights,
     outer: OuterClosure,
     settings: KernelSettings,
+    deviation: State | None = None,
 ) -> DerivsResult:
     """Evaluate the semi-discrete equations once: the rate of every unknown at this time and state.
 
@@ -124,6 +125,7 @@ def calc_derivs(
         w: The stencil weights for this geometry, which carry the layout and the excision closure.
         outer: The closure of the outer face.
         settings: The kernel switches: production kernels or the centred base scheme, and their constants.
+        deviation: The state's deviation from FRW, if the caller holds it (see `derive`).
 
     Returns:
         The rate and the fields it was computed from.
@@ -136,16 +138,16 @@ def calc_derivs(
     alpha, w_eos = float(eos.alpha), float(eos.w)
     cells, faces = layout.cells, layout.faces
 
-    d = derive(state, geo, bg, eos, w)
+    d = derive(state, geo, bg, eos, w, deviation)
     sp = speeds(state, geo, eos, d, faces)
-    D_s_rho = w.gradient_s(d.rho)
+    D_s_rho = w.gradient_s(d.delta_rho)
     D_U = w.velocity_gradient(state.U)
 
     # The energy flux through the retained faces and the artificial pressure force: from the kernels of Section 7.7,
     # or, with the kernels off, the centred base flux of eq:num:energy, the physical energy flux relative to the moving
     # face, (cE_j - (d_xi X)_j) X_j^2 <rho>_j, and no force.
     if settings.kernels is Kernels.PRODUCTION:
-        rho_L, rho_R = reconstruct_density(d.rho, geo, w, settings.density_limiter, settings.rho_floor)
+        rho_L, rho_R = reconstruct_density(d.rho, d.delta_rho, geo, w, settings.density_limiter, settings.rho_floor)
         J, q, q_f, Q = viscous_pressure(state, geo, d, sp.Lam, eos, w, settings.c_v)
         F = hll_flux(rho_L, rho_R, q_f, state, geo, sp.Theta, sp.a, eos, w)
         kernels = KernelResult(rho_L=rho_L, rho_R=rho_R, J=J, q=q, q_f=q_f, Q=Q, F=F.copy())
@@ -166,10 +168,12 @@ def calc_derivs(
             X_xi_N=float(geo.X_xi[N]),
             U_N=float(state.U[N]),
             W=state.W,
-            rho_N_1=float(d.rho[N - 1]),
+            delta_U_N=float(d.delta_U[N]),
+            delta_rho_N_1=float(d.delta_rho[N - 1]),
             rho_f_N=float(d.rho_f[N]),
             ephi_f_N=float(d.ephi_f[N]),
             mt_N=float(d.mt[N]),
+            delta_m_N=float(d.delta_m[N]),
             Theta_N=float(sp.Theta[N]),
             cE_N=float(sp.cE[N]),
             DU_N=float(D_U[N]),

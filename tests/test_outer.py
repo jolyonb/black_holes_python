@@ -54,12 +54,12 @@ def test_gamma_minus_is_negative_for_every_sound_speed_with_the_printed_supremum
 
 
 def test_the_characteristic_pair_is_the_printed_combination_and_vanishes_on_frw():
-    X_N, c_s, U_N, rho = 4.0, 0.3, 4.2, 1.1
-    u_plus, u_minus = characteristic_pair(U_N, X_N, rho, c_s)
+    X_N, c_s = 4.0, 0.3
+    u_plus, u_minus = characteristic_pair(0.05, 0.1, X_N, c_s)
     kappa = 1.5 * c_s / X_N
     assert u_plus == pytest.approx(0.05 + kappa * 0.1)
     assert u_minus == pytest.approx(0.05 - kappa * 0.1)
-    assert characteristic_pair(X_N, X_N, 1.0, c_s) == (0.0, 0.0)
+    assert characteristic_pair(0.0, 0.0, X_N, c_s) == (0.0, 0.0)
 
 
 def test_the_production_strengths_are_printed_and_lie_on_the_second_order_line():
@@ -87,10 +87,12 @@ def inputs_off_frw(W: float = 0.02) -> OuterInputs:
         X_xi_N=0.0,
         U_N=4.3,
         W=W,
-        rho_N_1=1.2,
+        delta_U_N=0.075,  # U_N / X_N - 1
+        delta_rho_N_1=0.2,
         rho_f_N=1.15,
         ephi_f_N=0.97,
         mt_N=1.1,
+        delta_m_N=0.1,
         Theta_N=-0.4,
         cE_N=0.5,
         DU_N=1.3,
@@ -104,7 +106,7 @@ def test_the_rows_are_the_printed_formulas_written_out():
     i, tau = inputs_off_frw(), GENERIC
     alpha, w = 0.5, 1.0 / 3.0
     kappa = 1.5 * i.c_s / i.X_N
-    delta_U, delta_rho, delta_m = i.U_N / i.X_N - 1.0, i.rho_N_1 - 1.0, i.mt_N - 1.0
+    delta_U, delta_rho, delta_m = i.delta_U_N, i.delta_rho_N_1, i.delta_m_N
     u_plus, u_minus = delta_U + kappa * delta_rho, delta_U - kappa * delta_rho
     pen = u_minus - i.W
     dU_N = (
@@ -266,8 +268,8 @@ def outgoing_packet(geo: Geometry, bg: Background, k: float, X_0: float, sigma: 
         delta_U = np.where(X > 0.0, 1.5 * bg.c_s / X * delta_rho, 0.0)
     U = X * (1.0 + delta_U)
     N = geo.N
-    rho_N_1 = E[N - 1] / geo.dV[N - 1]
-    W = characteristic_pair(float(U[N]), float(X[N]), float(rho_N_1), bg.c_s)[1]
+    delta_rho_N_1 = (E[N - 1] - geo.dV[N - 1]) / geo.dV[N - 1]
+    W = characteristic_pair(float(delta_U[N]), float(delta_rho_N_1), float(X[N]), bg.c_s)[1]
     return State(E=E, U=U, W=W)
 
 

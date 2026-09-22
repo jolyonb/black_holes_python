@@ -3,6 +3,7 @@
 import math
 from fractions import Fraction
 
+import numpy as np
 import pytest
 
 from pbh.eos import RADIATION, Background, EquationOfState, as_rational_w
@@ -87,6 +88,13 @@ def test_rational_identities_between_the_constants_hold_exactly(w: Fraction):
     assert 2 - 3 * alpha == 3 * alpha * w  # the energy source rate, Section 7.2
     assert -w / (1 + w) == -Fraction(3, 2) * alpha * w  # the lapse exponent, eq:MSphinov
     assert 2 * (1 - alpha) == (2 - 3 * alpha) * (1 + 3 * w) / (3 * w)  # lambda_g against the source rate
+
+
+@pytest.mark.parametrize("w", SEVERAL_W)  # radiation and the stiff fluid by square roots, the rest by the power
+def test_the_lapse_is_the_power_of_the_density_to_an_ulp(w: Fraction):
+    eos = EquationOfState(w)
+    rho = np.geomspace(1e-6, 1e6, 1001)
+    assert np.max(np.abs(eos.lapse(rho) / rho**eos.lapse_exponent - 1.0)) <= 2.3e-16
 
 
 @pytest.mark.parametrize("w", SEVERAL_W)

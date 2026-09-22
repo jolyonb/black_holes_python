@@ -41,10 +41,12 @@ class OuterInputs:
         X_xi_N: The velocity of the outer face, `(d_xi X)_N`; zero on every admissible map (Section 8.1).
         U_N: The velocity at the outer face.
         W: The auxiliary scalar of Section 7.5.
-        rho_N_1: The density of the last cell, `rho_{N-1}`, half a cell inside the face.
+        delta_U_N: The relative velocity deviation at the outer face, `U_N / X_N - 1`.
+        delta_rho_N_1: The relative density deviation of the last cell, `rho_{N-1} - 1`, half a cell inside the face.
         rho_f_N: The extrapolated face density `<rho>_N`.
         ephi_f_N: The extrapolated face lapse `<ephi>_N`.
         mt_N: The tilde mass at the outer face.
+        delta_m_N: Its relative deviation, `mt_N - 1`.
         Theta_N: The grid velocity at the outer face.
         cE_N: The energy-flux velocity at the outer face (eq:num:facefields).
         DU_N: The one-sided velocity gradient at the outer face.
@@ -57,10 +59,12 @@ class OuterInputs:
     X_xi_N: float
     U_N: float
     W: float
-    rho_N_1: float
+    delta_U_N: float
+    delta_rho_N_1: float
     rho_f_N: float
     ephi_f_N: float
     mt_N: float
+    delta_m_N: float
     Theta_N: float
     cE_N: float
     DU_N: float
@@ -128,18 +132,17 @@ def boundary_ode_coefficients(c_s: float, R: float) -> tuple[float, float, float
     return gamma_minus, gamma_plus, gamma_0
 
 
-def characteristic_pair(U_N: float, X_N: float, rho_N_1: float, c_s: float) -> tuple[float, float]:
+def characteristic_pair(delta_U_N: float, delta_rho_N_1: float, X_N: float, c_s: float) -> tuple[float, float]:
     """The discrete characteristic pair `(u_+, u_-)` at the outer face, eq:lin:charvars on the staggered grid.
 
-    `u_pm = delta_U,N pm kappa delta_rho,N-1` with `kappa = 3 c_s / (2 X_N)`, built from the face-`N` velocity,
-    `delta_U,N = U_N / X_N - 1`, and the last cell's density, `delta_rho,N-1 = rho_{N-1} - 1`, half a cell inside
-    the face, which is where the staggered pair has a cell field. `u_+` is carried outward at `c_s` and `u_-`
-    inward. The initial value of `W` is the initial `u_-`, so that the penalty starts at zero.
+    `u_pm = delta_U,N pm kappa delta_rho,N-1` with `kappa = 3 c_s / (2 X_N)`, built from the face-`N` velocity
+    deviation, `delta_U,N = U_N / X_N - 1`, and the last cell's density deviation, `delta_rho,N-1 = rho_{N-1} - 1`,
+    half a cell inside the face, which is where the staggered pair has a cell field; both are passed as deviations,
+    as `derive` forms them. `u_+` is carried outward at `c_s` and `u_-` inward. The initial value of `W` is the
+    initial `u_-`, so that the penalty starts at zero.
     """
     kappa = 1.5 * c_s / X_N
-    delta_U = U_N / X_N - 1.0
-    delta_rho = rho_N_1 - 1.0
-    return delta_U + kappa * delta_rho, delta_U - kappa * delta_rho
+    return delta_U_N + kappa * delta_rho_N_1, delta_U_N - kappa * delta_rho_N_1
 
 
 @dataclass(frozen=True)
@@ -217,7 +220,7 @@ class OutgoingWave(OuterClosure):
         tau = self.strengths
         X_N, c_s = inputs.X_N, inputs.c_s
 
-        u_plus, u_minus = characteristic_pair(inputs.U_N, X_N, inputs.rho_N_1, c_s)
+        u_plus, u_minus = characteristic_pair(inputs.delta_U_N, inputs.delta_rho_N_1, X_N, c_s)
         pen = u_minus - inputs.W
 
         expansion = (1.0 - alpha) * inputs.U_N
@@ -232,8 +235,7 @@ class OutgoingWave(OuterClosure):
 
         if eos.is_radiation:
             gamma_minus, gamma_plus, gamma_0 = boundary_ode_coefficients(c_s, X_N)
-            delta_m = inputs.mt_N - 1.0
-            dW = gamma_minus * inputs.W + gamma_plus * (u_plus - tau.tau_W * pen) + gamma_0 * delta_m
+            dW = gamma_minus * inputs.W + gamma_plus * (u_plus - tau.tau_W * pen) + gamma_0 * inputs.delta_m_N
         else:
             dW = 0.0  # W = 0 for every other equation of state
         return OuterRows(dU_N=dU_N, F_N=F_N, dW=dW)

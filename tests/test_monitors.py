@@ -170,7 +170,7 @@ def test_the_outer_boundary_the_centre_and_the_far_zone_read_the_state():
     state = State(E=E, U=U, W=0.002)
     row = monitor_step(inputs_for(SCHEME, xi, state, far_zone_from=4.0), RAD, SCHEME.layout, SCHEME.settings)
     d = SCHEME.evaluate(xi, SCHEME.layout.pack(state)).derived
-    u_plus, u_minus = characteristic_pair(float(U[N]), float(X[N]), float(d.rho[N - 1]), f.bg.c_s)
+    u_plus, u_minus = characteristic_pair(float(d.delta_U[N]), float(d.delta_rho[N - 1]), float(X[N]), f.bg.c_s)
     assert (row.u_plus, row.u_minus, row.W) == (u_plus, u_minus, 0.002)
     assert row.penalty == u_minus - 0.002
     assert row.delta_m_N == pytest.approx(d.mt[N] - 1.0)

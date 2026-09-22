@@ -23,13 +23,14 @@ from pbh.excision import (
     excise,
     outflow_margin,
     packed_deviation,
+    place_transition,
     re_excision_face,
     zone_needs_extension,
 )
 from pbh.geometry import Geometry
 from pbh.horizon import UNEXCISED, FaceValues, Horizon, HorizonReport, HorizonRow, find_horizons
 from pbh.layout import Layout
-from pbh.maps import IdentityMap, Zone
+from pbh.maps import BlendMap, IdentityMap, Zone
 from pbh.output import RunReader
 from pbh.records import read_initial
 from pbh.state import frw_state
@@ -163,6 +164,20 @@ def test_a_repeated_switch_on_must_move_the_face_outward_and_must_not_overlap_th
     # ... unless that puts it past the static outer part, which the fourth test refuses
     far = Zone(xi_on=0.0, tau_on=0.3, x_t=0.6, Delta_t=0.1)
     assert not attempt_switch_on(report, state, d, geo, RAD, layout, EXCISION, (far,)).transition_fits
+
+
+def test_an_extension_starts_exactly_where_the_last_zone_ends_whatever_the_rounding():
+    # The old zone ends at a = 0.11, and for a width b = 0.261372 the sum (a + b) - b rounds below a: an extension
+    # placed by the plain sum would overlap the old zone by an ulp, which the map refuses.
+    earlier = Zone(xi_on=0.0, tau_on=0.3, x_t=0.08, Delta_t=0.03)
+    a, b = earlier.outer_edge, 0.261372
+    assert (a + b) - b < a
+    x_t = place_transition(0.0, b, (earlier,))
+    assert x_t - b >= earlier.outer_edge
+    assert x_t - b - earlier.outer_edge < 1e-16
+    BlendMap(IdentityMap(1.0), 0.5, (earlier, Zone(xi_on=1.0, tau_on=0.3, x_t=x_t, Delta_t=b)))  # the map accepts it
+    assert place_transition(0.3, b, ()) == 0.3  # the first zone goes where it is sized
+    assert place_transition(0.9, b, (earlier,)) == 0.9  # an extension already clear of the old zone stays put
 
 
 # --- excising ---

@@ -178,6 +178,17 @@ class Scheme:
         f = self.frame(xi)
         return calc_derivs(self.layout.unpack(y), f.geo, f.bg, self.eos, f.w, self.outer, self.settings)
 
+    def evaluate_deviation(self, xi: float, dy: FloatArray) -> DerivsResult:
+        """`evaluate` at the state `y_FRW + delta y`, handing the stage the deviation as well, which it needs whole.
+
+        The sum `y_FRW + delta y` rounds each entry to the size of its FRW value; `Gammabar^2` is formed from the
+        deviation instead, which has not been rounded (see `derive`).
+        """
+        f = self.frame(xi)
+        state = self.layout.unpack(self.frw(xi) + dy)
+        deviation = self.layout.unpack(dy)
+        return calc_derivs(state, f.geo, f.bg, self.eos, f.w, self.outer, self.settings, deviation)
+
     def frw(self, xi: float) -> FloatArray:
         """The packed FRW state at time `xi`."""
         return self.layout.pack(frw_state(self.frame(xi).geo, self.layout.j_e))
@@ -188,7 +199,7 @@ class Scheme:
 
     def deviation_rate(self, xi: float, dy: FloatArray) -> FloatArray:
         """The right-hand side in deviation form: the stage's rate on `y_FRW + delta y`, minus the FRW rate."""
-        return self.layout.pack(self.evaluate(xi, self.frw(xi) + dy).rate) - self.frw_rate(xi)
+        return self.layout.pack(self.evaluate_deviation(xi, dy).rate) - self.frw_rate(xi)
 
 
 type Rate = Callable[[float, FloatArray], FloatArray]
@@ -239,7 +250,7 @@ def advance_with_stages(
                 dy_i += dxi * float(a_ij) * k_j
         xi_i = xi + float(c_i) * dxi
         y_i = scheme.frw(xi_i) + dy_i
-        result = first if n == 0 and first is not None and c_i == 0 else scheme.evaluate(xi_i, y_i)
+        result = first if n == 0 and first is not None and c_i == 0 else scheme.evaluate_deviation(xi_i, dy_i)
         stages.append(Stage(xi=xi_i, y=y_i, result=result))
         k.append(scheme.layout.pack(result.rate) - scheme.frw_rate(xi_i))
     return dy + dxi * sum(float(b_i) * k_i for b_i, k_i in zip(tableau.b, k, strict=True)), stages

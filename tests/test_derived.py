@@ -2,6 +2,7 @@
 
 import math
 from collections.abc import Callable
+from fractions import Fraction
 
 import numpy as np
 import pytest
@@ -42,13 +43,61 @@ def test_on_frw_every_derived_field_has_its_frw_value(family: Family, j_e: int):
     assert d.Gammabar2[faces] == pytest.approx(bg.Gammabar2, rel=1e-13)
 
 
+@pytest.mark.parametrize("family", FAMILIES)
+@pytest.mark.parametrize("j_e", [0, 3])
+def test_on_frw_gammabar2_and_the_deviations_are_frw_to_the_bit_at_any_radius(family: Family, j_e: int):
+    # Fifty Hubble radii across, where U^2 and M / X are each 2500 times Gammabar^2 and cancel.
+    geo, bg, w = setup(family, 2000, 50.0 * math.exp(0.6 * 0.5), j_e=j_e)
+    d = derive(frw_state(geo, j_e), geo, bg, EOS, w)
+    assert np.all(d.Gammabar2[w.layout.faces] == bg.Gammabar2)
+    assert np.all(d.delta_rho[w.layout.cells] == 0.0)
+    assert np.all(d.delta_U[max(j_e, 1) :] == 0.0)
+    assert np.all(d.delta_m[max(j_e, 1) :] == 0.0)
+
+
+def test_gammabar2_and_the_deviations_keep_the_digits_the_state_loses():
+    geo, bg, w = setup(IdentityMap, 200, 300.0)
+    x = geo.X / geo.X[-1]
+    dE = 1e-6 * geo.dV * np.cos(np.pi * (x[:-1] + x[1:]))
+    dU = 1e-6 * geo.X * np.sin(np.pi * x) ** 2
+    frw = frw_state(geo)
+    state = State(E=frw.E + dE, U=frw.U + dU, W=0.0)  # what a stage is handed: y_FRW + delta y, rounded
+    d = derive(state, geo, bg, EOS, w, State(E=dE, U=dU, W=0.0))
+    naive = bg.Gammabar2 + state.U[1:] ** 2 - 3.0 * np.cumsum(state.E) / geo.X[1:]
+
+    # The reference, in exact arithmetic on the unrounded deviation, with the FRW mass X^3.
+    exact_Gammabar2: list[float] = []
+    exact_delta_m: list[float] = []
+    dM = Fraction(0)
+    for j in range(1, 201):
+        dM += 3 * Fraction(dE[j - 1])
+        X, u = Fraction(geo.X[j]), Fraction(dU[j])
+        exact_Gammabar2.append(float(Fraction(bg.Gammabar2) + u * (2 * X + u) - dM / X))
+        exact_delta_m.append(float(dM / X**3))
+    reference, delta_m = np.array(exact_Gammabar2), np.array(exact_delta_m)
+
+    assert np.max(np.abs(d.Gammabar2[1:] / reference - 1.0)) <= 2.3e-16  # the last bit
+    assert np.max(np.abs(naive / reference - 1.0)) > 1e-12  # the cancellation the rewrite removes: 2e-11 here
+    # The relative deviations, against their exact values; they cross zero, so errors are measured against their size.
+    exact_rho = np.array([float(Fraction(e) / Fraction(v)) for e, v in zip(dE, geo.dV, strict=True)])
+    exact_U = np.array([float(Fraction(u) / Fraction(x)) for u, x in zip(dU[1:], geo.X[1:], strict=True)])
+    for derived, subtracted, exact in [
+        (d.delta_rho, d.rho - 1.0, exact_rho),
+        (d.delta_U[1:], state.U[1:] / geo.X[1:] - 1.0, exact_U),
+        (d.delta_m[1:], d.mt[1:] - 1.0, delta_m),
+    ]:
+        scale = np.max(np.abs(exact))
+        assert np.max(np.abs(derived - exact)) / scale <= 5e-16
+        assert np.max(np.abs(subtracted - exact)) / scale > 1e-11  # subtracting one: 1e-16 absolute
+
+
 def test_entries_below_the_excision_face_are_nan_and_the_origin_mt_is_nan():
     geo, bg, w = setup(IdentityMap, 10, 2.0, j_e=3)
     d = derive(frw_state(geo, 3), geo, bg, EOS, w)
-    for name in ("rho", "ephi"):
+    for name in ("rho", "ephi", "delta_rho"):
         assert np.all(np.isnan(getattr(d, name)[:3]))
         assert np.all(np.isfinite(getattr(d, name)[3:]))
-    for name in ("M", "mt", "Gammabar2", "rho_f", "ephi_f"):
+    for name in ("M", "mt", "delta_U", "delta_m", "Gammabar2", "rho_f", "ephi_f"):
         assert np.all(np.isnan(getattr(d, name)[:3]))
         assert np.all(np.isfinite(getattr(d, name)[3:]))
     geo0, bg0, lay0 = setup(IdentityMap, 10, 2.0)

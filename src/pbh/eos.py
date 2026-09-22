@@ -23,6 +23,10 @@ from dataclasses import dataclass, field
 from fractions import Fraction
 from typing import Self
 
+import numpy as np
+
+from pbh.types import FloatArray
+
 #: The equation of state parameter of radiation, `w = 1/3`
 RADIATION: Fraction = Fraction(1, 3)
 
@@ -110,6 +114,18 @@ class EquationOfState:
         }
         for name, value in derived.items():
             object.__setattr__(self, name, value)
+
+    def lapse(self, rho: FloatArray) -> FloatArray:
+        """The algebraic lapse `e^phi = rho ** lapse_exponent` of a density (eq:MSphinov).
+
+        numpy evaluates a non-integer power through a logarithm and an exponential; where the exponent allows, square
+        roots do the same in a tenth of the time, correctly rounded at each step, so to within an ulp of the power.
+        """
+        if self.lapse_exponent == -0.25:  # radiation: rho^(-1/4)
+            return 1.0 / np.sqrt(np.sqrt(rho))
+        if self.lapse_exponent == -0.5:  # the stiff fluid, w = 1: rho^(-1/2)
+            return 1.0 / np.sqrt(rho)
+        return rho**self.lapse_exponent
 
     @property
     def is_radiation(self) -> bool:

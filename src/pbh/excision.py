@@ -159,11 +159,9 @@ def attempt_switch_on(
     three = inside and j_e + 2 <= N and all(value < 0.0 for value in h)
     # the transition, sized from the horizon; an extension starts it beyond the last zone's end at the least
     Delta_t = excision.c_Delta * apparent.x
-    x_t = excision.c_t * apparent.x
-    if zones:
-        x_t = max(x_t, zones[-1].outer_edge + Delta_t)
+    x_t = place_transition(excision.c_t * apparent.x, Delta_t, zones)
     fits = x_t + Delta_t < OUTER_STATIC_LABEL
-    no_overlap = not zones or x_t - Delta_t >= zones[-1].outer_edge - 1e-12 * zones[-1].outer_edge
+    no_overlap = not zones or x_t - Delta_t >= zones[-1].outer_edge  # the test `BlendMap` makes, exactly
     return SwitchAttempt(
         x_AH=apparent.x,
         j_star=apparent.j,
@@ -179,6 +177,22 @@ def attempt_switch_on(
         Delta_t=Delta_t,
         no_overlap=no_overlap,
     )
+
+
+def place_transition(x_t: float, Delta_t: float, zones: tuple[Zone, ...]) -> float:
+    """The centre of a new zone's transition: `x_t`, or with zones already present no nearer than where the last ends.
+
+    An extension's transition starts at the last zone's outer edge at the least, `x_t - Delta_t >= x_t,k + Delta_t,k`,
+    and must satisfy that exactly, as `BlendMap` checks it: `(a + b) - b` can round below `a`, so the centre is
+    stepped up by an ulp at a time until it does.
+    """
+    if not zones:
+        return x_t
+    edge = zones[-1].outer_edge
+    x_t = max(x_t, edge + Delta_t)
+    while x_t - Delta_t < edge:
+        x_t = math.nextafter(x_t, math.inf)
+    return x_t
 
 
 # --- dropping the interior ---
