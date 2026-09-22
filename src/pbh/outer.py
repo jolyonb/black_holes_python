@@ -237,3 +237,28 @@ class OutgoingWave(OuterClosure):
         else:
             dW = 0.0  # W = 0 for every other equation of state
         return OuterRows(dU_N=dU_N, F_N=F_N, dW=dW)
+
+
+@dataclass(frozen=True)
+class HeldExterior(OuterClosure):
+    """The outer face held on a steady exterior (the tests of Section 8.3: the Michel flow outside the near zone).
+
+    The face's density and lapse are the exact steady values, the velocity follows the scaling of the tilde
+    variables at a fixed physical radius, `d_xi U_N = (1 - alpha) U_N` (eq:exc:growth), and the flux is the base
+    flux with those face values; `W` is not used. The face may move with the pinned map, since the flux is written
+    relative to it. A test closure: it presumes the exterior is known.
+
+    Attributes:
+        rho_N: The steady density `rho / rho_inf` at the outer face.
+        ephi_N: The steady lapse at the outer face.
+    """
+
+    rho_N: float
+    ephi_N: float
+
+    def rows(self, inputs: OuterInputs, eos: EquationOfState) -> OuterRows:
+        """`d_xi U_N = (1 - alpha) U_N`, `F_N = (cE_N - (d_xi X)_N) X_N^2 rho_N` with the held face values."""
+        alpha, w = float(eos.alpha), float(eos.w)
+        cE_N = alpha * ((1.0 + w) * self.ephi_N * inputs.U_N - inputs.X_N)
+        F_N = (cE_N - inputs.X_xi_N) * inputs.X_N**2 * self.rho_N
+        return OuterRows(dU_N=(1.0 - alpha) * inputs.U_N, F_N=F_N, dW=0.0)
