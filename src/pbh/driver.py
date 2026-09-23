@@ -285,6 +285,7 @@ class Run:
                 },
                 "outflow_margin": row.mu,
                 "min_lapse": row.min_lapse,
+                "settings": readout.model_dump(),
             },
         )
         return readout.stop

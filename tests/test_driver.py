@@ -303,6 +303,7 @@ def test_the_mass_is_read_once_after_the_floor_and_the_run_is_told_to_stop(tmp_p
     assert p["bar"] < 1e-3
     assert not p["efficiency_flag"]
     assert p["near_zone"]["michel_v"][1] == pytest.approx(-1.0 / np.sqrt(3.0))  # the sonic point: U / Gamma = -c_s
+    assert p["settings"] == ReadoutConfig().model_dump()  # the event says how it was read
 
 
 def test_a_reading_far_from_the_michel_efficiency_is_flagged_and_need_not_stop_the_run(tmp_path: Path):

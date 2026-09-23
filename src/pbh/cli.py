@@ -1,4 +1,4 @@
-"""The command line: `pbh validate`, `pbh initial gaussian`, `pbh run` and `pbh restart`.
+"""The command line: `pbh validate`, `pbh initial gaussian`, `pbh run`, `pbh restart` and `pbh summary`.
 
 Every command works on a run directory and a run name, and a run is its three files, `name.config.yaml`,
 `name.initial.h5` and `name.evolution.h5`:
@@ -10,6 +10,8 @@ Every command works on a run directory and a run name, and a run is its three fi
     pbh restart SOURCE NAME [--snapshot I] [--config CONFIG]
                                                      start the run NAME from a snapshot of the run SOURCE (the last
                                                      by default), with SOURCE's configuration unless another is given
+    pbh summary NAME [--export JSON]                 what NAME says about its black hole, recomputed from its
+                                                     evolution file and printed, and written as JSON on request
 
 The Gaussian command is a convenience for the paper's standard perturbation; any other datum is written with
 `records.write_initial` from Python, since the initial data are the initial data however they were made. No flag
@@ -20,6 +22,7 @@ way to change one.
 module directly, `python -m pbh.cli`, reaches it through the block at the bottom.
 """
 
+import json
 import math
 import sys
 from collections.abc import Sequence
@@ -37,6 +40,7 @@ from pbh.initial import GrowingMode, IllPosedDataError, NotCompensatedError
 from pbh.output import RunReader
 from pbh.profiles import Gaussian
 from pbh.records import StateRecord, read_initial, write_initial
+from pbh.summary import as_json, describe, summarise
 
 app = App(name="pbh", help="Primordial black hole formation: Misner-Sharp evolution of a perturbed FRW fluid.")
 initial = App(name="initial", help="Write an initial-data file.")
@@ -136,6 +140,20 @@ def restart(
     write_initial(paths.initial, record)
     history = epoch_history(reader, record.xi)  # the M_AH series the read-out needs, from before the snapshot
     report(run_driver(parsed, read_initial(paths.initial), paths, history))
+
+
+@app.command
+def summary(
+    name: Annotated[str, Parameter(help="The run whose evolution file is read.")],
+    *,
+    export: Annotated[Path | None, Parameter(help="Also write the summary and its series as JSON here.")] = None,
+    dir: Directory = Path(),
+) -> None:
+    """What the run says about its black hole, recomputed from its evolution file (`summary.py`); nothing is stored."""
+    summaries = summarise(RunReader(RunPaths.of(dir, name).evolution))
+    print(describe(summaries))
+    if export is not None:
+        export.write_text(json.dumps(as_json(summaries), indent=1))
 
 
 def report(result: RunResult) -> None:
