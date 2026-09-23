@@ -21,8 +21,20 @@ its central value, is reported separately.
 
 On a state whose apparent horizon is known exactly the interpolated radius is second order, below `0.09 Delta X^2`
 in the paper's measurement, though the constant depends on where the root falls between faces.
+
+After formation the horizon table also carries two of the three monitors of Section 8.5 that say whether the
+transient is over (the third, the outflow margin at the excision face, is among the face's columns): the near zone,
+`(e^phi, U / Gammabar, rho)` at the apparent horizon, `2 M_AH`, and at the sonic radius of the Michel flow, `3 M_AH`
+for radiation, whose steady values are `0.620, -1, 6.75` and `0.707, -0.577, 4.00` (Table tab:exc:michel); and the
+minimum lapse on the grid, which says the run is still inside the formulation. At the horizon `U / Gammabar = -1`
+exactly, since that is where the finder puts it, so there only the lapse and the compression test the flow; the
+horizon is chosen over a radius further in because the excision face follows it at `0.7` of its label, `1.4 M`, and
+no radius inside that can be read. The radius `R = k M_AH`, in units of `R_H`, is the label radius
+`X = k M_AH e^(-alpha xi)`; the cell fields are interpolated linearly between cell midpoints, the ratio between faces,
+and a radius off the retained grid gives NaN.
 """
 
+import dataclasses
 from dataclasses import dataclass
 
 import numpy as np
@@ -170,12 +182,27 @@ class HorizonRow:
     F_e: float
     R_e_over_M_AH: float
     physical_margin: float
+    # the near zone and the lapse (Section 8.5)
+    lapse_AH: float
+    v_AH: float
+    rho_AH: float
+    lapse_sonic: float
+    v_sonic: float
+    rho_sonic: float
+    min_lapse: float
+    min_lapse_X: float
 
     @classmethod
     def of(
-        cls, step: int, xi: float, report: HorizonReport, zone_inner_edge: float | None, face: FaceValues | None = None
+        cls,
+        step: int,
+        xi: float,
+        report: HorizonReport,
+        zone_inner_edge: float | None,
+        near: NearZone,
+        face: FaceValues | None = None,
     ) -> HorizonRow:
-        """The row for a step's report, with the face's monitors once excised."""
+        """The row for a step's report, with the near-zone monitors and the face's monitors once excised."""
         a = report.apparent
         ratio = a.x / zone_inner_edge if a is not None and zone_inner_edge is not None else float("nan")
         f = face if face is not None else UNEXCISED
@@ -207,7 +234,53 @@ class HorizonRow:
             F_e=f.F_e,
             R_e_over_M_AH=f.R_e_over_M_AH,
             physical_margin=f.physical_margin,
+            **dataclasses.asdict(near),
         )
+
+
+HORIZON = 2.0
+"""The inner radius of the near-zone monitor, the apparent horizon, in units of the apparent-horizon mass."""
+
+
+@dataclass(frozen=True)
+class NearZone:
+    """The near-zone monitors of one slice (module docstring), NaN without an apparent horizon.
+
+    Attributes:
+        lapse_AH, v_AH, rho_AH: `e^phi`, `U / Gammabar` and `rho` at the apparent horizon, `2 M_AH`.
+        lapse_sonic, v_sonic, rho_sonic: The same at the sonic radius of the Michel flow.
+        min_lapse: The smallest cell lapse on the grid, at every step, and `min_lapse_X` the midpoint of its cell.
+    """
+
+    lapse_AH: float
+    v_AH: float
+    rho_AH: float
+    lapse_sonic: float
+    v_sonic: float
+    rho_sonic: float
+    min_lapse: float
+    min_lapse_X: float
+
+
+def near_zone(
+    state: State, d: Derived, geo: Geometry, report: HorizonReport, eos: EquationOfState, layout: Layout, xi: float
+) -> NearZone:
+    """The near-zone monitors on this slice; the minimum lapse whether or not a horizon has formed."""
+    cells, faces = layout.cells, layout.faces
+    k = int(np.argmin(d.ephi[cells])) + layout.j_e
+    values = [float("nan")] * 6
+    if report.apparent is not None:
+        Xm, X = geo.Xm[cells], geo.X[faces]
+        v = state.U[faces] / np.sqrt(d.Gammabar2[faces])
+        scale = report.M_AH * float(np.exp(-float(eos.alpha) * xi))  # the label radius of R = M_AH
+        for n, radius in enumerate((HORIZON, eos.sonic_radius_over_mass)):
+            R = radius * scale
+            if Xm[0] <= R <= Xm[-1]:
+                values[3 * n] = float(np.interp(R, Xm, d.ephi[cells]))
+                values[3 * n + 2] = float(np.interp(R, Xm, d.rho[cells]))
+            if X[0] <= R <= X[-1]:
+                values[3 * n + 1] = float(np.interp(R, X, v))
+    return NearZone(*values, min_lapse=float(d.ephi[k]), min_lapse_X=float(geo.Xm[k]))
 
 
 @dataclass(frozen=True)

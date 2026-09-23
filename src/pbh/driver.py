@@ -12,12 +12,19 @@ sits on the grid that gives, saves the configuration with its provenance, and th
 4. examine the state arrived at: run the horizon finder, record formation at the first trapped face, and, with
    excision enabled, throw the switch when its four tests pass, assert the face every excised step, move the face
    outward by re-excision, and pin a further zone when the horizon approaches the transition; record the horizon
-   row, write the snapshot when due, flush the step record on its cadence.
+   row, write the snapshot when due, flush the step record on its cadence;
+5. read the mass (Section 8.5, `readout.py`): the apparent-horizon mass of every step is collected by epoch, a new
+   one beginning when a trapped region appears outside the apparent horizon (an `epoch` event), and every
+   `READOUT_CHECK` in `xi` from the floor on the read-out is tried on the epoch's series; the first reading with its
+   bar below the target is recorded as a `readout` event, with the near-zone monitors beside the Michel values, the
+   outflow margin, the minimum lapse and a flag if the efficiency is not yet near Michel's, and the run ends there
+   if the configuration says so.
 
 The initial state is examined the same way before the first step, so that a run restarted from a snapshot makes
-the decisions the uninterrupted run made at that state. The switch-on writes a snapshot of the state it is thrown
-on, unexcised and already carrying the new zone: the same collapse continued from it with excision off runs on the
-same grid, which is the comparison Section 8.3 asks for.
+the decisions the uninterrupted run made at that state; a restart hands the run its epoch's history of `M_AH` from
+the source file (`epoch_history`), so that it reads the mass the uninterrupted run would read. The switch-on writes
+a snapshot of the state it is thrown on, unexcised and already carrying the new zone: the same collapse continued
+from it with excision off runs on the same grid, which is the comparison Section 8.3 asks for.
 
 An abort is a result, not an exception: if a stage finds the state outside the hyperbolic domain, the step
 produces a non-finite state, the outer face is trapped, or an excision assertion fails, the driver records an
@@ -44,11 +51,13 @@ from pbh.excision import (
     re_excision_face,
     zone_needs_extension,
 )
-from pbh.horizon import FaceValues, HorizonReport, HorizonRow, find_horizons
+from pbh.horizon import HORIZON, FaceValues, HorizonReport, HorizonRow, find_horizons, near_zone
 from pbh.layout import Layout
 from pbh.maps import Zone
+from pbh.michel import michel_flow
 from pbh.monitors import MonitoredStep, StageFluxes, StepInputs, monitor_step
-from pbh.output import RunWriter, next_snapshot_time, run_map
+from pbh.output import RunReader, RunWriter, next_snapshot_time, run_map
+from pbh.readout import Epoch, first_reading, readings, starts_new_epoch
 from pbh.records import StateRecord, shell_volumes
 from pbh.state import State, is_finite
 from pbh.timestep import Scheme, advance_with_stages, step_size
@@ -56,6 +65,10 @@ from pbh.types import FloatArray
 
 FAR_ZONE_TOLERANCE = 1e-10
 """A cell or face is in the far zone if the initial deviation from FRW there and beyond is below this."""
+
+READOUT_CHECK = 0.05
+"""How often, in `xi`, the read-out is tried. The reading quoted is the first qualifying one whenever it is found, so
+the cadence only decides how far past it a run that stops goes."""
 
 type Status = Literal["completed", "aborted"]
 """How a run can end: at its end time, or at an assertion with the abort recorded as a result."""
@@ -136,6 +149,7 @@ class Run:
     step: int = 0
     F_N_integral: float = 0.0
     last_refusal: list[str] = field(default_factory=lambda: list[str]())
+    epoch: Epoch | None = None
 
     @property
     def layout(self) -> Layout:
@@ -211,6 +225,69 @@ class Run:
         if attempt.failed != self.last_refusal:
             self.last_refusal = attempt.failed
             self.event(kind, {"failed": attempt.failed, "j_e": attempt.j_e, "x_AH": attempt.x_AH, "mu": attempt.mu})
+
+    # --- the horizon row and the mass ---
+
+    def record_horizon(self, report: HorizonReport, result: DerivsResult, face: FaceValues | None) -> HorizonRow:
+        """Write the step's horizon row, with the near-zone monitors, and add its apparent horizon to the epoch."""
+        frame = self.sch.frame(self.xi)
+        near = near_zone(self.state(), result.derived, frame.geo, report, self.sch.eos, self.layout, self.xi)
+        row = HorizonRow.of(self.step, self.xi, report, self.zones[-1].inner_edge if self.zones else None, near, face)
+        self.writer.horizon_row(row)
+        a = report.apparent
+        if a is not None:
+            if self.epoch is not None and starts_new_epoch(report, self.epoch.X_AH):
+                previous = {"M_AH_previous": self.epoch.M_AH[-1], "X_AH_previous": self.epoch.X_AH}
+                self.event("epoch", {"M_AH": report.M_AH, "X_AH": a.X, **previous})
+                self.epoch = Epoch(xi_start=self.xi)
+            if self.epoch is None:
+                self.epoch = Epoch(xi_start=self.xi_form if self.xi_form is not None else self.xi)
+            self.epoch.add(self.xi, report.M_AH, a.X)
+        return row
+
+    def read_mass(self, row: HorizonRow) -> bool:
+        """Try the read-out on the epoch's series when due, and record it once read; whether the run should stop."""
+        epoch, readout = self.epoch, self.config.readout
+        settings = readout.build()
+        if epoch is None or epoch.read or self.xi < epoch.checked + READOUT_CHECK:
+            return False
+        if self.xi < epoch.xi_start + settings.floor + 0.5 * settings.window:  # no reading can qualify yet
+            return False
+        epoch.checked = self.xi
+        eos = self.sch.eos
+        r = readings(np.array(epoch.xi), np.array(epoch.M_AH), eos, settings)
+        i = first_reading(r, epoch.xi_start, settings)
+        if i is None:
+            return False
+        epoch.read = True
+        efficiency = float(r.efficiency[i])
+        michel = michel_flow(np.array([HORIZON, eos.sonic_radius_over_mass])) if eos.is_radiation else None
+        self.event(
+            "readout",
+            {
+                "epoch_start": epoch.xi_start,
+                "xi_reading": float(r.xi[i]),
+                "M_est": float(r.M_est[i]),
+                "bar": float(r.bar[i]),
+                "systematic": float(r.systematic[i]),
+                "M_AH": float(r.M_AH[i]),
+                "omega": float(r.omega[i]),
+                "lambda_c_eps": float(r.lambda_c_eps[i]),
+                "efficiency": efficiency,
+                "efficiency_flag": abs(efficiency - 1.0) > readout.efficiency_tolerance,
+                "near_zone": {
+                    "lapse": [row.lapse_AH, row.lapse_sonic],
+                    "v": [row.v_AH, row.v_sonic],
+                    "rho": [row.rho_AH, row.rho_sonic],
+                    "michel_lapse": michel.N.tolist() if michel is not None else None,
+                    "michel_v": michel.v.tolist() if michel is not None else None,
+                    "michel_rho": michel.compression.tolist() if michel is not None else None,
+                },
+                "outflow_margin": row.mu,
+                "min_lapse": row.min_lapse,
+            },
+        )
+        return readout.stop
 
     # --- what is done with the state at a step boundary ---
 
@@ -301,8 +378,28 @@ class Run:
             raise AbortError(failure.check, failure.face, failure.value, str(failure)) from failure
 
 
-def run(config: RunConfig, initial: StateRecord, paths: RunPaths) -> RunResult:
-    """Run the configuration from the initial state and write the run's files; see the module docstring."""
+def epoch_history(reader: RunReader, xi: float) -> Epoch | None:
+    """The epoch a run is in at `xi`, with its series of `M_AH` before `xi`, from the run's file; `None` if unformed.
+
+    The epoch began at the last `formation` or `epoch` event at or before `xi`; a restart from a snapshot at `xi` is
+    handed it, so that it reads the mass the uninterrupted run would read.
+    """
+    starts = [e.xi for e in reader.events if e.kind in ("formation", "epoch") and e.xi <= xi]
+    if not starts:
+        return None
+    epoch = Epoch(xi_start=starts[-1])
+    h = reader.horizon
+    for t, M, X in zip(h["xi"], h["M_AH"], h["X_AH"], strict=True):
+        if epoch.xi_start <= float(t) < xi and np.isfinite(float(M)):
+            epoch.add(float(t), float(M), float(X))
+    return epoch
+
+
+def run(config: RunConfig, initial: StateRecord, paths: RunPaths, history: Epoch | None = None) -> RunResult:
+    """Run the configuration from the initial state and write the run's files; see the module docstring.
+
+    `history` is the epoch the initial state is in, with its series of `M_AH`, when it continues another run.
+    """
     layout = Layout(config.grid.N, j_e=initial.j_e)
     sch = config.scheme(run_map(config, initial.zones), layout)
     xi = initial.xi
@@ -327,14 +424,15 @@ def run(config: RunConfig, initial: StateRecord, paths: RunPaths) -> RunResult:
             initial.xi_form,
             initial.zones,
             far_zone_radius(initial),
+            epoch=history,
         )
         try:
             result, report, face = r.examine(r.state(), r.evaluate())
             r.snapshot()
-            r.writer.horizon_row(HorizonRow.of(r.step, r.xi, report, r.zones[-1].inner_edge if r.zones else None, face))
+            read = r.read_mass(r.record_horizon(report, result, face))
             next_snapshot = next_snapshot_time(r.xi, r.xi_form, output)
             at_snapshot = True
-            while r.xi < xi_end:
+            while r.xi < xi_end and not read:
                 # 1. the step: Courant or cap, clipped to land exactly on the next snapshot time or the end
                 choice = step_size(result, r.sch.frame(r.xi).geo, r.layout, config.stepping.courant_number, cap)
                 dxi, limit = choice.dxi, choice.limit.value
@@ -384,7 +482,7 @@ def run(config: RunConfig, initial: StateRecord, paths: RunPaths) -> RunResult:
                 # 4. examine the state arrived at; the horizon row, the snapshot, the flush
                 formed_before = r.xi_form is not None
                 result, report, face = r.examine(state_new, result)
-                out.horizon_row(HorizonRow.of(r.step, r.xi, report, r.zones[-1].inner_edge if r.zones else None, face))
+                read = r.read_mass(r.record_horizon(report, result, face))
                 if at_snapshot:
                     r.snapshot()
                 if at_snapshot or (r.xi_form is not None and not formed_before):
@@ -393,7 +491,7 @@ def run(config: RunConfig, initial: StateRecord, paths: RunPaths) -> RunResult:
                     out.flush()
             if not at_snapshot:
                 r.snapshot()  # the end is always a snapshot, to continue from
-            out.close(r.step, r.xi, "completed")
+            out.close(r.step, r.xi, "completed", **({"reason": "the mass was read"} if read else {}))
             return RunResult(status="completed", steps=r.step, xi=r.xi, paths=paths)
         except NotHyperbolicError as failure:
             abort = AbortError(failure.field, failure.index, failure.value, str(failure))

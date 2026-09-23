@@ -69,6 +69,7 @@ from pbh.kernels import DensityLimiter, Kernels, KernelSettings
 from pbh.layout import Layout
 from pbh.maps import IdentityMap, Map, SinhStretch
 from pbh.outer import HeldAtFrw, OuterClosure, OutgoingWave, PenaltyStrengths
+from pbh.readout import ReadoutSettings
 from pbh.stencils import FaceClosure
 from pbh.timestep import COURANT_NUMBER, Integrator, Scheme, step_cap
 
@@ -213,6 +214,45 @@ class ExcisionConfig(Section):
     or jumps beyond it to a new trapped region."""
 
 
+class ReadoutConfig(Section):
+    """The `readout` section: reading the black-hole mass after formation (Section 8.5, `readout.py`).
+
+    The first four are the paper's recipe; the target is the accuracy a run is carried to.
+    """
+
+    window: float = Field(default=0.3, gt=0.0)
+    """The width in `xi` of the straight-line fit that gives the rate `omega`."""
+
+    spacing: float = Field(default=0.005, gt=0.0)
+    """The spacing in `xi` of the uniform resampling of `M_AH`."""
+
+    floor: float = Field(default=2.0, gt=0.0)
+    """The e-folds after formation before which no mass is read."""
+
+    bar_span: float = Field(default=1.0, gt=0.0)
+    """The e-folds over which the error bar takes the variation of `Q`."""
+
+    target: float = Field(default=0.01, gt=0.0)
+    """The error bar below which the mass is read."""
+
+    stop: bool = True
+    """Whether the run ends once the mass is read; `xi_end` stays the latest it may run to."""
+
+    efficiency_tolerance: float = Field(default=0.2, gt=0.0)
+    """The read-out is flagged when the measured efficiency differs from the Michel value by more than this fraction
+    when the mass is read: steady accretion is then not established, and the reading deserves a look. The paper finds
+    it within 6 per cent wherever `lambda_c eps <= 0.03`, overshooting to 1.17 on the way."""
+
+    @model_validator(mode="after")
+    def _the_settings_are_consistent(self) -> Self:
+        self.build()
+        return self
+
+    def build(self) -> ReadoutSettings:
+        """The read-out constants."""
+        return ReadoutSettings(self.window, self.spacing, self.floor, self.bar_span, self.target)
+
+
 class SteppingConfig(Section):
     """The `stepping` section: the integrator, the Courant number and the step cap (Section 7.6)."""
 
@@ -258,6 +298,7 @@ class RunConfig(Section):
     outer: OuterConfig = OuterConfig()
     shocks: ShockConfig = ShockConfig()
     excision: ExcisionConfig = ExcisionConfig()
+    readout: ReadoutConfig = ReadoutConfig()
     stepping: SteppingConfig = SteppingConfig()
     output: OutputConfig = OutputConfig()
     evolution: EvolutionConfig

@@ -7,7 +7,8 @@ import pytest
 from scipy.integrate import solve_ivp
 
 from pbh.eos import RADIATION, EquationOfState
-from pbh.readout import ReadoutSettings, first_reading, readings, resample
+from pbh.horizon import Horizon, HorizonReport
+from pbh.readout import Epoch, ReadoutSettings, first_reading, readings, resample, starts_new_epoch
 from pbh.types import FloatArray
 
 EOS = EquationOfState(RADIATION)
@@ -175,3 +176,19 @@ def test_where_the_mass_falls_q_and_the_bar_are_undefined():
     assert np.all(np.isnan(r.Q))
     assert np.all(np.isnan(r.bar))
     assert first_reading(r, XI_FORM, SETTINGS) is None
+
+
+# --- epochs ---
+
+
+def test_an_epoch_ignores_a_time_it_already_has_and_a_new_epoch_needs_a_horizon():
+    epoch = Epoch(xi_start=XI_FORM)
+    epoch.add(XI_FORM, 1.0, 0.5)
+    epoch.add(XI_FORM, 1.1, 0.6)  # a restart re-examines the state it starts from
+    assert (epoch.xi, epoch.M_AH, epoch.X_AH) == ([XI_FORM], [1.0], 0.5)
+    nan = float("nan")
+    empty = HorizonReport(np.ones(3), 0, (), None, nan, nan, nan, 0, nan, 0, False)
+    assert not starts_new_epoch(empty, 0.5)
+    shell = Horizon(j=1, x=0.4, X=0.8, outer=True)
+    alone = HorizonReport(np.ones(3), 1, (shell,), shell, 1.0, nan, nan, 0, nan, 0, False)
+    assert not starts_new_epoch(alone, 0.5)  # nothing inside it: the old region, grown

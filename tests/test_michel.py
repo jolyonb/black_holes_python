@@ -11,7 +11,7 @@ from pbh.derived import derive
 from pbh.eos import RADIATION, Background, EquationOfState
 from pbh.equations import calc_derivs
 from pbh.excision import check_face
-from pbh.horizon import find_horizons
+from pbh.horizon import find_horizons, near_zone
 from pbh.kernels import PRODUCTION_KERNELS
 from pbh.layout import Layout
 from pbh.maps import IdentityMap, PinnedMap
@@ -101,6 +101,18 @@ def test_the_state_on_the_grid_has_the_flows_lapse_and_gamma_and_its_horizon_at_
     assert report.apparent is not None
     assert report.apparent.X / EPSILON == pytest.approx(2.0, abs=0.1 * 0.05**2)  # the finder's row of the table
     assert abs(report.residual) < 1.3e-4
+    # the near-zone monitor of Section 8.5 reads the steady values on the steady flow, at the apparent horizon and at
+    # the sonic point: the closed forms (4/27)^(1/4) and 27/4 at 2 M, and U / Gammabar = -1 there by the finder
+    near = near_zone(state, d, geo, report, RAD, layout, XI)
+    table = michel_flow(np.array([2.0, 3.0]))
+    assert [near.lapse_AH, near.lapse_sonic] == pytest.approx(table.N, rel=3e-3)
+    assert [near.v_AH, near.v_sonic] == pytest.approx(table.v, rel=3e-3)
+    assert [near.rho_AH, near.rho_sonic] == pytest.approx(table.compression, rel=1e-2)
+    assert near.lapse_AH == pytest.approx((4.0 / 27.0) ** 0.25, rel=3e-3)
+    assert near.rho_AH == pytest.approx(27.0 / 4.0, rel=1e-2)
+    assert near.v_AH == pytest.approx(-1.0, abs=1e-3)
+    assert [round(near.lapse_sonic, 3), round(near.v_sonic, 2), round(near.rho_sonic, 1)] == [0.707, -0.58, 4.0]
+    assert near.min_lapse == float(np.min(d.ephi[layout.cells]))  # the lapse is smallest in the first retained cell
     with pytest.raises(ValueError, match="radiation only"):
         michel_state(geo, bg, EquationOfState(RADIATION / 2), EPSILON, layout)
 

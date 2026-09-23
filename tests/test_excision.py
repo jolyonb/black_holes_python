@@ -12,7 +12,7 @@ import pytest
 from pbh.cli import main
 from pbh.config import ExcisionConfig, RunConfig, load
 from pbh.derived import derive
-from pbh.driver import RunPaths, run
+from pbh.driver import READOUT_CHECK, RunPaths, run
 from pbh.eos import RADIATION, Background, EquationOfState
 from pbh.excision import (
     OUTER_STATIC_LABEL,
@@ -28,7 +28,7 @@ from pbh.excision import (
     zone_needs_extension,
 )
 from pbh.geometry import Geometry
-from pbh.horizon import UNEXCISED, FaceValues, Horizon, HorizonReport, HorizonRow, find_horizons
+from pbh.horizon import UNEXCISED, FaceValues, Horizon, HorizonReport, HorizonRow, find_horizons, near_zone
 from pbh.layout import Layout
 from pbh.maps import BlendMap, IdentityMap, Zone
 from pbh.output import RunReader
@@ -243,9 +243,10 @@ def test_the_face_assertions_pass_inside_the_trapped_region_and_fail_outside_it(
     assert face.F_e == float(result.F[attempt.j_e])
     assert 0.0 < face.R_e_over_M_AH < 2.0  # inside the horizon, whose radius is 2 M_AH
     assert face.physical_margin > 0.0
-    row = HorizonRow.of(5, record.xi, report_e, None, face)
+    near = near_zone(excised, d_e, geo, report_e, RAD, excised_layout, record.xi)
+    row = HorizonRow.of(5, record.xi, report_e, None, near, face)
     assert (row.j_e, row.mu, row.h_e2) == (face.j_e, face.mu, face.h[2])
-    assert HorizonRow.of(5, record.xi, report_e, None).j_e == UNEXCISED.j_e == -1
+    assert HorizonRow.of(5, record.xi, report_e, None, near).j_e == UNEXCISED.j_e == -1
     # a face outside the trapped region fails the trapped-stencil assertion ...
     outside, outside_layout = excise(state, layout, attempt.j_star + 3)
     sch_out = Scheme(
@@ -575,3 +576,47 @@ def test_a_failed_face_assertion_aborts_the_run_as_a_result(
     assert end.payload["status"] == "aborted"
     abort = next(e for e in resumed.events if e.kind == "abort")
     assert abort.payload == {"field": "the outflow margin mu > 0", "index": 17, "value": -0.1}
+
+
+# --- the mass read out of the excised collapse (Section 8.5) ---
+
+
+@pytest.mark.slow
+def test_the_excised_collapse_reads_its_mass_stops_and_a_restart_reads_the_same(tmp_path: Path):
+    path = tmp_path / "bh.yaml"
+    path.write_text(
+        "grid: {N: 200, Rtilde_max: 12.0, scale: 3.0}\n"
+        "output: {snapshot_spacing: 0.5, snapshot_spacing_after: 0.05}\n"
+        "evolution: {xi_end: 9.0}\n"
+    )
+    A = 0.515 * math.e / 8.0
+    args = ["initial", "gaussian", "bh", "--config", str(path), "--A", f"{A:.12g}", "--ell", "2.0"]
+    assert main([*args, "--dir", str(tmp_path)]) == 0
+    assert main(["run", str(path), "bh", "--dir", str(tmp_path)]) == 0
+    reader = RunReader(RunPaths.of(tmp_path, "bh").evolution)
+    events = reader.events
+    formation = next(e for e in events if e.kind == "formation").xi
+    (readout,) = [e for e in events if e.kind == "readout"]
+    p = readout.payload
+    # read at the floor or later with its bar below one per cent, and the run stopped there rather than at xi_end
+    assert p["xi_reading"] >= formation + 2.0
+    assert p["bar"] < 0.01
+    assert p["M_est"] == pytest.approx(5.51, abs=0.02)  # the horizon mass is still growing from 5.2 there
+    assert p["M_AH"] < p["M_est"]
+    assert p["systematic"] < 1e-4
+    assert not p["efficiency_flag"]  # within 20 per cent of Michel's by then
+    assert reader.end is not None
+    assert reader.end.payload["reason"] == "the mass was read"
+    assert reader.end.xi < p["xi_reading"] + 0.15 + 2 * READOUT_CHECK + 0.05
+    # the near zone at the horizon and at the sonic point is near its steady values, the face an outflow boundary
+    near = p["near_zone"]
+    assert near["v"][0] == pytest.approx(-1.0, abs=1e-2)  # the finder's definition of the horizon
+    assert near["lapse"] == pytest.approx(near["michel_lapse"], rel=0.1)
+    assert near["rho"] == pytest.approx(near["michel_rho"], rel=0.3)
+    assert p["outflow_margin"] > 0.0
+    assert 0.0 < p["min_lapse"] < 1.0
+    # a restart from a snapshot half way through the epoch is handed its history and reads the same mass
+    index = next(s.index for s in reader.snapshots if s.xi > formation + 1.0)
+    assert main(["restart", "bh", "again", "--dir", str(tmp_path), "--snapshot", str(index)]) == 0
+    (again,) = [e for e in RunReader(RunPaths.of(tmp_path, "again").evolution).events if e.kind == "readout"]
+    assert again.payload == p

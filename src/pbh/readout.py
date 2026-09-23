@@ -51,15 +51,18 @@ steady accretion the estimate exists not to assume, and a higher-order fit would
 
 A series here is one epoch: the stretch after the formation of the horizon being read, with no jump of `M_AH` in it.
 A larger trapped region engulfing the hole starts a new epoch (the multi-scale decision), whose floor is counted from
-its own formation; splitting a run into epochs is the caller's.
+its own formation. Whether it has is read off the finder's report, not off the jump: the apparent horizon's trapped
+region is a new one when it has an inner boundary outside the previous apparent horizon, so that it and the old
+region are disjoint (`starts_new_epoch`). `Epoch` collects one epoch's series as a run goes.
 """
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
 from pbh.eos import EquationOfState
+from pbh.horizon import HorizonReport
 from pbh.types import FloatArray
 
 
@@ -199,3 +202,44 @@ def first_reading(r: Readings, xi_formed: float, settings: ReadoutSettings) -> i
     eligible = (r.xi >= xi_formed + settings.floor - 1e-9) & (r.bar < settings.target)  # NaN compares false
     hits = np.flatnonzero(eligible)
     return int(hits[0]) if hits.size else None
+
+
+@dataclass
+class Epoch:
+    """One epoch's series as a run collects it: the apparent-horizon mass at every step since the epoch began.
+
+    Attributes:
+        xi_start: When the epoch's horizon formed; the floor is counted from here.
+        xi: The step times, strictly increasing.
+        M_AH: The apparent-horizon mass at them.
+        X_AH: The apparent horizon's radius at the last step, against which a new trapped region is recognised.
+        read: Whether this epoch's mass has been read.
+        checked: When the read-out was last tried.
+    """
+
+    xi_start: float
+    xi: list[float] = field(default_factory=lambda: list[float]())
+    M_AH: list[float] = field(default_factory=lambda: list[float]())
+    X_AH: float = float("nan")
+    read: bool = False
+    checked: float = float("-inf")
+
+    def add(self, xi: float, M_AH: float, X_AH: float) -> None:
+        """Append a step's apparent horizon; a time not after the last is ignored (a restart re-examines its state)."""
+        if not self.xi or xi > self.xi[-1]:
+            self.xi.append(xi)
+            self.M_AH.append(M_AH)
+            self.X_AH = X_AH
+
+
+def starts_new_epoch(report: HorizonReport, X_AH_previous: float) -> bool:
+    """Whether the apparent horizon on this slice bounds a trapped region disjoint from the previous one.
+
+    It does when the sphere just inside it is an inner boundary of a trapped region, at or outside the previous
+    apparent horizon: between the two lies an untrapped shell, so the new region is not the old one grown.
+    """
+    a = report.apparent
+    if a is None:
+        return False
+    inside = [h for h in report.horizons if h.X < a.X]
+    return bool(inside) and not inside[-1].outer and inside[-1].X >= X_AH_previous

@@ -13,14 +13,18 @@ from pbh.config import (
     OuterChoice,
     OuterConfig,
     OutputConfig,
+    ReadoutConfig,
     RunConfig,
     ShockConfig,
 )
-from pbh.driver import RunPaths, far_zone_radius, run
+from pbh.driver import Run, RunPaths, epoch_history, far_zone_radius, run
 from pbh.eos import Background
 from pbh.geometry import Geometry
+from pbh.horizon import Horizon, HorizonReport
 from pbh.kernels import Kernels
-from pbh.output import RunReader
+from pbh.monitors import MonitoredStep
+from pbh.output import RunReader, RunWriter
+from pbh.readout import Epoch
 from pbh.records import StateRecord, read_initial, write_initial
 
 N = 40
@@ -198,3 +202,133 @@ def test_a_run_started_from_a_record_with_zones_runs_on_the_blend_and_keeps_the_
     assert last.xi_form == 0.05
     assert np.array_equal(last.X, Geometry.of(*blend.radii(0.35, N)).X[: N + 1])  # the moving grid
     assert np.max(np.abs(last.delta_E)) < 1e-12  # FRW stays FRW through the ramp on the blend
+
+
+# --- the read-out in the run (Section 8.5): epochs, the reading, the stop, the history of a restart ---
+
+
+XI_FORM = 5.0
+
+
+def horizon_report(*spheres: tuple[float, bool], M_AH: float) -> HorizonReport:
+    """A finder's report with the given spheres `(X, outer)`, from the origin outward; the last outer one apparent."""
+    horizons = tuple(Horizon(j=3 * k + 3, x=X / 4.0, X=X, outer=outer) for k, (X, outer) in enumerate(spheres))
+    apparent = [h for h in horizons if h.outer][-1] if any(h.outer for h in horizons) else None
+    nan = float("nan")
+    return HorizonReport(
+        h=np.ones(N + 1),
+        trapped_faces=1 if apparent else 0,
+        horizons=horizons,
+        apparent=apparent,
+        M_AH=M_AH if apparent else nan,
+        residual=nan,
+        margin=nan,
+        margin_face=0,
+        core_margin=nan,
+        core_margin_face=0,
+        outer_face_trapped=False,
+    )
+
+
+def run_at(writer: RunWriter[MonitoredStep], config: RunConfig, xi: float) -> Run:
+    """A run on FRW at `xi` whose horizon formed at `XI_FORM`: the read-out's bookkeeping, without an evolution."""
+    sch = config.scheme()
+    return Run(config, writer, sch, np.zeros(sch.layout.size), xi, XI_FORM, (), far_zone=4.0)
+
+
+def test_a_new_trapped_region_outside_the_apparent_horizon_starts_an_epoch(tmp_path: Path):
+    path = tmp_path / "epochs.evolution.h5"
+    with RunWriter(path, CONFIG, N, row_type=MonitoredStep) as writer:
+        r = run_at(writer, CONFIG, XI_FORM)
+        result = r.evaluate()
+        r.record_horizon(horizon_report(M_AH=0.1), result, None)  # nothing trapped: no epoch
+        assert r.epoch is None
+        r.record_horizon(horizon_report((1.0, True), M_AH=1.0), result, None)
+        first = r.epoch
+        assert first is not None
+        assert first.xi_start == XI_FORM  # the first epoch begins at formation
+        r.xi, r.step = XI_FORM + 0.1, 1
+        r.record_horizon(horizon_report((1.02, True), M_AH=1.02), result, None)  # the same region, grown
+        assert r.epoch is first
+        assert first.xi == [XI_FORM, XI_FORM + 0.1]
+        r.xi, r.step = XI_FORM + 0.2, 2
+        engulfing = horizon_report((1.04, True), (1.5, False), (2.5, True), M_AH=2.5)
+        r.record_horizon(engulfing, result, None)  # a shell outside: an untrapped gap, then a new region
+        second = r.epoch
+        assert second is not None
+        assert second is not first
+        assert second.xi_start == XI_FORM + 0.2
+        assert second.M_AH == [2.5]
+    events = RunReader(path).events
+    assert [e.kind for e in events if e.kind == "epoch"] == ["epoch"]
+    (epoch,) = [e for e in events if e.kind == "epoch"]
+    assert epoch.payload["M_AH_previous"] == 1.02
+    # a restart at the end is handed the epoch that began with the engulfing, and its series before the restart
+    history = epoch_history(RunReader(path), XI_FORM + 0.3)
+    assert history is not None
+    assert history.xi_start == XI_FORM + 0.2
+    assert history.M_AH == [2.5]
+
+
+def accreting(writer: RunWriter[MonitoredStep], config: RunConfig, efficiency: float, xi: float) -> tuple[Run, bool]:
+    """A run whose epoch holds steady accretion at `efficiency` times Michel since `XI_FORM`, read out at `xi`."""
+    r = run_at(writer, config, xi)
+    times = XI_FORM + 0.01 * np.arange(round((xi - XI_FORM) / 0.01) + 1)
+    lam = efficiency * config.fluid.build().accretion_eigenvalue
+    epoch = Epoch(xi_start=XI_FORM)
+    for t in times:
+        epoch.add(float(t), 3.0 / (1.0 + lam * 3.0 * float(np.exp(-t))), 1.0)
+    r.epoch = epoch
+    return r, try_reading(r)
+
+
+def try_reading(r: Run) -> bool:
+    """Record a horizon row at the run's time and try the read-out."""
+    return r.read_mass(r.record_horizon(horizon_report(M_AH=0.0), r.evaluate(), None))
+
+
+def test_the_mass_is_read_once_after_the_floor_and_the_run_is_told_to_stop(tmp_path: Path):
+    path = tmp_path / "read.evolution.h5"
+    with RunWriter(path, CONFIG, N, row_type=MonitoredStep) as writer:
+        r, stop = accreting(writer, CONFIG, 1.0, XI_FORM + 2.5)
+        assert stop
+        assert r.epoch is not None
+        assert r.epoch.read
+        r.xi += 0.1
+        assert not try_reading(r)  # read once only
+    (readout,) = [e for e in RunReader(path).events if e.kind == "readout"]
+    p = readout.payload
+    assert p["M_est"] == pytest.approx(3.0, rel=1e-4)
+    assert p["xi_reading"] == pytest.approx(XI_FORM + 2.0, abs=0.01)  # the floor decides on steady accretion
+    assert p["bar"] < 1e-3
+    assert not p["efficiency_flag"]
+    assert p["near_zone"]["michel_v"][1] == pytest.approx(-1.0 / np.sqrt(3.0))  # the sonic point: U / Gamma = -c_s
+
+
+def test_a_reading_far_from_the_michel_efficiency_is_flagged_and_need_not_stop_the_run(tmp_path: Path):
+    config = CONFIG.model_copy(update={"readout": ReadoutConfig(stop=False)})
+    path = tmp_path / "flag.evolution.h5"
+    with RunWriter(path, config, N, row_type=MonitoredStep) as writer:
+        _, stop = accreting(writer, config, 1.5, XI_FORM + 2.5)
+        assert not stop
+    (readout,) = [e for e in RunReader(path).events if e.kind == "readout"]
+    assert readout.payload["efficiency"] == pytest.approx(1.5, rel=1e-2)
+    assert readout.payload["efficiency_flag"]
+
+
+def test_no_reading_before_the_floor_or_the_target(tmp_path: Path):
+    strict = CONFIG.model_copy(update={"readout": ReadoutConfig(target=1e-9)})
+    path = tmp_path / "none.evolution.h5"
+    with RunWriter(path, strict, N, row_type=MonitoredStep) as writer:
+        early, stop = accreting(writer, strict, 1.0, XI_FORM + 1.5)  # before the floor: not even tried
+        assert not stop
+        assert early.epoch is not None
+        assert early.epoch.checked == float("-inf")
+        r, stop = accreting(writer, strict, 1.0, XI_FORM + 2.5)  # tried, but no bar is that small
+        assert not stop
+        assert r.epoch is not None
+        assert r.epoch.checked == r.xi
+        assert not r.epoch.read
+        assert not try_reading(r)  # and not tried again so soon
+    assert not [e for e in RunReader(path).events if e.kind == "readout"]
+    assert epoch_history(RunReader(path), XI_FORM + 2.5) is None  # this file recorded no formation

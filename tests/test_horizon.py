@@ -15,7 +15,7 @@ from pbh.derived import Derived, derive
 from pbh.driver import RunPaths, run
 from pbh.eos import RADIATION, Background, EquationOfState
 from pbh.geometry import Geometry
-from pbh.horizon import HorizonReport, HorizonRow, find_horizons
+from pbh.horizon import HorizonReport, HorizonRow, NearZone, find_horizons, near_zone
 from pbh.initial import cell_contents
 from pbh.layout import Layout
 from pbh.maps import IdentityMap, Map, SinhStretch
@@ -86,8 +86,11 @@ def test_frw_has_no_trapped_face_no_horizon_and_a_margin_of_one_at_the_origin():
     assert report.core_margin == 1.0  # the density never falls to half: the core is the whole grid
     assert not report.outer_face_trapped
     assert np.all(report.h[1:] > 0.0)
-    row = HorizonRow.of(3, 0.5, report, None)
+    near = near_zone(state, d, geo, report, RAD, layout, 0.5)
+    row = HorizonRow.of(3, 0.5, report, None, near)
     assert (row.trapped_faces, row.horizons, row.j_star) == (0, 0, -1)
+    assert np.isnan(row.lapse_AH)  # no horizon, no near zone
+    assert row.min_lapse == 1.0  # but the lapse is recorded from the start: exactly one on FRW
     assert np.isnan(row.x_AH)
     assert np.isnan(row.zone_ratio)
 
@@ -118,7 +121,7 @@ def test_a_trapped_shell_has_an_inner_and_an_outer_boundary_found_at_second_orde
         errors.append(abs(outer.X - outer_exact))
     assert errors[2] < errors[0] / 8.0  # second order, allowing for the constant's dependence on the root's position
     assert abs(report.residual) < 5e-4
-    row = HorizonRow.of(7, XI, report, 0.5)
+    row = HorizonRow.of(7, XI, report, 0.5, NearZone(*[math.nan] * 8))
     assert (row.j_star, row.x_AH, row.X_AH, row.M_AH) == (outer.j, outer.x, outer.X, report.M_AH)
     assert row.zone_ratio == pytest.approx(outer.x / 0.5)
 

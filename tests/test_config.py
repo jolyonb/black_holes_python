@@ -166,7 +166,8 @@ def test_a_saved_configuration_is_complete_carries_its_provenance_and_reloads_un
     out = tmp_path / "saved.config.yaml"
     save(config, out)
     document = yaml.safe_load(out.read_text())
-    sections = ["provenance", "fluid", "grid", "outer", "shocks", "excision", "stepping", "output", "evolution"]
+    sections = ["provenance", "fluid", "grid", "outer", "shocks", "excision", "readout", "stepping", "output"]
+    sections.append("evolution")
     assert list(document) == sections
     assert document["grid"] == {"N": 40, "Rtilde_max": 4.0, "map": "sinh", "scale": 2.0}
     assert re.fullmatch(r"[0-9a-f]{12}(-dirty)?|unknown", document["provenance"]["code_commit"])

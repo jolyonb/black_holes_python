@@ -35,6 +35,15 @@ excision:
   eta_r: 0.7                  # the re-excision fraction, the face advancing as the horizon grows; null for off
   zone_extension_at: 0.8      # pin a further zone when the horizon reaches this fraction of the zone's inner edge
 
+readout:
+  window: 0.3                 # the width in xi of the line fitted to ln M_AH, whose slope is the rate omega
+  spacing: 0.005              # the uniform resampling of M_AH in xi
+  floor: 2.0                  # no mass is read earlier than this many e-folds after formation
+  bar_span: 1.0               # the error bar takes the variation of Q over this many preceding e-folds
+  target: 0.01                # the mass is read once the error bar falls below this
+  stop: true                  # end the run once the mass is read; xi_end stays the latest it may run to
+  efficiency_tolerance: 0.2   # flag the reading if the accretion efficiency is further than this from Michel's
+
 stepping:
   integrator: rk4             # rk4 or ssprk3
   courant_number: 0.75
