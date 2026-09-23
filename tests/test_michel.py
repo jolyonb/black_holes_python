@@ -26,7 +26,7 @@ from pbh.michel import (
 )
 from pbh.outer import HeldExterior, OuterInputs
 from pbh.state import State
-from pbh.stencils import FaceClosure, StencilWeights
+from pbh.stencils import StencilWeights
 from pbh.timestep import Scheme
 
 RAD = EquationOfState(RADIATION)
@@ -69,9 +69,7 @@ def test_the_flow_reproduces_the_papers_table_and_its_landmarks():
 # --- the state on the grid ---
 
 
-def excised_scheme(
-    R_e: float, dX: float, closure: FaceClosure = FaceClosure.FIRST_ORDER
-) -> tuple[Scheme, Layout, State]:
+def excised_scheme(R_e: float, dX: float) -> tuple[Scheme, Layout, State]:
     """The Michel flow on the pinned uniform grid with cells of `dX / M` out to 5 M, excised at `R_e / M`."""
     N, X_max = michel_grid(EPSILON, XI, RAD, OUTER, dX)
     j_e = round(R_e / dX)
@@ -79,7 +77,7 @@ def excised_scheme(
     pinned = PinnedMap(IdentityMap(X_max), ALPHA, xi_on=XI)
     outer_flow = michel_flow(np.array([OUTER]))
     held = HeldExterior(rho_N=float(outer_flow.compression[0]), ephi_N=float(outer_flow.N[0]))
-    sch = Scheme(RAD, pinned, layout, closure, held, PRODUCTION_KERNELS)
+    sch = Scheme(RAD, pinned, layout, held, PRODUCTION_KERNELS)
     state = michel_state(sch.frame(XI).geo, Background.at(RAD, XI), RAD, EPSILON, layout)
     return sch, layout, state
 
@@ -90,7 +88,7 @@ def test_the_state_on_the_grid_has_the_flows_lapse_and_gamma_and_its_horizon_at_
     geo, bg = frame.geo, frame.bg
     assert state.M_e == hole_mass_tilde(EPSILON, XI, RAD) == 2.0 * EPSILON
     assert np.all(state.U[layout.j_e :] < 0.0)
-    d = derive(state, geo, bg, RAD, StencilWeights.of(geo, layout, FaceClosure.FIRST_ORDER))
+    d = derive(state, geo, bg, RAD, StencilWeights.of(geo, layout))
     r = geo.X[: layout.N + 1] / EPSILON  # r / M at xi = 0
     flow = michel_flow(r[layout.j_e :])
     assert np.sqrt(d.Gammabar2[layout.j_e :]) == pytest.approx(flow.N, rel=1e-6)  # Gammabar = e^((1-alpha) xi) Gamma
@@ -184,17 +182,6 @@ def test_the_closure_holds_the_flow_for_thirty_masses_at_the_three_face_radii(
     assert errors[0.025][1] < errors[0.05][1]  # ... and the maximum norm falls, first order at the face
 
 
-@pytest.mark.slow
-def test_the_second_order_rows_hold_the_flow_at_second_order_in_the_maximum_norm_as_the_switch():
-    # Table tab:numbh:tests: with the second-order rows the maximum deviation is below 3e-3 at dX = 0.05 M, rate >= 1.7
-    errors: dict[float, tuple[float, float]] = {}
-    for dX in (0.05, 0.025):
-        sch, layout, state = excised_scheme(R_e=1.5, dX=dX, closure=FaceClosure.SECOND_ORDER)
-        errors[dX] = deviation(sch, layout, evolve(sch, state, XI, XI + THIRTY_MASSES))
-    assert errors[0.05][1] <= 3e-3  # measured 2.7e-3
-    assert math.log2(errors[0.05][1] / errors[0.025][1]) >= 1.7  # measured 1.9
-
-
 # --- a steep slab leaving through the face (row 3), slow ---
 
 
@@ -217,7 +204,7 @@ def test_a_steep_infalling_slab_leaves_through_the_face_without_leaking_upstream
     leak = np.abs(rho - rho_exact) / amplitude
     # Beyond the sonic point nothing from the supersonic zone can arrive physically; numerically the centred parts
     # of the stencils let a trace through that decays with distance: 8e-6 beyond 3.2 M and 2.5e-6 beyond 4 M,
-    # measured with either closure. The paper's row says 1e-6 upstream; its measure is to be re-established.
+    # measured. The paper's row says 1e-6 upstream; its measure is to be re-established.
     assert np.max(leak[r_cells > 3.2]) <= 1e-5
     assert np.max(leak[r_cells > 4.0]) <= 5e-6
     assert np.all(rho > 0.0)

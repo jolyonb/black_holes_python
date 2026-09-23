@@ -24,7 +24,7 @@ from pbh.linearised import energy_norm, relative_scaling
 from pbh.maps import IdentityMap, Map, PinnedMap, SinhStretch
 from pbh.outer import HeldAtFrw
 from pbh.state import State, frw_rate, frw_state
-from pbh.stencils import FaceClosure, StencilWeights
+from pbh.stencils import StencilWeights
 
 EOS = EquationOfState(RADIATION)
 HELD = HeldAtFrw()
@@ -38,9 +38,9 @@ class Setup:
     w: StencilWeights
 
     @classmethod
-    def of(cls, m: Map, N: int, xi: float = 0.8, j_e: int = 0, closure: FaceClosure = FaceClosure.FIRST_ORDER):
+    def of(cls, m: Map, N: int, xi: float = 0.8, j_e: int = 0):
         geo = Geometry.of(*m.radii(xi, N))
-        return cls(geo, Background.at(EOS, xi), StencilWeights.of(geo, Layout(N, j_e), closure))
+        return cls(geo, Background.at(EOS, xi), StencilWeights.of(geo, Layout(N, j_e)))
 
     def run(self, s: State, settings: KernelSettings = PRODUCTION_KERNELS):
         return calc_derivs(s, self.geo, self.bg, EOS, self.w, HELD, settings)

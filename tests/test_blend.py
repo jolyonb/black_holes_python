@@ -13,7 +13,6 @@ from pbh.layout import Layout
 from pbh.maps import BlendMap, IdentityMap, Map, PinnedMap, SinhStretch, Zone, fractions, quintic_step, ramp
 from pbh.outer import OutgoingWave
 from pbh.state import frw_state
-from pbh.stencils import FaceClosure
 from pbh.timestep import Scheme
 from pbh.types import FloatArray
 
@@ -212,7 +211,7 @@ def test_frw_passes_through_a_forced_switch_on_in_deviation_form_to_round_off(ba
     N = 100
     zone = Zone(xi_on=1.0, tau_on=0.3, x_t=0.3, Delta_t=0.1)
     m = BlendMap(base, ALPHA, (zone,))
-    sch = Scheme(RAD, m, Layout(N), FaceClosure.FIRST_ORDER, OutgoingWave(), CENTRED_SCHEME)
+    sch = Scheme(RAD, m, Layout(N), OutgoingWave(), CENTRED_SCHEME)
     xi_0 = 0.8
     state = frw_state(sch.frame(xi_0).geo)
     for xi_end in (1.15, 2.5):  # inside the ramp, and well after it

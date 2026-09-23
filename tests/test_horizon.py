@@ -22,7 +22,7 @@ from pbh.maps import IdentityMap, Map, SinhStretch
 from pbh.output import RunReader
 from pbh.records import read_initial
 from pbh.state import State, frw_state
-from pbh.stencils import FaceClosure, StencilWeights
+from pbh.stencils import StencilWeights
 from pbh.types import FloatArray
 
 RAD = EquationOfState(RADIATION)
@@ -57,7 +57,7 @@ def exact_roots(rho: Profile, brackets: list[tuple[float, float]]) -> list[float
 def report_for(m: Map, N: int, rho: Profile, v: float) -> tuple[HorizonReport, Geometry]:
     state, geo, bg = density_state(m, N, rho, v)
     layout = Layout(N)
-    d = derive(state, geo, bg, RAD, StencilWeights.of(geo, layout, FaceClosure.FIRST_ORDER))
+    d = derive(state, geo, bg, RAD, StencilWeights.of(geo, layout))
     return find_horizons(state, d, geo, bg, RAD, m, layout, XI), geo
 
 
@@ -75,7 +75,7 @@ def test_frw_has_no_trapped_face_no_horizon_and_a_margin_of_one_at_the_origin():
     bg = Background.at(RAD, 0.5)
     state = frw_state(geo)
     layout = Layout(40)
-    d = derive(state, geo, bg, RAD, StencilWeights.of(geo, layout, FaceClosure.FIRST_ORDER))
+    d = derive(state, geo, bg, RAD, StencilWeights.of(geo, layout))
     report = find_horizons(state, d, geo, bg, RAD, m, layout, 0.5)
     assert report.trapped_faces == 0
     assert report.horizons == ()
@@ -184,7 +184,7 @@ def test_the_core_margin_is_over_the_faces_inside_the_half_density_radius():
     state = State(E=E, U=U, W=0.0)
     bg = Background.at(RAD, XI)
     layout = Layout(N)
-    d = derive(state, geo, bg, RAD, StencilWeights.of(geo, layout, FaceClosure.FIRST_ORDER))
+    d = derive(state, geo, bg, RAD, StencilWeights.of(geo, layout))
     report = find_horizons(state, d, geo, bg, RAD, m, layout, XI)
     margin = 1.0 + state.U / np.sqrt(d.Gammabar2)
     assert report.margin == pytest.approx(np.min(margin[1:]))

@@ -44,7 +44,7 @@ from pbh.layout import Layout
 from pbh.maps import Map
 from pbh.outer import OuterClosure
 from pbh.state import frw_state
-from pbh.stencils import FaceClosure, StencilWeights
+from pbh.stencils import StencilWeights
 from pbh.types import FloatArray
 
 #: The Courant number of eq:num:cfl. The stable limit is about 0.95 for RK4 on the production footprint.
@@ -146,7 +146,6 @@ class Scheme:
         eos: The equation of state.
         map: The map that places the faces in the scaled areal radius.
         layout: Which entries are unknowns; its `N` is the number of cells the map is evaluated for.
-        closure: The excision-face closure the stencil weights are built for.
         outer: The outer closure.
         settings: The kernel switches.
     """
@@ -154,7 +153,6 @@ class Scheme:
     eos: EquationOfState
     map: Map
     layout: Layout
-    closure: FaceClosure
     outer: OuterClosure
     settings: KernelSettings
     _static_frame: tuple[Geometry, StencilWeights] | None = field(init=False, repr=False, compare=False)
@@ -166,7 +164,7 @@ class Scheme:
 
     def _geometry_and_weights(self, xi: float) -> tuple[Geometry, StencilWeights]:
         geo = Geometry.of(*self.map.radii(xi, self.layout.N))
-        return geo, StencilWeights.of(geo, self.layout, self.closure)
+        return geo, StencilWeights.of(geo, self.layout)
 
     def frame(self, xi: float) -> Frame:
         """The frame at time `xi`: the cached geometry on a static map, a fresh one on a moving map."""

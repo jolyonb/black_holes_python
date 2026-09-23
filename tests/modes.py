@@ -15,7 +15,6 @@ from pbh.layout import Layout
 from pbh.maps import Map
 from pbh.outer import HeldAtFrw
 from pbh.state import State
-from pbh.stencils import FaceClosure
 from pbh.timestep import Scheme
 
 #: The first zeros of j_1, so that k = zero / X_N gives a mode with delta_U = 0 at the outer face.
@@ -46,7 +45,7 @@ def mode_errors(m: Map, k_index: int, N: int, settings: KernelSettings, xi_end: 
     eos = EquationOfState(RADIATION)
     X_N = float(m.radii(0.0, N)[0][N])
     mode = single_mode(J1_ZEROS[k_index] / X_N, B=1e-6)
-    sch = Scheme(eos, m, Layout(N), FaceClosure.FIRST_ORDER, HeldAtFrw(), settings)
+    sch = Scheme(eos, m, Layout(N), HeldAtFrw(), settings)
     final = evolve(sch, mode_state(mode, Background.at(eos, 0.0), sch.frame(0.0).geo), 0.0, xi_end)
     geo = sch.frame(xi_end).geo  # the map may have moved: compare on the final radii
     exact = mode_state(mode, Background.at(eos, xi_end), geo)

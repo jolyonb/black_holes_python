@@ -24,7 +24,7 @@ from pbh.outer import (
     characteristic_pair,
 )
 from pbh.state import State, frw_rate, frw_state
-from pbh.stencils import FaceClosure, StencilWeights
+from pbh.stencils import StencilWeights
 from pbh.timestep import Scheme
 
 RAD = EquationOfState(RADIATION)
@@ -138,7 +138,7 @@ def test_the_closure_holds_w_at_zero_for_any_other_equation_of_state():
 
 def test_the_closure_refuses_a_moving_outer_face():
     pinned = PinnedMap(IdentityMap(4.0), float(RAD.alpha))
-    sch = Scheme(RAD, pinned, Layout(8), FaceClosure.FIRST_ORDER, OutgoingWave(), CENTRED_SCHEME)
+    sch = Scheme(RAD, pinned, Layout(8), OutgoingWave(), CENTRED_SCHEME)
     with pytest.raises(ValueError, match="static outer face"):
         sch.evaluate(0.3, sch.frw(0.3))
 
@@ -146,7 +146,7 @@ def test_the_closure_refuses_a_moving_outer_face():
 @pytest.mark.parametrize("m", MAPS)
 @pytest.mark.parametrize("settings", [CENTRED_SCHEME, PRODUCTION_KERNELS])
 def test_frw_is_a_fixed_point_with_the_outgoing_wave_closure(m: Map, settings: KernelSettings):
-    sch = Scheme(RAD, m, Layout(24), FaceClosure.FIRST_ORDER, OutgoingWave(), settings)
+    sch = Scheme(RAD, m, Layout(24), OutgoingWave(), settings)
     xi = 0.7
     res = sch.evaluate(xi, sch.frw(xi))
     expected = frw_rate(sch.frame(xi).geo)
@@ -163,7 +163,7 @@ def linearise(outer: OuterClosure, m: Map = UNIFORM, N: int = 24, xi: float = 0.
     geo = Geometry.of(*m.radii(xi, N))
     bg = Background.at(RAD, xi)
     lay = Layout(N)
-    w = StencilWeights.of(geo, lay, FaceClosure.FIRST_ORDER)
+    w = StencilWeights.of(geo, lay)
     J = jacobian(frw_state(geo), geo, bg, RAD, w, outer, CENTRED_SCHEME)
     T = relative_scaling(geo, lay)
     return (T[:, None] * J) / T[None, :], geo, bg, lay
@@ -300,9 +300,9 @@ def reflection(
     bg_0 = Background.at(RAD, 0.0)
     distance = Rtilde_max - X_0 + 4.5 * sigma  # the trailing edge, 3.5 sigma behind the centre, plus one sigma
     xi_end = 2.0 * np.log(1.0 + distance / bg_0.tau)  # e^(xi/2) - 1 = distance / tau(0): the sound travel time
-    test = Scheme(RAD, IdentityMap(Rtilde_max), Layout(N), FaceClosure.FIRST_ORDER, outer, settings)
+    test = Scheme(RAD, IdentityMap(Rtilde_max), Layout(N), outer, settings)
     longer = IdentityMap(2.0 * Rtilde_max)
-    reference = Scheme(RAD, longer, Layout(2 * N), FaceClosure.FIRST_ORDER, HeldAtFrw(), settings)
+    reference = Scheme(RAD, longer, Layout(2 * N), HeldAtFrw(), settings)
     finals: list[State] = []
     for sch in (test, reference):
         geo = sch.frame(0.0).geo

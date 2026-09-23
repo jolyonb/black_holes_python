@@ -51,7 +51,6 @@ from pbh.layout import Layout
 from pbh.maps import BlendMap, IdentityMap, Map, SinhStretch, Zone
 from pbh.outer import OutgoingWave
 from pbh.state import State
-from pbh.stencils import FaceClosure
 from pbh.timestep import COURANT_NUMBER, Integrator, Scheme, advance, courant_step
 
 EOS = EquationOfState(RADIATION)
@@ -62,7 +61,7 @@ AVERAGED_Q = KernelSettings(
 
 def pull_apart(N: int, V: float, settings: KernelSettings, xi_end: float = 6.0) -> tuple[bool, float, float]:
     """Evolve the pull-apart void: `(survived, xi reached, smallest cell density seen)`."""
-    sch = Scheme(EOS, IdentityMap(12.0), Layout(N), FaceClosure.FIRST_ORDER, OutgoingWave(), settings)
+    sch = Scheme(EOS, IdentityMap(12.0), Layout(N), OutgoingWave(), settings)
     xi = 4.0
     geo = sch.frame(xi).geo
     X = geo.X[: N + 1]
@@ -112,7 +111,7 @@ def excised_state(settings: KernelSettings) -> tuple[float, float]:
     lapse is a thousand; the infall is faster outward, so the cell is compressed and its viscous pressure positive.
     """
     N, j_e = 40, 5
-    sch = Scheme(EOS, SinhStretch(4.0, 2.0), Layout(N, j_e), FaceClosure.FIRST_ORDER, OutgoingWave(), settings)
+    sch = Scheme(EOS, SinhStretch(4.0, 2.0), Layout(N, j_e), OutgoingWave(), settings)
     geo = sch.frame(0.0).geo
     rho = np.ones(N)
     rho[j_e] = 1e-8
@@ -141,7 +140,7 @@ def test_the_first_retained_cell_is_not_drained_through_a_floored_excision_face(
 
 
 def test_the_production_kernels_are_exact_on_frw():
-    sch = Scheme(EOS, SinhStretch(12.0, 3.0), Layout(100), FaceClosure.FIRST_ORDER, OutgoingWave(), PRODUCTION_KERNELS)
+    sch = Scheme(EOS, SinhStretch(12.0, 3.0), Layout(100), OutgoingWave(), PRODUCTION_KERNELS)
     assert np.all(sch.deviation_rate(0.0, np.zeros(sch.layout.size)) == 0.0)
 
 
@@ -188,7 +187,7 @@ def tension_state(settings: KernelSettings, dip: float) -> tuple[float, float, f
     outer face: the first cell is compressed and the next expands hard. Returns the fraction of the first cell's
     content leaving through face j_e and through face j_e + 1 in one Courant step, and the least `q / rho`."""
     N, j_e = 40, 8
-    sch = Scheme(EOS, IdentityMap(4.0), Layout(N, j_e), FaceClosure.FIRST_ORDER, OutgoingWave(), settings)
+    sch = Scheme(EOS, IdentityMap(4.0), Layout(N, j_e), OutgoingWave(), settings)
     geo = sch.frame(0.0).geo
     X = geo.X
     rho = np.ones(N)

@@ -34,7 +34,7 @@ from pbh.maps import BlendMap, IdentityMap, Zone
 from pbh.output import RunReader
 from pbh.records import read_initial
 from pbh.state import frw_state
-from pbh.stencils import FaceClosure, StencilWeights
+from pbh.stencils import StencilWeights
 from pbh.timestep import Scheme
 
 RAD = EquationOfState(RADIATION)
@@ -82,16 +82,14 @@ def slice_of(reader: RunReader, config: RunConfig, index: int):
     frame = sch.frame(record.xi)
     layout = Layout(config.grid.N)
     state = record.state
-    d = derive(state, frame.geo, frame.bg, RAD, StencilWeights.of(frame.geo, layout, FaceClosure.FIRST_ORDER))
+    d = derive(state, frame.geo, frame.bg, RAD, StencilWeights.of(frame.geo, layout))
     report = find_horizons(state, d, frame.geo, frame.bg, RAD, sch.map, layout, record.xi)
     return record, state, d, frame.geo, frame.bg, report, layout
 
 
 def scheme_on(config: RunConfig, layout: Layout) -> Scheme:
     """The configuration's scheme on an excised layout."""
-    return Scheme(
-        RAD, config.grid.build(), layout, FaceClosure.FIRST_ORDER, config.outer.build(), config.shocks.build()
-    )
+    return Scheme(RAD, config.grid.build(), layout, config.outer.build(), config.shocks.build())
 
 
 def formed_snapshots(reader: RunReader, config: RunConfig) -> list[int]:
@@ -107,7 +105,7 @@ def test_frw_faces_are_not_outflow_faces_and_trapped_faces_are():
     bg = Background.at(RAD, 0.5)
     state = frw_state(geo)
     layout = Layout(40)
-    d = derive(state, geo, bg, RAD, StencilWeights.of(geo, layout, FaceClosure.FIRST_ORDER))
+    d = derive(state, geo, bg, RAD, StencilWeights.of(geo, layout))
     # mu = alpha [X - <ephi> (U + Gammabar)] with U = X and ephi = 1 on FRW: -alpha Gammabar < 0, light escapes
     for j in (1, 10, 39):
         assert outflow_margin(j, state, d, geo, RAD, layout) == pytest.approx(-0.5 * math.sqrt(bg.Gammabar2))
@@ -193,7 +191,7 @@ def test_excising_keeps_the_cumulative_mass_at_every_retained_face(collapse: tup
     assert np.all(np.isnan(excised.E[:j_e]))
     assert np.all(np.isnan(excised.U[:j_e]))
     assert excised.M_e == pytest.approx(3.0 * np.sum(state.E[:j_e]))
-    d_excised = derive(excised, geo, bg, RAD, StencilWeights.of(geo, excised_layout, FaceClosure.FIRST_ORDER))
+    d_excised = derive(excised, geo, bg, RAD, StencilWeights.of(geo, excised_layout))
     assert d_excised.M[j_e:] == pytest.approx(d.M[j_e:], rel=1e-14)
     assert d_excised.mt[j_e:] == pytest.approx(d.mt[j_e:], rel=1e-14)
     # a second move, further out, adds the dropped cells to the mass inside
@@ -222,9 +220,7 @@ def test_the_face_assertions_pass_inside_the_trapped_region_and_fail_outside_it(
     attempt = attempt_switch_on(report, state, d, geo, RAD, layout, EXCISION, ())
     assert attempt.passed
     excised, excised_layout = excise(state, layout, attempt.j_e)
-    sch = Scheme(
-        RAD, config.grid.build(), excised_layout, FaceClosure.FIRST_ORDER, config.outer.build(), config.shocks.build()
-    )
+    sch = Scheme(RAD, config.grid.build(), excised_layout, config.outer.build(), config.shocks.build())
     result = sch.evaluate(record.xi, excised_layout.pack(excised))
     d_e = result.derived
     report_e = find_horizons(excised, d_e, geo, bg, RAD, sch.map, excised_layout, record.xi)
@@ -249,9 +245,7 @@ def test_the_face_assertions_pass_inside_the_trapped_region_and_fail_outside_it(
     assert HorizonRow.of(5, record.xi, report_e, None, near).j_e == UNEXCISED.j_e == -1
     # a face outside the trapped region fails the trapped-stencil assertion ...
     outside, outside_layout = excise(state, layout, attempt.j_star + 3)
-    sch_out = Scheme(
-        RAD, config.grid.build(), outside_layout, FaceClosure.FIRST_ORDER, config.outer.build(), config.shocks.build()
-    )
+    sch_out = Scheme(RAD, config.grid.build(), outside_layout, config.outer.build(), config.shocks.build())
     result_out = sch_out.evaluate(record.xi, outside_layout.pack(outside))
     report_out = find_horizons(outside, result_out.derived, geo, bg, RAD, sch.map, outside_layout, record.xi)
     with pytest.raises(ExcisionError, match="trapped"):
@@ -269,7 +263,6 @@ def test_an_excised_frw_face_fails_the_margin_assertion():
         RAD,
         IdentityMap(4.0),
         layout,
-        FaceClosure.FIRST_ORDER,
         __import__("pbh.outer", fromlist=["HeldAtFrw"]).HeldAtFrw(),
         __import__("pbh.kernels", fromlist=["CENTRED_SCHEME"]).CENTRED_SCHEME,
     )

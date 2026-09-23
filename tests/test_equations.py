@@ -15,7 +15,7 @@ from pbh.layout import Layout
 from pbh.maps import IdentityMap, Map, PinnedMap, SinhStretch
 from pbh.outer import PRODUCTION_STRENGTHS, HeldAtFrw, OuterClosure, OuterInputs, OuterRows, OutgoingWave
 from pbh.state import State, frw_rate, frw_state
-from pbh.stencils import FaceClosure, StencilWeights
+from pbh.stencils import StencilWeights
 
 EOS = EquationOfState(RADIATION)
 AVERAGED_Q = KernelSettings(
@@ -33,9 +33,9 @@ class Setup:
     w: StencilWeights
 
     @classmethod
-    def of(cls, m: Map, N: int, xi: float, j_e: int = 0, closure: FaceClosure = FaceClosure.FIRST_ORDER):
+    def of(cls, m: Map, N: int, xi: float, j_e: int = 0):
         geo = Geometry.of(*m.radii(xi, N))
-        return cls(geo, Background.at(EOS, xi), StencilWeights.of(geo, Layout(N, j_e), closure))
+        return cls(geo, Background.at(EOS, xi), StencilWeights.of(geo, Layout(N, j_e)))
 
     def run(self, s: State, outer: OuterClosure = HELD):
         return calc_derivs(s, self.geo, self.bg, EOS, self.w, outer, CENTRED_SCHEME)
@@ -137,20 +137,6 @@ def test_the_rate_has_nan_below_the_excision_face_and_zero_at_the_origin_velocit
     assert su0.run(smooth_state(su0)).rate.U[0] == 0.0
 
 
-def test_the_second_order_closure_runs_and_differs_only_at_the_excision_face():
-    su1 = Setup.of(SinhStretch(5.0, scale=2.0), 30, xi=0.8, j_e=5, closure=FaceClosure.FIRST_ORDER)
-    su2 = Setup.of(SinhStretch(5.0, scale=2.0), 30, xi=0.8, j_e=5, closure=FaceClosure.SECOND_ORDER)
-    s = smooth_state(su1)
-    r1, r2 = su1.run(s), su2.run(s)
-    assert r1.rate.U[5] != r2.rate.U[5]
-    assert np.array_equal(r1.rate.U[6:], r2.rate.U[6:])
-    # The face value <rho>_{j_e} differs between the closures, so the flux F_{j_e}, the first retained cell's energy
-    # rate and the face-mass rate differ too, and by the same amount up to the factor 3.
-    assert r1.rate.M_e != r2.rate.M_e
-    assert np.array_equal(r1.rate.E[6:], r2.rate.E[6:])
-    assert (r1.rate.M_e - r2.rate.M_e) == pytest.approx(3.0 * (r2.rate.E[5] - r1.rate.E[5]), rel=1e-12)
-
-
 # --- the outer closure ---
 
 
@@ -227,7 +213,7 @@ def test_the_deviation_form_is_the_printed_stage_on_a_strongly_nonlinear_state(
     geo = Geometry.of(radii, X_xi)
     X = geo.X[: N + 1]
     bg = Background.at(EOS, xi)
-    w = StencilWeights.of(geo, Layout(N, j_e), FaceClosure.FIRST_ORDER)
+    w = StencilWeights.of(geo, Layout(N, j_e))
     E = geo.dV * (1.0 + 1.2 * np.exp(-geo.sbar[:-1]) - 0.3 * np.exp(-((geo.Xm - 2.5) ** 2)))
     if empty_ends:  # thin end cells beside denser ones: the reconstruction's positivity clip binds at both. The last
         # cell is only thinned to 0.3, so that the flow across its inner face stays subsonic and the HLL flux there
@@ -270,7 +256,7 @@ def vacuum_state(j_e: int, xi: float = 4.0) -> tuple[State, Geometry, Background
     U += 40.0 * np.maximum(X - X0, 0.0) * np.exp(-((X - X0) ** 2) / 0.05)
     U[N - 2] += 3.0 * (X[N - 1] - X[N - 2])
     state = State(E=rho * geo.dV[:N], U=U, W=0.0, M_e=0.2 * float(X[j_e]) ** 3)
-    return state, geo, Background.at(EOS, xi), StencilWeights.of(geo, Layout(N, j_e), FaceClosure.FIRST_ORDER)
+    return state, geo, Background.at(EOS, xi), StencilWeights.of(geo, Layout(N, j_e))
 
 
 UNCAPPED = KernelSettings(cap_tension=False)

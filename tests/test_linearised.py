@@ -13,7 +13,7 @@ from pbh.linearised import energy_norm, jacobian, mass_perturbation, relative_sc
 from pbh.maps import IdentityMap, Map, SinhStretch
 from pbh.outer import HeldAtFrw
 from pbh.state import frw_state
-from pbh.stencils import FaceClosure, StencilWeights
+from pbh.stencils import StencilWeights
 from pbh.types import FloatArray
 
 type ComplexArray = np.ndarray[tuple[int], np.dtype[np.complex128]]
@@ -27,7 +27,7 @@ def linearise_about_frw(m: Map, eos: EquationOfState, N: int = 24, xi: float = 0
     geo = Geometry.of(*m.radii(xi, N))
     bg = Background.at(eos, xi)
     lay = Layout(N)
-    w = StencilWeights.of(geo, lay, FaceClosure.FIRST_ORDER)
+    w = StencilWeights.of(geo, lay)
     J = jacobian(frw_state(geo), geo, bg, eos, w, HELD, CENTRED_SCHEME)
     T = relative_scaling(geo, lay)
     L = (T[:, None] * J) / T[None, :]  # T J T^{-1}
@@ -47,7 +47,7 @@ def test_the_jacobian_is_insensitive_to_its_step():
     geo = Geometry.of(*SinhStretch(3.0, scale=2.0).radii(0.5, 16))
     eos = EquationOfState(RADIATION)
     bg, lay = Background.at(eos, 0.5), Layout(16)
-    w = StencilWeights.of(geo, lay, FaceClosure.FIRST_ORDER)
+    w = StencilWeights.of(geo, lay)
     s = frw_state(geo)
     J_a = jacobian(s, geo, bg, eos, w, HELD, CENTRED_SCHEME, relative_step=1e-3)
     J_b = jacobian(s, geo, bg, eos, w, HELD, CENTRED_SCHEME, relative_step=2e-3)

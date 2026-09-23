@@ -23,13 +23,13 @@ from pbh.monitors import (
 )
 from pbh.outer import HeldAtFrw, OutgoingWave, characteristic_pair
 from pbh.state import State, frw_state
-from pbh.stencils import FaceClosure, StencilWeights
+from pbh.stencils import StencilWeights
 from pbh.timestep import RK4, Integrator, Scheme, advance, courant_step
 from pbh.types import FloatArray
 
 RAD = EquationOfState(RADIATION)
 N = 60
-SCHEME = Scheme(RAD, IdentityMap(6.0), Layout(N), FaceClosure.FIRST_ORDER, OutgoingWave(), PRODUCTION_KERNELS)
+SCHEME = Scheme(RAD, IdentityMap(6.0), Layout(N), OutgoingWave(), PRODUCTION_KERNELS)
 WEIGHTS = tuple(float(b) for b in RK4.b)
 
 
@@ -127,7 +127,7 @@ def test_the_full_row_locates_the_minima_and_the_courant_cell():
 
 
 def test_the_bookkeeping_residual_of_an_rk4_step_is_round_off():
-    sch = Scheme(RAD, IdentityMap(6.0), Layout(N), FaceClosure.FIRST_ORDER, HeldAtFrw(), CENTRED_SCHEME)
+    sch = Scheme(RAD, IdentityMap(6.0), Layout(N), HeldAtFrw(), CENTRED_SCHEME)
     xi = 0.0
     f = sch.frame(xi)
     state = mode_state(single_mode(J1_ZEROS[0] / 6.0, 1e-2), f.bg, f.geo)
@@ -239,7 +239,7 @@ def test_the_companion_and_the_running_integral_pass_through():
 
 def test_off_radiation_the_boundary_energy_is_not_defined_and_the_centred_scheme_has_no_kernel_monitors():
     dust_like = EquationOfState(RADIATION / 2)
-    sch = Scheme(dust_like, IdentityMap(6.0), Layout(N), FaceClosure.FIRST_ORDER, OutgoingWave(), CENTRED_SCHEME)
+    sch = Scheme(dust_like, IdentityMap(6.0), Layout(N), OutgoingWave(), CENTRED_SCHEME)
     xi = 0.4
     state = frw_state(sch.frame(xi).geo)
     row = monitor_step(inputs_for(sch, xi, state), dust_like, sch.layout, sch.settings)
@@ -255,7 +255,7 @@ def test_off_radiation_the_boundary_energy_is_not_defined_and_the_centred_scheme
 def test_an_excised_layout_is_monitored_on_the_retained_cells_only():
     j_e = 5
     layout = Layout(N, j_e=j_e)
-    sch = Scheme(RAD, IdentityMap(6.0), layout, FaceClosure.FIRST_ORDER, OutgoingWave(), PRODUCTION_KERNELS)
+    sch = Scheme(RAD, IdentityMap(6.0), layout, OutgoingWave(), PRODUCTION_KERNELS)
     xi = 0.4
     f = sch.frame(xi)
     state = frw_state(f.geo, j_e)
@@ -297,7 +297,7 @@ def test_the_alternating_component_and_the_grid_scale_fraction():
 def test_the_limiter_clipping_detector_sees_a_kink_and_not_a_smooth_field():
     geo = Geometry.of(*IdentityMap(6.0).radii(0.0, N))
     layout = Layout(N)
-    sch = Scheme(RAD, IdentityMap(6.0), layout, FaceClosure.FIRST_ORDER, OutgoingWave(), PRODUCTION_KERNELS)
+    sch = Scheme(RAD, IdentityMap(6.0), layout, OutgoingWave(), PRODUCTION_KERNELS)
     frw = frw_state(geo)
     smooth = State(E=frw.E * (1.0 + 0.01 * geo.sbar[:N] / 36.0), U=frw.U, W=0.0)  # linear in s: exactly reconstructed
     result = sch.evaluate(0.0, layout.pack(smooth))
@@ -344,7 +344,7 @@ def test_the_monitor_sees_an_end_cell_clip_of_a_tenth(j_e: int, excess: float, c
     radii, _ = SinhStretch(4.0, scale=2.0).radii(0.0, n)
     geo = Geometry.of(radii, np.zeros_like(radii))
     layout = Layout(n, j_e)
-    weights = StencilWeights.of(geo, layout, FaceClosure.FIRST_ORDER)
+    weights = StencilWeights.of(geo, layout)
     X2, sbar = geo.X**2, geo.sbar
     rho = np.ones(n)
     e, f = j_e, n - 1
@@ -385,7 +385,7 @@ def test_the_boundary_energy_equals_the_matrix_norm_of_the_linearised_scheme_plu
     # the energy identity; face N's weight and E_b are added by hand here.
     from pbh.linearised import energy_norm
 
-    sch = Scheme(RAD, IdentityMap(6.0), Layout(N), FaceClosure.FIRST_ORDER, OutgoingWave(), CENTRED_SCHEME)
+    sch = Scheme(RAD, IdentityMap(6.0), Layout(N), OutgoingWave(), CENTRED_SCHEME)
     xi = 0.5
     f = sch.frame(xi)
     state = mode_state(single_mode(1.1, 2e-3), f.bg, f.geo)

@@ -39,7 +39,7 @@ slope is its single one-sided difference and the velocity slope at the face the 
 faces `0` and `N`; the viscous pressure enters the flux as the first retained cell's `q / rho` at its reconstructed
 face density (under `AVERAGED`, its unscaled cell value `<q>_je = q_je`), and its force is the
 end row `Q_je = 2 sbar_je q_je / (X_je^2 Delta X_je)`, the one-sided gradient over the half cell with `q` vanishing at
-the face, whatever the closure of the other stencils.
+the face.
 
 The centred base scheme remains available as a test switch (`Kernels.CENTRED`); Section 7.4 says why it is never a
 production configuration.
@@ -276,12 +276,12 @@ def viscous_pressure(
         # only shrinks |q|, so the dissipation keeps its sign.
         q[cells] = np.maximum(q[cells], -w_eos * d.rho[cells])
     q[N - 1] = 0.0
-    # Its face value and its areal force: the interior stencils, and the kernels' own rows at the excision face.
+    # Its face value (the stencil's, which is the cell behind an excision face) and its areal force: the interior
+    # stencil, and the kernels' own end row at the excision face.
     q_f = w.face_average(q)
     Q = np.full(N + 1, np.nan)
     Q[j_e + 1 : N] = w.gradient_s(geo.sbar[:-1] * q)[j_e + 1 : N] / X[j_e + 1 : N] ** 2
     if j_e > 0:
-        q_f[j_e] = q[j_e]
         Q[j_e] = 2.0 * geo.sbar[j_e] * q[j_e] / (X[j_e] ** 2 * dX[j_e])
     else:
         Q[0] = 0.0  # face 0 has no velocity equation

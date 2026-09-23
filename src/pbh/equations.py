@@ -155,7 +155,7 @@ def calc_derivs(
         geo: The geometry at this stage's time.
         bg: The background at this stage's time.
         eos: The equation of state.
-        w: The stencil weights for this geometry, which carry the layout and the excision closure.
+        w: The stencil weights for this geometry, which carry the layout and the excision rows.
         outer: The closure of the outer face.
         settings: The kernel switches: production kernels or the centred base scheme, and their constants.
         deviation: The state's deviation from FRW, if the caller holds it (see `derive`).

@@ -27,8 +27,6 @@ assembled from all of them. The driver reads the file and never sees a raw strin
       rho_floor: 1.0e-12
       viscous_flux: density_weighted  # density_weighted (each side its own q/rho at its face density) or averaged
       cap_tension: true         # cap the viscous tension at the fluid pressure, q >= -w rho
-    excision:
-      face_closure: o1          # o1 (first order, production) or o2 (second order; unsafe near vacuum)
     stepping:
       integrator: rk4           # rk4 or ssprk3
       courant_number: 0.75
@@ -72,7 +70,6 @@ from pbh.layout import Layout
 from pbh.maps import IdentityMap, Map, SinhStretch
 from pbh.outer import HeldAtFrw, OuterClosure, OutgoingWave, PenaltyStrengths
 from pbh.readout import ReadoutSettings
-from pbh.stencils import FaceClosure
 from pbh.timestep import COURANT_NUMBER, Integrator, Scheme, step_cap
 
 
@@ -184,7 +181,7 @@ class ShockConfig(Section):
 
 
 class ExcisionConfig(Section):
-    """The `excision` section: the post-formation map's switch-on and the excision-face closure (Sections 8.1, 8.3).
+    """The `excision` section: the post-formation map's switch-on and the excision itself (Sections 8.1, 8.3).
 
     The defaults are the recommended values of Table tab:numbh:params; the horizon finder and the excision rules
     join this section with their bites.
@@ -203,9 +200,6 @@ class ExcisionConfig(Section):
     c_Delta: float = Field(default=1.5, gt=0.0)
     """The transition's half-width in the same units, `Delta_t = c_Delta x_AH`; `x_t + Delta_t` must stay below `0.8`,
     which is checked at switch-on."""
-
-    face_closure: FaceClosure = Field(default=FaceClosure.FIRST_ORDER, strict=False)
-    """The excision-face closure: first order in production, the second-order rows as a switch."""
 
     enabled: bool = True
     """Whether to excise at all. Off, a collapse continues on its grid until the interior breaks the areal
@@ -315,7 +309,6 @@ class RunConfig(Section):
             self.fluid.build(),
             self.grid.build() if map is None else map,
             Layout(self.grid.N) if layout is None else layout,
-            self.excision.face_closure,
             self.outer.build(),
             self.shocks.build(),
         )

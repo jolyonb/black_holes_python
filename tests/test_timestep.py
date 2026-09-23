@@ -14,7 +14,6 @@ from pbh.layout import Layout
 from pbh.maps import BlendMap, IdentityMap, Map, PinnedMap, SinhStretch, Zone
 from pbh.outer import HeldAtFrw, OutgoingWave
 from pbh.state import State
-from pbh.stencils import FaceClosure
 from pbh.timestep import (
     COURANT_NUMBER,
     RK4,
@@ -35,7 +34,7 @@ EOS = EquationOfState(RADIATION)
 
 
 def scheme(m: Map, N: int, j_e: int = 0) -> Scheme:
-    return Scheme(EOS, m, Layout(N, j_e), FaceClosure.FIRST_ORDER, HeldAtFrw(), CENTRED_SCHEME)
+    return Scheme(EOS, m, Layout(N, j_e), HeldAtFrw(), CENTRED_SCHEME)
 
 
 # --- the tableaux: order conditions, and the stability polynomials on y' = lambda y ---
@@ -267,7 +266,7 @@ def test_every_row_is_exact_on_frw_and_rounds_at_the_size_of_the_deviation():
     # any size: the central difference (r(s v) - r(-s v)) / 2s agrees between s = 1e-9 and s = 1e-13 to the rounding
     # of the deviation, where rows formed from the whole state carry round-off of the FRW size, which dominates once
     # s is small (1.5e-13 of Delta V in the energy rows, 3e-16 of X in the velocity rows).
-    sch = Scheme(EOS, SinhStretch(24.0, 3.0), Layout(400), FaceClosure.FIRST_ORDER, OutgoingWave(), PRODUCTION_KERNELS)
+    sch = Scheme(EOS, SinhStretch(24.0, 3.0), Layout(400), OutgoingWave(), PRODUCTION_KERNELS)
     assert np.all(sch.deviation_rate(0.0, np.zeros(sch.layout.size)) == 0.0)
     geo = sch.frame(0.0).geo
     g = np.exp(-((geo.X / 4.0) ** 2))

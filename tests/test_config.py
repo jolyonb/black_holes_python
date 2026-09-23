@@ -24,7 +24,6 @@ from pbh.config import (
 from pbh.kernels import PRODUCTION_KERNELS, DensityLimiter, Kernels, KernelSettings, ViscousFlux
 from pbh.maps import IdentityMap, SinhStretch
 from pbh.outer import HeldAtFrw, OutgoingWave, PenaltyStrengths
-from pbh.stencils import FaceClosure
 from pbh.timestep import Integrator, step_cap
 
 EXAMPLE = Path(__file__).parent.parent / "examples" / "example.config.yaml"
@@ -53,7 +52,6 @@ def test_a_minimal_file_takes_every_default(tmp_path: Path):
     assert config.grid == GridConfig(N=40, Rtilde_max=4.0, scale=2.0)
     assert config.outer.closure is OuterChoice.OUTGOING_WAVE
     assert config.shocks.kernels is Kernels.PRODUCTION
-    assert config.excision.face_closure is FaceClosure.FIRST_ORDER
     assert config.stepping.integrator is Integrator.RK4
     assert config.evolution == EvolutionConfig(xi_end=1.0)
 
@@ -64,7 +62,7 @@ fluid: {w: 1/2}
 grid: {map: uniform, N: 10, Rtilde_max: 3}
 outer: {closure: held, tau_u: 1.0, tau_rho: 1.5, tau_W: 0.5}
 shocks: {kernels: centred, density_limiter: minmod, c_v: 0.5, rho_floor: 1.0e-10}
-excision: {eta: 0.75, tau_on: 0.4, c_t: 3.0, c_Delta: 1.0, face_closure: o2}
+excision: {eta: 0.75, tau_on: 0.4, c_t: 3.0, c_Delta: 1.0}
 stepping: {integrator: ssprk3, courant_number: 0.4, cap_tolerance: 1.0e-6, cap_efolds: 3.0}
 output: {snapshot_spacing: 0.1, snapshot_spacing_after: 0.02, flush_every: 50, monitor_every_step: true}
 evolution: {xi_end: 2.5}
@@ -74,7 +72,6 @@ evolution: {xi_end: 2.5}
     assert c.grid == GridConfig(N=10, Rtilde_max=3.0, map=MapFamily.UNIFORM)
     assert (c.outer.closure, c.outer.tau_u, c.outer.tau_rho, c.outer.tau_W) == (OuterChoice.HELD, 1.0, 1.5, 0.5)
     assert c.shocks.build() == KernelSettings(Kernels.CENTRED, DensityLimiter.MINMOD, 0.5, 1e-10)
-    assert c.excision.face_closure is FaceClosure.SECOND_ORDER
     assert (c.excision.eta, c.excision.tau_on, c.excision.c_t, c.excision.c_Delta) == (0.75, 0.4, 3.0, 1.0)
     assert (c.stepping.integrator, c.stepping.courant_number) == (Integrator.SSPRK3, 0.4)
     assert (c.stepping.cap_tolerance, c.stepping.cap_efolds) == (1e-6, 3.0)
@@ -242,6 +239,5 @@ def test_the_scheme_is_assembled_from_the_sections():
     assert sch.map == SinhStretch(12.0, scale=3.0)
     assert sch.layout.N == 800
     assert sch.layout.j_e == 0
-    assert sch.closure is FaceClosure.FIRST_ORDER
     assert isinstance(sch.outer, OutgoingWave)
     assert sch.settings == KernelSettings()

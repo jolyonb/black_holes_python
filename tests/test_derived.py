@@ -13,7 +13,7 @@ from pbh.geometry import Geometry
 from pbh.layout import Layout
 from pbh.maps import IdentityMap, Map, SinhStretch
 from pbh.state import State, frw_state
-from pbh.stencils import FaceClosure, StencilWeights
+from pbh.stencils import StencilWeights
 
 EOS = EquationOfState(RADIATION)
 type Family = Callable[[float], Map]
@@ -24,7 +24,7 @@ def setup(
     family: Family, N: int, Rtilde_max: float, xi: float = 0.6, j_e: int = 0
 ) -> tuple[Geometry, Background, StencilWeights]:
     geo = Geometry.of(*family(Rtilde_max).radii(xi, N))
-    return geo, Background.at(EOS, xi), StencilWeights.of(geo, Layout(N, j_e), FaceClosure.FIRST_ORDER)
+    return geo, Background.at(EOS, xi), StencilWeights.of(geo, Layout(N, j_e))
 
 
 # --- FRW ---

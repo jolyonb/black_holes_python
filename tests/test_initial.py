@@ -24,7 +24,7 @@ from pbh.layout import Layout
 from pbh.maps import IdentityMap, SinhStretch
 from pbh.outer import characteristic_pair
 from pbh.profiles import Gaussian
-from pbh.stencils import FaceClosure, StencilWeights
+from pbh.stencils import StencilWeights
 from pbh.types import FloatArray
 
 RAD = EquationOfState(RADIATION)
@@ -280,7 +280,7 @@ def test_the_state_holds_the_mass_exactly_with_the_velocity_corrected_and_w_at_t
     assert state.W == characteristic_pair(float(delta_U_N), float(delta_rho_N_1), float(X[N]), BG_0.c_s)[1]
     assert 0.0 < mode.correction_ratio(geo, BG_0) < 0.05
     # and the data are admissible, as derive agrees
-    derive(state, geo, BG_0, RAD, StencilWeights.of(geo, Layout(N), FaceClosure.FIRST_ORDER))
+    derive(state, geo, BG_0, RAD, StencilWeights.of(geo, Layout(N)))
 
 
 def test_the_correction_can_be_switched_off():

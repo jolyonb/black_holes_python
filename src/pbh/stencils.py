@@ -1,4 +1,4 @@
-"""The stencils that carry a field across a face (paper eq:num:stencils; at an excision face eq:numbh:rows1, rows).
+"""The stencils that carry a field across a face (paper eq:num:stencils; at an excision face eq:numbh:rows1).
 
 Three operators, and only three, look across a face:
 
@@ -37,19 +37,15 @@ has cusped at the origin is not smooth there (Section 7.2).
 
 At the outer face `N` the face value is extrapolated, `<f>_N = 3/2 f_{N-1} - 1/2 f_{N-2}`, no gradient is formed (the
 outer row of Section 7.5 has no pressure difference), and the velocity gradient is the three-point one-sided row of
-eq:num:stencils. At an excision face `j_e` (Section 8.3) the retained data lie on one side only and two closures are
-specified: the first-order rows eq:numbh:rows1, the production choice, which take the face value from the cell behind
-it, form no pressure gradient, and use the one retained velocity difference; and the second-order rows eq:numbh:rows,
-kept as a switch, which extrapolate the face value in `s`, place the single retained slope at the face, and use the
-mirror of the outer three-point row. Section 8.3 proves that no diagonal energy weight certifies the second-order
-rows, while the first-order closure's boundary form is the continuum characteristic flux; hence the default. The
-second-order rows are also unsafe near vacuum: beside a nearly empty first cell the extrapolated face density reaches
-zero or below and divides the velocity row's inertia, and near-threshold runs abort with Gammabar^2 < 0 at the first
-faces. Holding the face values positive is no cure: it saves some runs and makes others fail one face further out.
-They stay a switch for smooth problems only.
+eq:num:stencils. At an excision face `j_e` (Section 8.3) the retained data lie on one side only, and the rows are the
+first-order ones of eq:numbh:rows1: the face value is the cell behind it, `<f>_je = f_je`, no pressure gradient is
+formed, and the velocity gradient is the one retained difference `(U_{j_e+1} - U_{j_e}) / dX_{j_e}`. Their boundary
+form is the continuum characteristic flux, so the energy estimate certifies them. Section 8.3 says why the
+second-order rows it also discusses are not implemented: no diagonal energy weight certifies them, and near vacuum
+their extrapolated face density reaches zero.
 
 Every coefficient of these stencils depends on the geometry alone, so on a static map it is the same at every stage
-(Section 7.1). `StencilWeights.of(geo, layout, closure)` computes them once; the caller caches it together with the
+(Section 7.1). `StencilWeights.of(geo, layout)` computes them once; the caller caches it together with the
 geometry, and its three methods apply the stencils to a field and do nothing but multiply and subtract.
 
 Outputs are face arrays, `N + 1` long, NaN where the operator is not defined (below `j_e`; `(D_s f)_N`;
@@ -57,7 +53,6 @@ Outputs are face arrays, `N + 1` long, NaN where the operator is not defined (be
 """
 
 from dataclasses import dataclass
-from enum import Enum
 from typing import Self
 
 import numpy as np
@@ -67,47 +62,28 @@ from pbh.layout import Layout
 from pbh.types import FloatArray
 
 
-class FaceClosure(Enum):
-    """The one-sided rows at an excision face (Section 8.3, Table tab:numbh:params)."""
-
-    FIRST_ORDER = "o1"
-    """eq:numbh:rows1: the upwind choice, certified by the energy estimate; the production closure."""
-
-    SECOND_ORDER = "o2"
-    """eq:numbh:rows: one order more accurate at the face, provably not certifiable, and unsafe near vacuum (its
-    extrapolated face density can reach zero beside a nearly empty cell); kept as a switch for smooth problems."""
-
-
 @dataclass(frozen=True)
 class StencilWeights:
     """The geometry-dependent coefficients of the three stencils, computed once per geometry.
 
     Attributes:
         layout: Which faces are retained and where the excision rows apply.
-        closure: Which excision rows the weights were built for.
         grad_s: `2 X_j / dS_j`, the factor of the one-cell difference in the gradient (faces `1..N-1`; NaN elsewhere).
         centred_U: `1 / (X_{j+1} - X_{j-1})` for the centred velocity gradient (faces `1..N-1`; NaN elsewhere).
         outer_U: The three coefficients of `U_N`, `U_{N-1}`, `U_{N-2}` in the one-sided row at the outer face.
-        face_value_e: For the second-order closure, the weight of `f_{j_e+1} - f_{j_e}` in the extrapolated face
-            value at `j_e`; `0` for the first-order closure, whose face value is `f_{j_e}` itself.
-        grad_s_e: The factor of `f_{j_e+1} - f_{j_e}` in the gradient at the excision face: `0` for the first-order
-            closure (no pressure gradient is formed there), `2 X_{j_e} / dS_{j_e+1}` for the second-order one.
-        excision_U: The coefficients of `U_{j_e}`, `U_{j_e+1}`, `U_{j_e+2}` in the velocity gradient at the excision
-            face: `(-1, 1, 0) / dX_{j_e}` for the first-order closure, the mirrored three-point row for the second.
+        excision_U: `1 / dX_{j_e}`, the factor of the one retained difference `U_{j_e+1} - U_{j_e}` in the velocity
+            gradient at the excision face; never read without one.
     """
 
     layout: Layout
-    closure: FaceClosure
     grad_s: FloatArray
     centred_U: FloatArray
     outer_U: tuple[float, float, float]
-    face_value_e: float
-    grad_s_e: float
-    excision_U: tuple[float, float, float]
+    excision_U: float
 
     @classmethod
-    def of(cls, geo: Geometry, layout: Layout, closure: FaceClosure) -> Self:
-        """Compute the weights for this geometry, these retained faces and this excision closure."""
+    def of(cls, geo: Geometry, layout: Layout) -> Self:
+        """Compute the weights for this geometry and these retained faces."""
         N, j_e = layout.N, layout.j_e
         X = geo.X
         grad_s = np.full(N + 1, np.nan)
@@ -115,43 +91,24 @@ class StencilWeights:
         centred_U = np.full(N + 1, np.nan)
         centred_U[1:N] = 1.0 / (X[2 : N + 1] - X[0 : N - 1])
         outer_U = cls._one_sided_three_point(float(geo.dX[N - 1]), float(geo.dX[N - 2]))
-        # The rows at the excision face, if there is one; otherwise these are never read.
-        face_value_e = grad_s_e = 0.0
-        excision_U = (0.0, 0.0, 0.0)
-        if j_e > 0:
-            if closure is FaceClosure.FIRST_ORDER:
-                excision_U = (-1.0 / float(geo.dX[j_e]), 1.0 / float(geo.dX[j_e]), 0.0)
-            else:
-                face_value_e = float((X[j_e] ** 2 - geo.sbar[j_e]) / geo.dS[j_e + 1])
-                grad_s_e = float(2.0 * X[j_e] / geo.dS[j_e + 1])
-                a_0, a_1, a_2 = cls._one_sided_three_point(float(geo.dX[j_e]), float(geo.dX[j_e + 1]))
-                excision_U = (-a_0, -a_1, -a_2)  # the mirror: the same row with the points counted outward
-        return cls(
-            layout=layout,
-            closure=closure,
-            grad_s=grad_s,
-            centred_U=centred_U,
-            outer_U=outer_U,
-            face_value_e=face_value_e,
-            grad_s_e=grad_s_e,
-            excision_U=excision_U,
-        )
+        excision_U = 1.0 / float(geo.dX[j_e])  # the one retained difference at an excision face
+        return cls(layout=layout, grad_s=grad_s, centred_U=centred_U, outer_U=outer_U, excision_U=excision_U)
 
     def face_average(self, f: FloatArray) -> FloatArray:
-        """The face value `<f>_j` of a cell field (eq:num:stencils, first line; eq:numbh:rows1 or rows at `j_e`).
+        """The face value `<f>_j` of a cell field (eq:num:stencils, first line; eq:numbh:rows1 at `j_e`).
 
         Args:
             f: A cell field (`N` entries), the density or the lapse.
 
         Returns:
             `<f>_j` at the retained faces: the two-cell average inside, the extrapolation at face `N`, `f_0` at the
-            origin, and at an excision face the value the closure prescribes.
+            origin, and at an excision face the cell behind it.
         """
         N, j_e = self.layout.N, self.layout.j_e
         avg = np.full(N + 1, np.nan)
         avg[j_e + 1 : N] = 0.5 * (f[j_e : N - 1] + f[j_e + 1 : N])
         avg[N] = 1.5 * f[N - 1] - 0.5 * f[N - 2]
-        avg[j_e] = f[j_e] + self.face_value_e * (f[j_e + 1] - f[j_e])  # f_0 at the origin; the closure's row at j_e
+        avg[j_e] = f[j_e]  # f_0 at the origin; the cell behind an excision face
         return avg
 
     def gradient_s(self, f: FloatArray) -> FloatArray:
@@ -164,26 +121,25 @@ class StencilWeights:
             f: A cell field (`N` entries).
 
         Returns:
-            `(D_s f)_j` at the retained faces `j < N`: zero at the origin, the one-cell difference inside, and at an
-            excision face zero (first order) or the single retained slope placed at the face (second order). NaN at
-            face `N`, where no gradient is ever formed.
+            `(D_s f)_j` at the retained faces `j < N`: zero at the origin and at an excision face, the one-cell
+            difference inside. NaN at face `N`, where no gradient is ever formed.
         """
         N, j_e = self.layout.N, self.layout.j_e
         grad = np.full(N + 1, np.nan)
         grad[j_e + 1 : N] = self.grad_s[j_e + 1 : N] * (f[j_e + 1 : N] - f[j_e : N - 1])
-        grad[j_e] = self.grad_s_e * (f[j_e + 1] - f[j_e])  # zero at the origin and for the first-order closure
+        grad[j_e] = 0.0  # none at the origin, and none formed at an excision face
         return grad
 
     def velocity_gradient(self, U: FloatArray) -> FloatArray:
-        """The velocity gradient `(D_U U)_j` (eq:num:stencils, third and fourth lines; eq:numbh:rows1 or rows at `j_e`).
+        """The velocity gradient `(D_U U)_j` (eq:num:stencils, third and fourth lines; eq:numbh:rows1 at `j_e`).
 
         Args:
             U: The face velocities (`N + 1` entries).
 
         Returns:
             `(D_U U)_j` at the retained faces `j >= 1`: the centred two-face difference inside, the three-point
-            one-sided row at face `N`, and at an excision face the one retained difference (first order) or the
-            mirrored three-point row (second order). NaN at the origin, which carries no velocity gradient.
+            one-sided row at face `N`, and at an excision face the one retained difference. NaN at the origin, which
+            carries no velocity gradient.
         """
         N, j_e = self.layout.N, self.layout.j_e
         grad = np.full(N + 1, np.nan)
@@ -192,8 +148,7 @@ class StencilWeights:
         a_0, a_1, a_2 = self.outer_U
         grad[N] = a_0 * U[N] + a_1 * U[N - 1] + a_2 * U[N - 2]
         if j_e > 0:
-            b_0, b_1, b_2 = self.excision_U
-            grad[j_e] = b_0 * U[j_e] + b_1 * U[j_e + 1] + b_2 * U[j_e + 2]
+            grad[j_e] = self.excision_U * (U[j_e + 1] - U[j_e])
         return grad
 
     @staticmethod
@@ -201,8 +156,7 @@ class StencilWeights:
         """The coefficients of the derivative at the end of three points with spacings `Delta_1` (nearest), `Delta_2`.
 
         The fourth line of eq:num:stencils, written for the outer face: `(D_U U)_N = a_0 U_N + a_1 U_{N-1} + a_2
-        U_{N-2}`, second order and exact on a quadratic. The mirrored row at an excision face is its negative with the
-        points counted outward (eq:numbh:rows).
+        U_{N-2}`, second order and exact on a quadratic.
         """
         return (
             (2.0 * Delta_1 + Delta_2) / (Delta_1 * (Delta_1 + Delta_2)),
