@@ -63,7 +63,15 @@ import numpy as np
 from pbh.derived import Derived, derive
 from pbh.eos import Background, EquationOfState
 from pbh.geometry import Geometry
-from pbh.kernels import KernelResult, Kernels, KernelSettings, hll_flux, reconstruct_density, viscous_pressure
+from pbh.kernels import (
+    KernelResult,
+    Kernels,
+    KernelSettings,
+    hll_flux,
+    reconstruct_density,
+    viscous_pressure,
+    viscous_sides,
+)
 from pbh.outer import OuterClosure, OuterInputs
 from pbh.state import State, deviation_from_frw, frw_rate
 from pbh.stencils import StencilWeights
@@ -180,8 +188,9 @@ def calc_derivs(
         rho_L, rho_R, delta_rho_L, delta_rho_R = reconstruct_density(
             d.delta_rho, geo, w, settings.density_limiter, settings.rho_floor
         )
-        J, q, q_f, Q = viscous_pressure(state, geo, d, sp.Lam, eos, w, settings.c_v)
-        delta_F = hll_flux(rho_L, rho_R, delta_rho_L, delta_rho_R, q_f, deviation, geo, sp.Theta, sp.a, eos, w)
+        J, q, q_f, Q = viscous_pressure(state, geo, d, sp.Lam, eos, w, settings.c_v, settings.cap_tension)
+        q_L, q_R = viscous_sides(q, q_f, d.rho, rho_L, rho_R, w.layout, settings.viscous_flux)
+        delta_F = hll_flux(rho_L, rho_R, delta_rho_L, delta_rho_R, q_L, q_R, deviation, geo, sp.Theta, sp.a, eos, w)
         kernels = KernelResult(
             rho_L=rho_L,
             rho_R=rho_R,

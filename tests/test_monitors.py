@@ -8,9 +8,9 @@ from modes import J1_ZEROS, mode_state, single_mode
 
 from pbh.eos import RADIATION, EquationOfState
 from pbh.geometry import Geometry
-from pbh.kernels import CENTRED_SCHEME, PRODUCTION_KERNELS
+from pbh.kernels import CENTRED_SCHEME, PRODUCTION_KERNELS, DensityLimiter, reconstruct_density
 from pbh.layout import Layout
-from pbh.maps import IdentityMap
+from pbh.maps import IdentityMap, SinhStretch
 from pbh.monitors import (
     MonitoredStep,
     StageFluxes,
@@ -23,7 +23,7 @@ from pbh.monitors import (
 )
 from pbh.outer import HeldAtFrw, OutgoingWave, characteristic_pair
 from pbh.state import State, frw_state
-from pbh.stencils import FaceClosure
+from pbh.stencils import FaceClosure, StencilWeights
 from pbh.timestep import RK4, Integrator, Scheme, advance, courant_step
 from pbh.types import FloatArray
 
@@ -311,6 +311,51 @@ def test_the_limiter_clipping_detector_sees_a_kink_and_not_a_smooth_field():
     assert clipped[10]
     assert not np.any(clipped[:8])
     assert not np.any(clipped[12:])
+
+
+def test_the_monitor_counts_the_end_cells_when_their_positivity_clip_binds():
+    sch = SCHEME
+    layout, geo = sch.layout, sch.frame(0.0).geo
+    frw = frw_state(geo)
+    rho = np.ones(N)
+    rho[0], rho[1] = 1e-6, 1e-2  # the origin cell's one-sided slope would turn its profile negative at X = 0
+    rho[N - 1], rho[N - 2] = 1e-6, 1e-2  # and the last cell's at X_N
+    result = sch.evaluate(0.0, layout.pack(State(E=frw.E * rho, U=frw.U, W=0.0)))
+    assert result.kernels is not None
+    clipped = limiter_clipped(result.derived.delta_rho, result.kernels.delta_rho_L, geo, layout)
+    assert clipped[0]
+    assert clipped[N - 1]
+    mild = np.ones(N)
+    mild[0], mild[N - 1] = 1.1, 0.9  # one-sided slopes that keep the profiles positive: no clip
+    result = sch.evaluate(0.0, layout.pack(State(E=frw.E * mild, U=frw.U, W=0.0)))
+    assert result.kernels is not None
+    clipped = limiter_clipped(result.derived.delta_rho, result.kernels.delta_rho_L, geo, layout)
+    assert not clipped[0]
+    assert not clipped[N - 1]
+
+
+@pytest.mark.parametrize("j_e", [0, 5])
+@pytest.mark.parametrize(("excess", "clipped"), [(1.1, True), (0.9, False)])
+def test_the_monitor_sees_an_end_cell_clip_of_a_tenth(j_e: int, excess: float, clipped: bool):
+    # The end cells' one-sided slopes set to `excess` times the value at which the profile touches zero at the far
+    # face: 1.1 is clipped back by a tenth, 0.9 not at all. A detector blind to small clips, or one that reads
+    # round-off as a clip, fails one of the two.
+    n = 24
+    radii, _ = SinhStretch(4.0, scale=2.0).radii(0.0, n)
+    geo = Geometry.of(radii, np.zeros_like(radii))
+    layout = Layout(n, j_e)
+    weights = StencilWeights.of(geo, layout, FaceClosure.FIRST_ORDER)
+    X2, sbar = geo.X**2, geo.sbar
+    rho = np.ones(n)
+    e, f = j_e, n - 1
+    rho[e] = 0.01  # rising outward: the profile touches zero at the inner face at slope rho_e / (sbar_e - X_e^2)
+    rho[e + 1] = rho[e] + excess * rho[e] / (sbar[e] - X2[e]) * (sbar[e + 1] - sbar[e])
+    rho[f] = 0.01  # falling outward: zero at the outer face at slope -rho_f / (X_N^2 - sbar_f)
+    rho[f - 1] = rho[f] + excess * rho[f] / (X2[f + 1] - sbar[f]) * (sbar[f] - sbar[f - 1])
+    _, _, delta_L, _ = reconstruct_density(rho - 1.0, geo, weights, DensityLimiter.MC, 1e-12)
+    flags = limiter_clipped(rho - 1.0, delta_L, geo, layout)
+    assert flags[e] == clipped
+    assert flags[f] == clipped
 
 
 def test_a_plain_step_records_the_first_tier_and_leaves_the_second_unset():

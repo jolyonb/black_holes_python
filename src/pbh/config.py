@@ -25,8 +25,10 @@ assembled from all of them. The driver reads the file and never sees a raw strin
       density_limiter: mc       # mc or minmod
       c_v: 1.0
       rho_floor: 1.0e-12
+      viscous_flux: density_weighted  # density_weighted (each side its own q/rho at its face density) or averaged
+      cap_tension: true         # cap the viscous tension at the fluid pressure, q >= -w rho
     excision:
-      face_closure: o1          # o1 (first order, production) or o2 (second order, a switch)
+      face_closure: o1          # o1 (first order, production) or o2 (second order; unsafe near vacuum)
     stepping:
       integrator: rk4           # rk4 or ssprk3
       courant_number: 0.75
@@ -65,7 +67,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from pbh.eos import RADIATION, EquationOfState, as_rational_w
-from pbh.kernels import DensityLimiter, Kernels, KernelSettings
+from pbh.kernels import DensityLimiter, Kernels, KernelSettings, ViscousFlux
 from pbh.layout import Layout
 from pbh.maps import IdentityMap, Map, SinhStretch
 from pbh.outer import HeldAtFrw, OuterClosure, OutgoingWave, PenaltyStrengths
@@ -171,10 +173,14 @@ class ShockConfig(Section):
     density_limiter: DensityLimiter = Field(default=DensityLimiter.MC, strict=False)
     c_v: float = 1.0
     rho_floor: float = 1e-12
+    viscous_flux: ViscousFlux = Field(default=ViscousFlux.DENSITY_WEIGHTED, strict=False)
+    cap_tension: bool = True
 
     def build(self) -> KernelSettings:
         """The kernel settings."""
-        return KernelSettings(self.kernels, self.density_limiter, self.c_v, self.rho_floor)
+        return KernelSettings(
+            self.kernels, self.density_limiter, self.c_v, self.rho_floor, self.viscous_flux, self.cap_tension
+        )
 
 
 class ExcisionConfig(Section):

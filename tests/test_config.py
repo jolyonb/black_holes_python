@@ -16,11 +16,12 @@ from pbh.config import (
     OuterChoice,
     OuterConfig,
     RunConfig,
+    ShockConfig,
     code_commit,
     load,
     save,
 )
-from pbh.kernels import DensityLimiter, Kernels, KernelSettings
+from pbh.kernels import PRODUCTION_KERNELS, DensityLimiter, Kernels, KernelSettings, ViscousFlux
 from pbh.maps import IdentityMap, SinhStretch
 from pbh.outer import HeldAtFrw, OutgoingWave, PenaltyStrengths
 from pbh.stencils import FaceClosure
@@ -173,7 +174,14 @@ def test_a_saved_configuration_is_complete_carries_its_provenance_and_reloads_un
     assert re.fullmatch(r"[0-9a-f]{12}(-dirty)?|unknown", document["provenance"]["code_commit"])
     assert document["provenance"]["written"].endswith("Z")
     assert document["fluid"] == {"w": "1/3"}
-    assert document["shocks"] == {"kernels": "production", "density_limiter": "mc", "c_v": 1.0, "rho_floor": 1e-12}
+    assert document["shocks"] == {
+        "kernels": "production",
+        "density_limiter": "mc",
+        "c_v": 1.0,
+        "rho_floor": 1e-12,
+        "viscous_flux": "density_weighted",
+        "cap_tension": True,
+    }
     assert load(out) == config
 
 
@@ -219,6 +227,12 @@ def test_the_sections_build_the_objects_they_describe():
     )
     assert held_uniform.grid.build() == IdentityMap(3.0)
     assert held_uniform.outer.build() == HeldAtFrw()
+
+
+def test_the_production_defaults_are_density_weighted_and_capped_in_the_code_and_the_configuration():
+    assert PRODUCTION_KERNELS.viscous_flux is ViscousFlux.DENSITY_WEIGHTED
+    assert PRODUCTION_KERNELS.cap_tension
+    assert ShockConfig().build() == PRODUCTION_KERNELS
 
 
 def test_the_scheme_is_assembled_from_the_sections():

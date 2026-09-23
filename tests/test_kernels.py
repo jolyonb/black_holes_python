@@ -15,6 +15,7 @@ from pbh.kernels import (
     PRODUCTION_KERNELS,
     DensityLimiter,
     KernelSettings,
+    ViscousFlux,
     minmod,
     reconstruct_density,
 )
@@ -130,10 +131,38 @@ def test_at_an_excision_face_the_inside_value_is_the_outside_one_and_the_first_s
     rho = 1.0 + 0.1 * rng.uniform(-1, 1, size=24)
     rho_L, rho_R, _, _ = reconstruct_density(rho - 1.0, su.geo, su.w, DensityLimiter.MC, 1e-12)
     assert rho_L[5] == rho_R[5]
-    slope = (rho[6] - rho[5]) / su.geo.dS[6]  # the first retained cell's single one-sided difference, unlimited
+    slope = (rho[6] - rho[5]) / su.geo.dS[6]  # the single one-sided difference: the clip does not bind here
     assert rho_R[5] == pytest.approx(rho[5] + slope * (su.geo.X[5] ** 2 - su.geo.sbar[5]))
     assert np.all(np.isnan(rho_L[:5]))
     assert np.all(np.isnan(rho_R[:5]))
+
+
+@pytest.mark.parametrize("j_e", [0, 5])
+def test_the_first_retained_cell_is_clipped_where_its_profile_would_turn_negative_inside(j_e: int):
+    # A nearly empty first cell beside a denser one: its one-sided slope would carry its profile below zero at its
+    # inner face, so the slope is clipped to vanish there, and the outer face value is then
+    # rho (X_(e+1)^2 - X_e^2) / (sbar_e - X_e^2), written here from the geometry alone.
+    N, e = 24, j_e
+    su = Setup.of(SinhStretch(4.0, scale=2.0), N, j_e=j_e)
+    rho = np.ones(N)
+    rho[e], rho[e + 1] = 1e-6, 1e-2
+    rho_L, rho_R, _, _ = reconstruct_density(rho - 1.0, su.geo, su.w, DensityLimiter.MC, 1e-12)
+    X2, sbar = su.geo.X**2, su.geo.sbar
+    assert rho_L[e + 1] == pytest.approx(1e-6 * (X2[e + 1] - X2[e]) / (sbar[e] - X2[e]), rel=1e-6)
+    assert rho_R[e] == 1e-12  # zero at the inner face, then floored
+
+
+def test_the_last_cell_is_clipped_where_its_profile_would_turn_negative_inside():
+    # The mirror image at the outer face: a nearly empty last cell inside a denser one takes a slope that would carry
+    # it below zero at the outer face, so the slope is clipped to vanish there.
+    N = 24
+    su = Setup.of(SinhStretch(4.0, scale=2.0), N)
+    rho = np.ones(N)
+    rho[N - 1], rho[N - 2] = 1e-6, 1e-2
+    rho_L, rho_R, _, _ = reconstruct_density(rho - 1.0, su.geo, su.w, DensityLimiter.MC, 1e-12)
+    X2, sbar = su.geo.X**2, su.geo.sbar
+    assert rho_R[N - 1] == pytest.approx(1e-6 * (X2[N] - X2[N - 1]) / (X2[N] - sbar[N - 1]), rel=1e-6)
+    assert rho_L[N] == 1e-12
 
 
 # --- FRW: every kernel is inert on the background, on every map ---
@@ -222,8 +251,15 @@ def test_the_hll_flux_is_the_one_sided_flux_when_both_speeds_point_the_same_way(
 # --- what the kernels do: dissipation and convergence ---
 
 
+@pytest.mark.parametrize(
+    "settings",
+    [
+        PRODUCTION_KERNELS,
+        KernelSettings(viscous_flux=ViscousFlux.AVERAGED, cap_tension=False),
+    ],  # production, as first printed
+)
 @pytest.mark.parametrize("m", [IdentityMap(4.0), SinhStretch(4.0, scale=2.0)])
-def test_the_kernels_only_remove_energy_near_frw(m: Map):
+def test_the_kernels_only_remove_energy_near_frw(m: Map, settings: KernelSettings):
     # In the norm of Section 7.4 the rate of change of the energy with the kernels on is never above the base
     # scheme's, for random small perturbations: the kernels are dissipative.
     N = 24
@@ -237,7 +273,7 @@ def test_the_kernels_only_remove_energy_near_frw(m: Map):
         dy = 1e-4 * rng.normal(size=lay.size) * np.abs(y_frw)
         dy[-2:] = 0.0  # hold the outer velocity and W, as the identity does
         s = lay.unpack(y_frw + dy)
-        rate_on = lay.pack(su.run(s, PRODUCTION_KERNELS).deviation_rate)
+        rate_on = lay.pack(su.run(s, settings).deviation_rate)
         rate_off = lay.pack(su.run(s, CENTRED_SCHEME).deviation_rate)
         z = T * dy
         d_energy_on = 2 * z @ H @ (T * rate_on)

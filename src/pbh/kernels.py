@@ -6,26 +6,38 @@ beyond `c_v = 1`, none is switched on by a detector, and all reduce to the base 
 
 (a) The transported density is reconstructed to both sides of every face by a piecewise-linear profile in `s = X^2`
     with the monotonized-central limiter (eq:num:recon). The reconstruction is in `s` for the reason of Section 7.2:
-    in `X` with mirrored ghosts it would be first order at the first cells. The first and last cells take their single
-    adjacent one-sided difference, unlimited, and every face value is floored at `rho_floor`.
+    in `X` with mirrored ghosts it would be first order at the first cells. The first and last retained cells take
+    their single adjacent one-sided difference, clipped only so far that the cell's linear profile in `s` stays
+    non-negative between its faces, and every face value is floored at `rho_floor`. The clip is a positivity limiter:
+    it never binds in resolved smooth flow, but it does bind in violent flow, under either viscous flux.
 (b) The energy flux is the HLL flux of the one-sided single-variable flux `F_j(rho)`, which carries the lapse of the
-    same reconstructed density and the work term of the viscous pressure (eq:num:hll). Its derivative with respect
-    to `X^2 rho` is `Theta_j`, which lies between the HLL bounds `Theta_j +- a_j`, so no donor velocity has to be
-    chosen; on FRW it is the centred flux of eq:num:energy. It is returned as its deviation from the FRW flux, which
-    the energy rows need (`equations.py`), and the reconstruction works in the density's deviation for the same reason.
+    same reconstructed density and the work term of the viscous pressure (eq:num:hll). Without the work term its
+    derivative with respect to `X^2 rho` is the grid velocity at that side's own lapse, close to `Theta_j` and so inside
+    the HLL bounds `Theta_j +- a_j` unless the lapse jumps across the face; the work term adds a speed of order
+    `q / rho`. No donor velocity has to be chosen, and on FRW it is the centred flux of eq:num:energy. It is returned
+    as its deviation from the FRW flux, which the energy rows need (`equations.py`), and the reconstruction works in
+    the density's deviation for the same reason.
 (c) The peculiar velocity `upsilon = U - X` is reconstructed to the cell midpoints from both faces with the minmod
     limiter, and the limited jump across each cell (eq:num:jump), the full jump at a shock and `O(Delta X^2)` where the
     flow is smooth, is fed back as a viscous pressure on the cells (eq:num:qvisc), normalised like a Rusanov term
     with the signal speed. It enters the velocity equation as the areal force `Q_j = X_j^-2 (D_s (sbar q))_j` and the
-    energy flux through its face average `<q>_j`. The peculiar velocity is reconstructed, not `U`, because it
-    vanishes on FRW of every map and because it is what makes the momentum dissipation exactly dissipative in the
-    energy weight of Section 7.4; the velocity limiter is minmod and never a compressive one (Section 7.7). The
-    taper `q_{N-1} = 0` is the switch-off the outer closure of Section 7.5 asks for.
+    energy flux as a pressure: each one-sided flux carries its own cell's `q / rho` at that side's reconstructed
+    density (`ViscousFlux.DENSITY_WEIGHTED`; the face average `<q>_j` as first printed is the switch `AVERAGED`),
+    and in expansion its tension is capped at the fluid pressure, `q >= -w rho` (`cap_tension`), so that the total
+    pressure and the enthalpy the flux carries stay non-negative.
+    The peculiar velocity is reconstructed, not `U`, because it vanishes on FRW of every map and because it is what
+    makes the momentum dissipation exactly dissipative in the energy weight of Section 7.4; the velocity limiter is
+    minmod and never a compressive one (Section 7.7). The taper `q_{N-1} = 0` is the switch-off the outer closure of
+    Section 7.5 asks for.
+
+Positivity is measured, not proved: the pull-apart void of test_void and the near-threshold collapses keep every cell
+positive with these kernels, but nothing here certifies it, and RK4 is not strong-stability-preserving.
 
 At an excision face `j_e` (Section 8.3) the kernels add their own one-sided rows and no others: the reconstructed
 density from inside the face is the value from outside, `rho^L_je = rho^R_je`; the first retained cell's density
 slope is its single one-sided difference and the velocity slope at the face the single adjacent difference, as at
-faces `0` and `N`; the viscous pressure enters the flux with its own cell value, `<q>_je = q_je`, and its force is the
+faces `0` and `N`; the viscous pressure enters the flux as the first retained cell's `q / rho` at its reconstructed
+face density (under `AVERAGED`, its unscaled cell value `<q>_je = q_je`), and its force is the
 end row `Q_je = 2 sbar_je q_je / (X_je^2 Delta X_je)`, the one-sided gradient over the half cell with `q` vanishing at
 the face, whatever the closure of the other stencils.
 
@@ -41,6 +53,7 @@ import numpy as np
 from pbh.derived import Derived
 from pbh.eos import EquationOfState
 from pbh.geometry import Geometry
+from pbh.layout import Layout
 from pbh.state import State
 from pbh.stencils import StencilWeights
 from pbh.types import FloatArray
@@ -66,6 +79,21 @@ class DensityLimiter(Enum):
     """More diffusive by one cell per shock, but with an energy certificate everywhere (Section 7.7)."""
 
 
+class ViscousFlux(Enum):
+    """How the viscous work enters the energy flux of eq:num:hll: density-weighted, or as first printed."""
+
+    AVERAGED = "averaged"
+    """Both one-sided fluxes carry the face average `<q>_j` of eq:num:stencils, and the excision face the first
+    retained cell's unscaled `q_je`: with `cap_tension` off, the scheme as first printed except for the end-cell
+    clip of the density reconstruction, which is not switchable."""
+
+    DENSITY_WEIGHTED = "density_weighted"
+    """Each one-sided flux carries its own cell's viscous pressure, at that side's reconstructed density (see
+    `viscous_sides`), so the HLL weights upwind the work term like the transport. With the average, a nearly empty
+    cell next to a strong compression is drained through its face by its neighbour's `q`, at a rate that does not
+    vanish with its own content, and its density goes negative in finite time at any step size (test_void)."""
+
+
 @dataclass(frozen=True)
 class KernelSettings:
     """The kernel switches of Table tab:num:params.
@@ -75,12 +103,16 @@ class KernelSettings:
         density_limiter: The limiter of the density reconstruction; the velocity limiter is minmod and not a choice.
         c_v: The one constant of the viscous pressure, `1`.
         rho_floor: The floor on every reconstructed face density, `1e-12`.
+        viscous_flux: The viscous work term of the energy flux: density-weighted (production) or the face average.
+        cap_tension: Whether the viscous tension is capped at the fluid pressure, `q >= -w rho` (production).
     """
 
     kernels: Kernels = Kernels.PRODUCTION
     density_limiter: DensityLimiter = DensityLimiter.MC
     c_v: float = 1.0
     rho_floor: float = 1e-12
+    viscous_flux: ViscousFlux = ViscousFlux.DENSITY_WEIGHTED
+    cap_tension: bool = True
 
 
 PRODUCTION_KERNELS = KernelSettings()
@@ -151,7 +183,7 @@ def reconstruct_density(
     d = np.full(N + 1, np.nan)
     d[j_e + 1 : N] = (delta_rho[j_e + 1 : N] - delta_rho[j_e : N - 1]) / dS[j_e + 1 : N]
     # The limited slope of every retained cell: the interior cells from their two faces, the first and last retained
-    # cells from their single adjacent difference, unlimited.
+    # cells from their single adjacent difference, clipped below.
     slope = np.full(N, np.nan)
     c = np.arange(j_e + 1, N - 1)
     d_in, d_out = d[c], d[c + 1]
@@ -163,6 +195,14 @@ def reconstruct_density(
         slope[c] = minmod(d_in, d_out)
     slope[j_e] = d[j_e + 1]
     slope[N - 1] = d[N - 1]
+    # The two end cells keep their one-sided difference for second order at the origin, but not so far that their
+    # profile turns negative inside the cell: near vacuum the unlimited slope put a face value tens of times above the
+    # cell's own density and the HLL diffusion then drained the cell through it (the pull-apart void at V = 15,
+    # test_void). The clip binds only where the linear profile in s would cross zero between the cell's faces: never
+    # in resolved smooth flow, but in violent flow it does, under either viscous flux.
+    for e in (j_e, N - 1):
+        rho_e = 1.0 + delta_rho[e]
+        slope[e] = min(max(slope[e], -rho_e / (X2[e + 1] - sbar[e])), rho_e / (sbar[e] - X2[e]))
     delta_L = np.full(N + 1, np.nan)
     delta_R = np.full(N + 1, np.nan)
     inside = slice(j_e, N)  # cell c is inside face c + 1 ...
@@ -184,6 +224,7 @@ def viscous_pressure(
     eos: EquationOfState,
     w: StencilWeights,
     c_v: float,
+    cap_tension: bool,
 ) -> tuple[FloatArray, FloatArray, FloatArray, FloatArray]:
     """The limited velocity jump, the viscous pressure, its face value and its areal force (eq:num:jump, qvisc).
 
@@ -195,6 +236,7 @@ def viscous_pressure(
         eos: The equation of state.
         w: The stencil weights.
         c_v: The viscosity constant, `1`.
+        cap_tension: Whether the tension is capped at the fluid pressure, `q >= -w rho` (production).
 
     Returns:
         `(J, q, q_f, Q)`: the jump and the pressure on the cells, the face value and the force at the faces.
@@ -226,6 +268,13 @@ def viscous_pressure(
     Gammabar2_hat = 0.5 * (d.Gammabar2[inner] + d.Gammabar2[outer])
     q = np.full(N, np.nan)
     q[cells] = -0.5 * c_v * Lam_hat * (1.0 + w_eos) * d.rho[cells] / (alpha * d.ephi[cells] * Gammabar2_hat) * J[cells]
+    if cap_tension:
+        # In expansion the Rusanov-normalised q is a tension. In an under-resolved core or beside a nearly empty
+        # cell it can exceed the fluid pressure many times over, making the total pressure, and with it the enthalpy
+        # the flux carries, negative, so that a face whose flow runs inward pumps energy outward and drains the cell
+        # inside it (test_void). Capping the tension at the fluid pressure keeps the total pressure non-negative; it
+        # only shrinks |q|, so the dissipation keeps its sign.
+        q[cells] = np.maximum(q[cells], -w_eos * d.rho[cells])
     q[N - 1] = 0.0
     # Its face value and its areal force: the interior stencils, and the kernels' own rows at the excision face.
     q_f = w.face_average(q)
@@ -239,12 +288,44 @@ def viscous_pressure(
     return J, q, q_f, Q
 
 
+def viscous_sides(
+    q: FloatArray,
+    q_f: FloatArray,
+    rho: FloatArray,
+    rho_L: FloatArray,
+    rho_R: FloatArray,
+    layout: Layout,
+    mode: ViscousFlux,
+) -> tuple[FloatArray, FloatArray]:
+    """The viscous pressure each one-sided flux of eq:num:hll carries at the faces: `(q_L, q_R)`.
+
+    `AVERAGED` gives `<q>_j` to both, the printed flux. `DENSITY_WEIGHTED` treats `q` as the pressure it is: each side
+    carries its own cell's `q / rho` at the density reconstructed to the face on that side, `q_L = (q / rho)_(c-1)
+    rho_L`, `q_R = (q / rho)_c rho_R`, just as the fluid pressure in the same flux is `w` times the reconstructed
+    density; at the excision face both sides are the first retained cell's, at its reconstructed face density.
+    Both agree on FRW (`q = 0`); at the interior faces they differ by `O(Delta X)` times `q` in smooth flow, where
+    `q` is `O(Delta X^2)`. At face `N - 1` they differ at `O(q)`, since the taper `q_{N-1} = 0` makes the average
+    half the inner cell's value while the density-weighted outer side carries none of it.
+    """
+    if mode is ViscousFlux.AVERAGED:
+        return q_f, q_f
+    N, j_e = layout.N, layout.j_e
+    inner, outer = slice(j_e, N - 1), slice(j_e + 1, N)
+    q_L, q_R = q_f.copy(), q_f.copy()
+    q_L[j_e + 1 : N] = q[inner] / rho[inner] * rho_L[j_e + 1 : N]
+    q_R[j_e + 1 : N] = q[outer] / rho[outer] * rho_R[j_e + 1 : N]
+    if j_e > 0:  # the excision face: both sides are the first retained cell, at its reconstructed face density
+        q_L[j_e] = q_R[j_e] = q[j_e] / rho[j_e] * rho_R[j_e]
+    return q_L, q_R
+
+
 def hll_flux(
     rho_L: FloatArray,
     rho_R: FloatArray,
     delta_rho_L: FloatArray,
     delta_rho_R: FloatArray,
-    q_f: FloatArray,
+    q_L: FloatArray,
+    q_R: FloatArray,
     deviation: State,
     geo: Geometry,
     Theta: FloatArray,
@@ -254,19 +335,37 @@ def hll_flux(
 ) -> FloatArray:
     """The HLL energy flux through the retained faces `j < N` (eq:num:hll) as its deviation from the FRW flux.
 
-    The one-sided flux `F_j(rho) = [alpha ((1 + w) rho^(-w/(1+w)) U_j - X_j) - (d_xi X)_j] X_j^2 rho
-    + alpha (rho^(-w/(1+w)) U_j - X_j) X_j^2 <q>_j` is evaluated on each reconstructed density with the lapse of
-    that same density, and combined with the signal-speed bounds `Lambda^+ = max(Theta + a, 0)`,
-    `Lambda^- = min(Theta - a, 0)`.
+    The one-sided flux
+
+        F_j(rho, q) = [alpha ((1 + w) rho^(-w/(1+w)) U_j - X_j) - (d_xi X)_j] X_j^2 rho
+                      + alpha (rho^(-w/(1+w)) U_j - X_j) X_j^2 q
+
+    is evaluated on each side, at that side's reconstructed density with the lapse of that same density and at that
+    side's viscous pressure `q_L` or `q_R` (`viscous_sides`), and combined with the signal-speed bounds
+    `Lambda^+ = max(Theta + a, 0)`, `Lambda^- = min(Theta - a, 0)`.
 
     The HLL combination is affine in the one-sided fluxes, with weights `Lambda^+ / (Lambda^+ - Lambda^-)` and
     `-Lambda^- / (Lambda^+ - Lambda^-)` summing to one, so subtracting the FRW flux `F_FRW = (alpha w X - d_xi X) X^2`
     from both one-sided fluxes subtracts it from the result. Each one-sided flux is formed as that deviation directly,
 
         F_j(rho) - F_FRW = X^2 [(alpha w X - d_xi X) (rho - 1) + (1 + w) alpha (e^phi U - X) rho]
-                           + alpha (e^phi U - X) X^2 <q>,        e^phi U - X = X (e^phi - 1) + e^phi delta U,
+                           + alpha (e^phi U - X) X^2 q,          e^phi U - X = X (e^phi - 1) + e^phi delta U,
 
     in which every term is of the size of the deviation (`equations.py` says why the energy rows need it).
+
+    Args:
+        rho_L: The reconstructed density inside each face.
+        rho_R: The reconstructed density outside each face.
+        delta_rho_L: `rho_L - 1`, formed without cancellation.
+        delta_rho_R: `rho_R - 1`, likewise.
+        q_L: The viscous pressure the inside flux carries.
+        q_R: The viscous pressure the outside flux carries.
+        deviation: The state's deviation from FRW, for `delta U`.
+        geo: The geometry.
+        Theta: The grid velocity `Theta_j` at the faces.
+        a: The sound speed `a_j` at the faces.
+        eos: The equation of state.
+        w: The stencil weights, for the layout.
 
     Returns:
         `F_j - F_FRW,j` at the retained faces `j < N`; `0` at the origin, where both vanish.
@@ -279,17 +378,17 @@ def hll_flux(
     frw_speed = alpha * w_eos * X - X_xi  # the FRW flux is frw_speed X^2
     X2 = X * X
 
-    def one_sided(rho: FloatArray, delta_rho: FloatArray) -> FloatArray:
+    def one_sided(rho: FloatArray, delta_rho: FloatArray, q: FloatArray) -> FloatArray:
         ephi, delta_ephi = eos.lapse_and_deviation(rho, delta_rho)
         drift = alpha * (X * delta_ephi + ephi * dU)  # alpha (e^phi U - X)
-        return X2 * (frw_speed * delta_rho + (1.0 + w_eos) * drift * rho + drift * q_f[faces])
+        return X2 * (frw_speed * delta_rho + (1.0 + w_eos) * drift * rho + drift * q)
 
     Lam_plus = np.maximum(Theta[faces] + a[faces], 0.0)
     Lam_minus = np.minimum(Theta[faces] - a[faces], 0.0)
     delta_F = np.full(N + 1, np.nan)
     delta_F[faces] = (
-        Lam_plus * one_sided(rho_L[faces], delta_rho_L[faces])
-        - Lam_minus * one_sided(rho_R[faces], delta_rho_R[faces])
+        Lam_plus * one_sided(rho_L[faces], delta_rho_L[faces], q_L[faces])
+        - Lam_minus * one_sided(rho_R[faces], delta_rho_R[faces], q_R[faces])
         + Lam_plus * Lam_minus * X2 * (delta_rho_R[faces] - delta_rho_L[faces])
     ) / (Lam_plus - Lam_minus)
     if j_e == 0:

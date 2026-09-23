@@ -414,12 +414,13 @@ def grid_scale_fraction(f: FloatArray) -> float:
 def limiter_clipped(
     delta_rho: FloatArray, delta_rho_L: FloatArray, geo: Geometry, layout: Layout
 ) -> np.ndarray[tuple[int], np.dtype[np.bool_]]:
-    """Which retained interior cells the density limiter clipped: their reconstructed slope in `s` is not centred.
+    """Which retained cells the density limiter clipped: their reconstructed slope in `s` is not the unclipped one.
 
-    The reconstruction's slope of cell `c` is `(rho_L,c+1 - rho_c) / (X_{c+1}^2 - sbar_c)`; the centred slope is the
-    mean of the two one-sided differences in `sbar`. Both are formed from the deviations `rho - 1`, as the
-    reconstruction forms them, so that near FRW no rounding of the density to its FRW size reads as a clipped slope.
-    The first and last retained cells are one-sided by construction and never count.
+    The reconstruction's slope of cell `c` is `(rho_L,c+1 - rho_c) / (X_{c+1}^2 - sbar_c)`. An interior cell's
+    unclipped slope is the mean of its two one-sided differences in `sbar`; the first and last retained cells' is their
+    single adjacent difference, which the positivity clip of the reconstruction cuts back near vacuum. All are formed
+    from the deviations `rho - 1`, as the reconstruction forms them, so that near FRW no rounding of the density to its
+    FRW size reads as a clipped slope.
     """
     N, j_e = layout.N, layout.j_e
     clipped = np.zeros(N, dtype=bool)
@@ -434,6 +435,11 @@ def limiter_clipped(
     # of forming it from a face value, about 1e-16 |delta_rho| / ds.
     tolerance = 1e-12 * np.abs(centred) + 1e-13 * np.abs(delta_rho[interior]) / ds
     clipped[interior] = np.abs(slope - centred) > tolerance
+    for e, nb in ((j_e, j_e + 1), (N - 1, N - 2)):  # the end cells, against their one-sided differences
+        ds_e = X2[e + 1] - sbar[e]
+        slope_e = (delta_rho_L[e + 1] - delta_rho[e]) / ds_e
+        one_sided = (delta_rho[max(e, nb)] - delta_rho[min(e, nb)]) / (sbar[max(e, nb)] - sbar[min(e, nb)])
+        clipped[e] = abs(slope_e - one_sided) > 1e-12 * abs(one_sided) + 1e-13 * abs(delta_rho[e]) / ds_e
     return clipped
 
 

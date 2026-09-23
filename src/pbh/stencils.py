@@ -41,8 +41,12 @@ eq:num:stencils. At an excision face `j_e` (Section 8.3) the retained data lie o
 specified: the first-order rows eq:numbh:rows1, the production choice, which take the face value from the cell behind
 it, form no pressure gradient, and use the one retained velocity difference; and the second-order rows eq:numbh:rows,
 kept as a switch, which extrapolate the face value in `s`, place the single retained slope at the face, and use the
-mirror of the outer three-point row. Section 8.3 proves that no diagonal energy weight certifies the second-order rows,
-while the first-order closure's boundary form is the continuum characteristic flux; hence the default.
+mirror of the outer three-point row. Section 8.3 proves that no diagonal energy weight certifies the second-order
+rows, while the first-order closure's boundary form is the continuum characteristic flux; hence the default. The
+second-order rows are also unsafe near vacuum: beside a nearly empty first cell the extrapolated face density reaches
+zero or below and divides the velocity row's inertia, and near-threshold runs abort with Gammabar^2 < 0 at the first
+faces. Holding the face values positive is no cure: it saves some runs and makes others fail one face further out.
+They stay a switch for smooth problems only.
 
 Every coefficient of these stencils depends on the geometry alone, so on a static map it is the same at every stage
 (Section 7.1). `StencilWeights.of(geo, layout, closure)` computes them once; the caller caches it together with the
@@ -70,7 +74,8 @@ class FaceClosure(Enum):
     """eq:numbh:rows1: the upwind choice, certified by the energy estimate; the production closure."""
 
     SECOND_ORDER = "o2"
-    """eq:numbh:rows: one order more accurate at the face, provably not certifiable; kept as a switch."""
+    """eq:numbh:rows: one order more accurate at the face, provably not certifiable, and unsafe near vacuum (its
+    extrapolated face density can reach zero beside a nearly empty cell); kept as a switch for smooth problems."""
 
 
 @dataclass(frozen=True)

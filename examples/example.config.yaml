@@ -24,13 +24,15 @@ shocks:
   density_limiter: mc         # mc or minmod
   c_v: 1.0                    # the viscosity constant
   rho_floor: 1.0e-12          # the floor on reconstructed face densities
+  viscous_flux: density_weighted  # the viscous work in the energy flux: density_weighted, or averaged (the printed face average)
+  cap_tension: true           # cap the viscous tension at the fluid pressure, q >= -w rho
 
 excision:
   eta: 0.7                    # the excision radius in units of the apparent-horizon radius at switch-on (0.7-0.8)
   tau_on: 0.3                 # the switch-on ramp time in xi (0.2-0.5)
   c_t: 4.0                    # the map's transition centre in units of the horizon label at switch-on ...
   c_Delta: 1.5                # ... and its half-width; x_t + Delta_t must stay below 0.8, checked at switch-on
-  face_closure: o1            # the excision-face closure: o1 (first order, production) or o2
+  face_closure: o1            # the excision-face closure: o1 (first order, production) or o2 (unsafe near vacuum)
   enabled: true               # false continues a collapse unexcised, to compare with the excised run
   eta_r: 0.7                  # the re-excision fraction, the face advancing as the horizon grows; null for off
   zone_extension_at: 0.8      # pin a further zone when the horizon reaches this fraction of the zone's inner edge

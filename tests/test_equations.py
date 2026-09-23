@@ -10,7 +10,7 @@ from whole_state import whole_state_rate
 from pbh.eos import RADIATION, Background, EquationOfState
 from pbh.equations import calc_derivs
 from pbh.geometry import Geometry
-from pbh.kernels import CENTRED_SCHEME, PRODUCTION_KERNELS, KernelSettings
+from pbh.kernels import CENTRED_SCHEME, PRODUCTION_KERNELS, KernelSettings, ViscousFlux
 from pbh.layout import Layout
 from pbh.maps import IdentityMap, Map, PinnedMap, SinhStretch
 from pbh.outer import PRODUCTION_STRENGTHS, HeldAtFrw, OuterClosure, OuterInputs, OuterRows, OutgoingWave
@@ -18,6 +18,9 @@ from pbh.state import State, frw_rate, frw_state
 from pbh.stencils import FaceClosure, StencilWeights
 
 EOS = EquationOfState(RADIATION)
+AVERAGED_Q = KernelSettings(
+    viscous_flux=ViscousFlux.AVERAGED, cap_tension=False
+)  # as first printed, but for the end-cell clip
 HELD = HeldAtFrw()
 type Family = Callable[[float], Map]
 STATIC_FAMILIES: list[Family] = [IdentityMap, lambda R: SinhStretch(R, scale=2.0)]
@@ -207,11 +210,12 @@ def test_the_stage_hands_the_closure_the_face_n_quantities_and_uses_its_rows():
 # --- the deviation form against the stage written as printed, on strongly nonlinear states ---
 
 
-@pytest.mark.parametrize("settings", [PRODUCTION_KERNELS, CENTRED_SCHEME])
+@pytest.mark.parametrize("settings", [PRODUCTION_KERNELS, CENTRED_SCHEME, AVERAGED_Q])
 @pytest.mark.parametrize("j_e", [0, 5])
 @pytest.mark.parametrize("sat", [False, True])
+@pytest.mark.parametrize("empty_ends", [False, True])
 def test_the_deviation_form_is_the_printed_stage_on_a_strongly_nonlinear_state(
-    settings: KernelSettings, j_e: int, sat: bool
+    settings: KernelSettings, j_e: int, sat: bool, empty_ends: bool
 ):
     # An order-one overdensity and a strong infall on a sinh grid whose interior moves (the outer face may not, under
     # the SAT closure). A slip in the rearranged algebra of the deviation form would show here at order one; what is
@@ -225,6 +229,10 @@ def test_the_deviation_form_is_the_printed_stage_on_a_strongly_nonlinear_state(
     bg = Background.at(EOS, xi)
     w = StencilWeights.of(geo, Layout(N, j_e), FaceClosure.FIRST_ORDER)
     E = geo.dV * (1.0 + 1.2 * np.exp(-geo.sbar[:-1]) - 0.3 * np.exp(-((geo.Xm - 2.5) ** 2)))
+    if empty_ends:  # thin end cells beside denser ones: the reconstruction's positivity clip binds at both. The last
+        # cell is only thinned to 0.3, so that the flow across its inner face stays subsonic and the HLL flux there
+        # reads the clipped value from its side (an emptier cell's lapse drives the outflow supersonic and hides it).
+        E[j_e], E[j_e + 1], E[N - 1] = 1e-6 * E[j_e], 1e-2 * E[j_e + 1], 0.3 * E[N - 1]
     U = X * (1.0 - 0.3 * np.exp(-(X**2) / 2.0))
     state = State(E=E, U=U, W=0.03, M_e=1.4 * float(X[j_e]) ** 3)
     strengths = PRODUCTION_STRENGTHS if sat else None
@@ -232,9 +240,83 @@ def test_the_deviation_form_is_the_printed_stage_on_a_strongly_nonlinear_state(
     res = calc_derivs(state, geo, bg, EOS, w, outer, settings)
     ref = whole_state_rate(state, geo, bg, EOS, w, strengths, settings)
     cells, faces = w.layout.cells, w.layout.faces
-    assert np.max(np.abs(res.derived.delta_rho[cells])) > 1.0  # the state is far from FRW
+    assert np.max(np.abs(res.derived.delta_rho[cells])) > (0.99 if empty_ends else 1.0)  # the state is far from FRW
     assert np.max(np.abs(res.rate.E[cells] - ref.E[cells]) / geo.dV[cells]) < 1e-11
-    assert np.nanmax(np.abs(res.rate.U[faces] - ref.U[faces]) / np.maximum(X[faces], X[1])) < 1e-12
+    scale = np.maximum(X[faces], X[1])
+    if empty_ends:  # empty cells drive velocity rates far above X, and the reference's round-off with them
+        scale = np.maximum(scale, np.abs(ref.U[faces]))
+    assert np.nanmax(np.abs(res.rate.U[faces] - ref.U[faces]) / scale) < 1e-12
     assert np.max(np.abs(res.F[faces] - ref.F[faces])) < 1e-12 * X[N] ** 3
     assert res.rate.W == pytest.approx(ref.W, abs=1e-14)
     assert res.rate.M_e == pytest.approx(ref.M_e, rel=1e-12, abs=1e-14)
+
+
+def vacuum_state(j_e: int, xi: float = 4.0) -> tuple[State, Geometry, Background, StencilWeights]:
+    """Both end cells nearly empty beside full neighbours; the cell outside the first one expands hard, so that its
+    tension exceeds the fluid pressure several times over; the next-to-last cell is compressed beyond the fluid
+    pressure; and an inflow at the outer edge, without which the empty last cell's lapse would make face N - 1
+    supersonic outward and its own side of that face would carry no weight. Inside the Hubble radius (xi = 4,
+    R_H = 7.4), so that the inflow keeps Gammabar^2 positive.
+    """
+    N = 40
+    radii, _ = SinhStretch(6.0, scale=2.0).radii(xi, N)
+    geo = Geometry.of(radii, np.zeros_like(radii))
+    X = geo.X[: N + 1]
+    rho = 1.0 + 0.8 * np.sin(3.0 * geo.Xm) * np.exp(-(geo.Xm**2) / 2.0)
+    rho[j_e], rho[N - 1] = 1e-4, 3e-4  # far enough above round-off of the deviation form (1e-16 / rho)
+    X0 = float(X[j_e + 1])
+    U = X * (1.0 + 0.6 * np.tanh((X - 1.5) / 0.3) * np.exp(-((X - 1.5) ** 2)))
+    U -= 0.5 * X * np.exp(-(((X - X[N]) / 0.5) ** 2))
+    U += 40.0 * np.maximum(X - X0, 0.0) * np.exp(-((X - X0) ** 2) / 0.05)
+    U[N - 2] += 3.0 * (X[N - 1] - X[N - 2])
+    state = State(E=rho * geo.dV[:N], U=U, W=0.0, M_e=0.2 * float(X[j_e]) ** 3)
+    return state, geo, Background.at(EOS, xi), StencilWeights.of(geo, Layout(N, j_e), FaceClosure.FIRST_ORDER)
+
+
+UNCAPPED = KernelSettings(cap_tension=False)
+AVERAGED_CAPPED = KernelSettings(viscous_flux=ViscousFlux.AVERAGED)
+
+
+@pytest.mark.parametrize("settings", [PRODUCTION_KERNELS, UNCAPPED, AVERAGED_Q, AVERAGED_CAPPED])
+@pytest.mark.parametrize("j_e", [0, 5])
+def test_the_deviation_form_is_the_printed_stage_beside_vacuum_with_tension(settings: KernelSettings, j_e: int):
+    # Every positivity piece at once: the end-cell clip binds at both ends, one cell is in tension beyond the fluid
+    # pressure (capped or not, as the setting says) and one in compression beyond it (which the cap leaves alone), and
+    # the one-sided sides that the clip and the density weighting set all carry weight. The reference writes every
+    # kernel again, the cap in the force as well as in the flux, so a slip in any of them shows here.
+    state, geo, bg, w = vacuum_state(j_e)
+    N = w.layout.N
+    X = geo.X[: N + 1]
+    res = calc_derivs(state, geo, bg, EOS, w, HELD, settings)
+    ref = whole_state_rate(state, geo, bg, EOS, w, None, settings)
+    k, sp, cells, faces = res.kernels, res.speeds, w.layout.cells, w.layout.faces
+    assert k is not None
+    assert k.rho_R[j_e] == settings.rho_floor  # the clip binds at both ends
+    assert k.rho_L[N] == settings.rho_floor
+    assert sp.Theta[N - 1] - sp.a[N - 1] < 0.0  # the last cell's side of face N - 1 carries weight
+    q_over_rho = k.q[cells] / res.derived.rho[cells]
+    assert np.max(q_over_rho) > float(EOS.w)  # a compression beyond the fluid pressure
+    if settings.cap_tension:
+        assert np.min(q_over_rho) == pytest.approx(-float(EOS.w), rel=1e-12)  # the cap binds
+    else:
+        assert np.min(q_over_rho) < -2.0 * float(EOS.w)  # a negative total pressure, as first printed
+    # round-off of the whole-state reference is of the FRW size; the vacuum cell's rate is 1e3 times that
+    assert np.max(np.abs(res.rate.E[cells] - ref.E[cells]) / (geo.dV[cells] + 1e-3 * np.abs(ref.E[cells]))) < 1e-10
+    scale = np.maximum(np.maximum(X[faces], X[1]), np.abs(ref.U[faces]))
+    assert np.nanmax(np.abs(res.rate.U[faces] - ref.U[faces]) / scale) < 1e-12
+    assert np.max(np.abs(res.F[faces] - ref.F[faces])) < 1e-12 * X[N] ** 3
+
+
+@pytest.mark.parametrize("j_e", [0, 5])
+def test_the_cap_holds_the_tension_at_the_fluid_pressure_and_changes_nothing_else(j_e: int):
+    state, geo, bg, w = vacuum_state(j_e)
+    cells = w.layout.cells
+    on = calc_derivs(state, geo, bg, EOS, w, HELD, PRODUCTION_KERNELS)
+    off = calc_derivs(state, geo, bg, EOS, w, HELD, UNCAPPED)
+    assert on.kernels is not None
+    assert off.kernels is not None
+    rho, w_eos = on.derived.rho[cells], float(EOS.w)
+    q_on, q_off = on.kernels.q[cells], off.kernels.q[cells]
+    assert np.min(q_off / rho) < -2.0 * w_eos  # a tension beyond the fluid pressure, and beyond half of it
+    assert np.max(q_off / rho) > w_eos  # and a compression beyond it, which the cap must leave alone
+    assert np.array_equal(q_on, np.maximum(q_off, -w_eos * rho))
