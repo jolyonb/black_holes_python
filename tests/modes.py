@@ -47,8 +47,8 @@ def mode_errors(m: Map, k_index: int, N: int, settings: KernelSettings, xi_end: 
     X_N = float(m.radii(0.0, N)[0][N])
     mode = single_mode(J1_ZEROS[k_index] / X_N, B=1e-6)
     sch = Scheme(eos, m, Layout(N), FaceClosure.FIRST_ORDER, HeldAtFrw(), settings)
-    geo = sch.frame(0.0).geo
-    final = evolve(sch, mode_state(mode, Background.at(eos, 0.0), geo), 0.0, xi_end)
+    final = evolve(sch, mode_state(mode, Background.at(eos, 0.0), sch.frame(0.0).geo), 0.0, xi_end)
+    geo = sch.frame(xi_end).geo  # the map may have moved: compare on the final radii
     exact = mode_state(mode, Background.at(eos, xi_end), geo)
     err_E = float(np.sum(np.abs(final.E - exact.E)) / np.sum(np.abs(exact.E - geo.dV)))
     err_U = float(np.sum(np.abs(final.U[1:] - exact.U[1:])) / np.sum(np.abs(exact.U[1:] - geo.X[1:])))

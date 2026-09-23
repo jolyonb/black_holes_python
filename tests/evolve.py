@@ -5,10 +5,13 @@ from pbh.timestep import COURANT_NUMBER, Integrator, Scheme, advance, courant_st
 
 
 def evolve(sch: Scheme, state: State, xi: float, xi_end: float) -> State:
-    """Advance `state` from `xi` to `xi_end` on a static map, landing exactly on `xi_end`."""
-    geo = sch.frame(xi).geo
+    """Advance `state` from `xi` to `xi_end`, landing exactly on `xi_end`.
+
+    On a moving map the Courant step is taken from the geometry at the start of each step, since pinned cells shrink.
+    """
     dy = sch.layout.pack(state) - sch.frw(xi)
     while xi < xi_end - 1e-12:
+        geo = sch.frame(xi).geo
         res = sch.evaluate_deviation(xi, dy)
         dxi = min(courant_step(res, geo, sch.layout, COURANT_NUMBER), xi_end - xi)
         dy = advance(sch, Integrator.RK4, xi, dy, dxi)

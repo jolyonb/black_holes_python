@@ -183,18 +183,9 @@ def test_the_oscillatory_wavenumbers_are_those_of_the_discrete_radial_laplacian(
     assert k2_from_spectrum == pytest.approx(k2_from_laplacian, rel=1e-5)
 
 
-def alternation(f: FloatArray) -> float:
-    """The fraction of neighbouring entries that differ in sign: one for a sawtooth."""
-    changes: FloatArray = (np.signbit(f[1:]) != np.signbit(f[:-1])).astype(np.float64)
-    return float(np.mean(changes))
-
-
 def test_the_sawtooth_is_the_stiffest_direction_not_a_null_one():
     # Section 7.4: the largest singular value of the symmetrised acoustic operator is within one per cent of
-    # 2 c_s / min_c Delta X_c, independently of N, and its singular vectors are the sawtooths. The operator is skew in
-    # the weighted norm, so its singular values come in equal pairs, the top pair a sawtooth on the cells and one on
-    # the faces; which of the two an SVD returns first is the library's choice (it differs between macOS and Linux),
-    # so the pair's subspace is tested: its cell pattern and its face pattern must each be a sawtooth.
+    # 2 c_s / min_c Delta X_c, independently of N, and its singular vectors are the sawtooths.
     eos = EquationOfState(RADIATION)
     for N in (16, 32, 64):
         geo = Geometry.of(*IdentityMap(4.0).radii(0.5, N))
@@ -202,15 +193,16 @@ def test_the_sawtooth_is_the_stiffest_direction_not_a_null_one():
         A = acoustic_operator(geo, bg, N)
         h = np.concatenate((2.25 * bg.c_s**2 * geo.dV, 0.5 * geo.X[1:N] ** 3 * geo.dS[1:N]))
         S = np.sqrt(h)[:, None] * A / np.sqrt(h)[None, :]
-        assert np.max(np.abs(S + S.T)) < 1e-14 * np.max(np.abs(S))  # skew
-        _, sigma, vt = np.linalg.svd(S)
+        # S is antisymmetric with zero diagonal blocks, S = [[0, B], [-B^T, 0]], so every singular value of S is one
+        # of B's, twice: the top pair is (u, 0) and (0, v) with B = U Sigma V^T. The SVD of S may return any rotation
+        # of that pair (which one depends on the LAPACK build), so read the cell and face vectors from B itself.
+        assert np.max(np.abs(S[:N, :N])) == 0.0
+        assert np.max(np.abs(S[N:, N:])) == 0.0
+        u, sigma, vt = np.linalg.svd(S[:N, N:])
         assert sigma[0] == pytest.approx(2.0 * bg.c_s / np.min(geo.dX), rel=0.01)
-        assert sigma[1] == pytest.approx(sigma[0], rel=1e-12)  # the pair
-        pair = vt[:2]
-        cells: FloatArray = np.linalg.svd(pair[:, :N])[2][0]  # the cell pattern the pair spans
-        faces: FloatArray = np.linalg.svd(pair[:, N:])[2][0]
-        assert alternation(cells) > 0.9
-        assert alternation(faces) > 0.9
+        for top in (u[:, 0], vt[0, :]):  # the cell sawtooth, then the face sawtooth
+            sign_changes: FloatArray = (np.signbit(top[1:]) != np.signbit(top[:-1])).astype(np.float64)
+            assert float(np.mean(sign_changes)) > 0.9
 
 
 def test_no_eigenvalue_of_the_held_face_operator_grows_faster_than_the_growing_mode():

@@ -9,9 +9,9 @@ import pytest
 from modes import mode_errors
 
 from pbh.eos import RADIATION, EquationOfState
-from pbh.kernels import CENTRED_SCHEME, PRODUCTION_KERNELS
+from pbh.kernels import CENTRED_SCHEME, PRODUCTION_KERNELS, KernelSettings
 from pbh.layout import Layout
-from pbh.maps import IdentityMap, Map, PinnedMap, SinhStretch
+from pbh.maps import BlendMap, IdentityMap, Map, PinnedMap, SinhStretch, Zone
 from pbh.outer import HeldAtFrw, OutgoingWave
 from pbh.state import State
 from pbh.stencils import FaceClosure
@@ -233,6 +233,32 @@ def test_the_base_scheme_converges_at_second_order_on_the_exact_bessel_modes(m: 
     for field in (0, 1):
         rates = [math.log2(errors[i][field] / errors[i + 1][field]) for i in range(2)]
         assert min(rates) > 1.9, f"field {field}, mode {k_index}: L1 rates {rates} (tab:num:tests asks >= 1.9)"
+
+
+# --- the same modes on a moving map: the only exact test of the advection term (Section 7.3) ---
+#
+# On a static map the fluid is at rest relative to the grid to linear order about FRW, Theta = O(B), so
+# Theta (D_U U) is quadratic in the mode and the static convergence tests above cannot see how it is discretised.
+# On the post-formation blend map the grid moves through the background, Theta = -d_xi X is of order one, and the
+# advection term carries the mode across the grid at linear order. The outer face stays static, so the node of the
+# mode at X_N keeps the held closure exact. A first-order velocity gradient passes every other fast test and every
+# static convergence test, and fails this one (rates 1.2 and 0.4).
+
+
+def moving(base: Map) -> BlendMap:
+    """The blend map switched on at xi = 0, pinning the inner half of the labels over the one e-fold evolved."""
+    return BlendMap(base, float(EOS.alpha), (Zone(xi_on=0.0, tau_on=0.3, x_t=0.45, Delta_t=0.3),))
+
+
+@pytest.mark.parametrize("base", [IdentityMap(2.5), SinhStretch(2.5, scale=1.5)])
+@pytest.mark.parametrize("settings", [CENTRED_SCHEME, PRODUCTION_KERNELS])
+@pytest.mark.parametrize("k_index", [0, 1])
+def test_the_modes_converge_at_second_order_on_a_moving_map(base: Map, settings: KernelSettings, k_index: int):
+    errors = [mode_errors(moving(base), k_index, N, settings) for N in (40, 80, 160)]
+    floor = 1.9 if settings is CENTRED_SCHEME else 1.75  # the kernels' pre-asymptotic second mode, as on static maps
+    for field in (0, 1):
+        rates = [math.log2(errors[i][field] / errors[i + 1][field]) for i in range(2)]
+        assert min(rates) > floor, f"field {field}, mode {k_index}: L1 rates {rates} on a moving map"
 
 
 def test_every_row_is_exact_on_frw_and_rounds_at_the_size_of_the_deviation():
