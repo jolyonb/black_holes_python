@@ -159,7 +159,7 @@ class StepInputs:
     """Everything `monitor_step` needs about one completed step.
 
     Attributes:
-        step, xi, dxi, limit: The step's identification, as in `StepRow`; `xi` the time arrived at.
+        step, xi, dxi, limit, halvings: The step's identification, as in `StepRow`; `xi` the time arrived at.
         state, geo, bg, result: The state arrived at, its geometry and background, and the stage result there.
         stages: The fluxes of the step's stages, in order, and `weights` the tableau's `b`.
         delta_M_total_before: The total mass's deviation from FRW before the step, for the bookkeeping residual.
@@ -173,6 +173,7 @@ class StepInputs:
     xi: float
     dxi: float
     limit: str
+    halvings: int
     state: State
     geo: Geometry
     bg: Background
@@ -214,11 +215,11 @@ def monitor_step(inputs: StepInputs, eos: EquationOfState, layout: Layout, full:
         "companion": i.dxi / 6.0 * i.rate_change,
     }
     if not full:
-        return MonitoredStep(i.step, i.xi, i.dxi, i.limit, **every_step, **UNSET_COLUMNS)
+        return MonitoredStep(i.step, i.xi, i.dxi, i.limit, i.halvings, **every_step, **UNSET_COLUMNS)
 
     # the second tier
     diag = full_diagnostics(i, eos, layout, u_plus, u_minus, every_step["rho_0"])
-    return MonitoredStep(i.step, i.xi, i.dxi, i.limit, **every_step, **dataclasses.asdict(diag))
+    return MonitoredStep(i.step, i.xi, i.dxi, i.limit, i.halvings, **every_step, **dataclasses.asdict(diag))
 
 
 def full_diagnostics(

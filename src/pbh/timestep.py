@@ -24,6 +24,12 @@ accuracy. The cap is derived from the local error of RK4 on
 `y' = lambda_g y` accumulated over a super-horizon stretch, `kappa = (120 tol / (lambda_g T_sh))^(1/4)`, and is
 `0.13` for `tol = 1e-5`, `T_sh = 4`. Steps are clipped to land on output times by the driver, not here.
 
+The checked step. Every stage input and the result of a step must be finite and inside the hyperbolic domain, every
+retained `rho_c > 0` and `Gammabar_j^2 > 0`; an attempt that fails is refused and the step retried from the same state
+with half the step (`advance_checked`). This is what keeps accepted states positive, for any explicit method: the
+semi-discrete scheme is positive (eq:num:positivity), but an explicit step can overshoot it. RK4 and SSPRK3 differ only
+in the tableau, so the integrator stays a switch.
+
 `Frame` bundles what a stage needs at one time, the geometry, the background and the stencil weights, and `Scheme`
 builds frames from the map and the layout: once for a static map, at every stage time for a moving one (Section 7.1).
 """
@@ -36,6 +42,7 @@ from fractions import Fraction
 
 import numpy as np
 
+from pbh.derived import NotHyperbolicError
 from pbh.eos import Background, EquationOfState
 from pbh.equations import DerivsResult, calc_derivs
 from pbh.geometry import Geometry
@@ -226,15 +233,93 @@ class Stage:
     result: DerivsResult
 
 
-def advance_with_stages(
-    scheme: Scheme, integrator: Integrator, xi: float, dy: FloatArray, dxi: float, first: DerivsResult | None = None
-) -> tuple[FloatArray, list[Stage]]:
-    """`advance`, also returning every stage, which the driver's monitors and bookkeeping read.
+# --- the checked step: every stage and the result inside the hyperbolic domain, or a smaller step (Section 7.6) ---
 
-    The first stage of both integrators is the rate at the step's start, `c_1 = 0`; if the driver has already
-    evaluated it, as it has when it chose the step, `first` is reused and not recomputed.
+#: The most halvings of one step before the run aborts: a factor of about 1e6, from an acoustic step of about 1e-2 down
+#: to about 1e-8, far above the round-off of `xi`.
+MAX_HALVINGS = 20
+#: The most halvings a failure of `Gammabar^2 > 0` gets. A stage or result with `Gammabar^2 <= 0` is either an overshoot
+#: of a thin margin, which a shorter step cures at once, or the flow itself reaching `Gamma = 0`, a trapped region the
+#: excision has not caught, which no step cures: two halvings tell the two apart without creeping.
+CHART_HALVINGS = 2
+
+
+class FailureCause(Enum):
+    """Why an attempted step was refused: where (a stage or the result) and what (Section 7.6)."""
+
+    STAGE_NONFINITE = "stage_nonfinite"
+    STAGE_RHO = "stage_rho"
+    STAGE_GAMMABAR2 = "stage_Gammabar2"
+    RESULT_NONFINITE = "result_nonfinite"
+    RESULT_RHO = "result_rho"
+    RESULT_GAMMABAR2 = "result_Gammabar2"
+
+    @property
+    def is_chart(self) -> bool:
+        """Whether the failure is the areal chart's, `Gammabar^2 <= 0`, not positivity's or a non-finite value."""
+        return self in (FailureCause.STAGE_GAMMABAR2, FailureCause.RESULT_GAMMABAR2)
+
+
+@dataclass(frozen=True)
+class StepFailure:
+    """A refused attempt: its cause, stage, and the cell or face that failed.
+
+    Attributes:
+        cause: Why it was refused.
+        stage: `2`, `3`, ... for a stage input, `0` for the result.
+        index: The cell (density) or face (`Gammabar^2`) that failed; `-1` for a non-finite state found before any
+            evaluation.
+        value: The failing value, NaN if none.
+    """
+
+    cause: FailureCause
+    stage: int
+    index: int
+    value: float
+
+
+@dataclass(frozen=True)
+class Attempt:
+    """One attempted step: on success the deviation arrived at, every stage, and the rate there; else the failure."""
+
+    dy: FloatArray | None
+    stages: list[Stage]
+    result: DerivsResult | None
+    failure: StepFailure | None
+
+
+def checked_step(
+    scheme: Scheme,
+    integrator: Integrator,
+    xi: float,
+    dy: FloatArray,
+    dxi: float,
+    first: DerivsResult,
+    land: float | None = None,
+) -> Attempt:
+    """One step of the explicit Runge-Kutta method in deviation form, every stage and the result checked.
+
+    Every stage input after the first and the result must be finite, and their evaluation must find them inside the
+    hyperbolic domain, every retained `rho_c > 0` and `Gammabar_j^2 > 0` (`derive` asserts both). The first stage is
+    the accepted state, whose evaluation `first` the caller already holds. The result is evaluated here, so that a
+    result outside the domain is caught like a stage, and its rate is handed back as the next step's first stage. A
+    `Gammabar^2` that evaluates to NaN or an infinity is a non-finite value, not a failure of the chart. The method is
+    only the tableau: the checks are the same for every explicit method, which is what keeps accepted states positive.
+    `land`, if given, is the time the step arrives at, an output time the driver clipped it to: the result is evaluated
+    there exactly, as a restart from that output time evaluates it, rather than at the rounded `xi + dxi`.
     """
     tableau = integrator.tableau
+
+    def evaluate(xi_i: float, dy_i: FloatArray, stage: int) -> tuple[DerivsResult | None, StepFailure | None]:
+        where = "stage" if stage else "result"
+        if not bool(np.all(np.isfinite(dy_i))):
+            return None, StepFailure(FailureCause(f"{where}_nonfinite"), stage, -1, math.nan)
+        try:
+            return scheme.evaluate_deviation(xi_i, dy_i), None
+        except NotHyperbolicError as e:
+            what = e.field if math.isfinite(e.value) else "nonfinite"
+            return None, StepFailure(FailureCause(f"{where}_{what}"), stage, e.index, e.value)
+
     stages: list[Stage] = []
     k: list[FloatArray] = []
     for n, (c_i, a_i) in enumerate(zip(tableau.c, tableau.a, strict=True)):
@@ -243,11 +328,74 @@ def advance_with_stages(
             if a_ij:
                 dy_i += dxi * float(a_ij) * k_j
         xi_i = xi + float(c_i) * dxi
-        y_i = scheme.frw(xi_i) + dy_i
-        result = first if n == 0 and first is not None and c_i == 0 else scheme.evaluate_deviation(xi_i, dy_i)
-        stages.append(Stage(xi=xi_i, y=y_i, result=result))
+        result, failure = (first, None) if n == 0 else evaluate(xi_i, dy_i, n + 1)
+        if result is None:
+            return Attempt(None, stages, None, failure)
+        stages.append(Stage(xi=xi_i, y=scheme.frw(xi_i) + dy_i, result=result))
         k.append(scheme.layout.pack(result.deviation_rate))
-    return dy + dxi * sum(float(b_i) * k_i for b_i, k_i in zip(tableau.b, k, strict=True)), stages
+    dy_new = dy + dxi * sum(float(b_i) * k_i for b_i, k_i in zip(tableau.b, k, strict=True))
+    result, failure = evaluate(xi + dxi if land is None else land, dy_new, 0)
+    return Attempt(dy_new if result is not None else None, stages, result, failure)
+
+
+@dataclass(frozen=True)
+class AcceptedStep:
+    """A step the checks accepted.
+
+    Attributes:
+        dxi: The step taken, halved as often as attempts were refused.
+        dy: The deviation arrived at.
+        result: The rate there, the next step's first stage.
+        stages: The accepted attempt's stages.
+        refused: The attempts refused before it, in order.
+    """
+
+    dxi: float
+    dy: FloatArray
+    result: DerivsResult
+    stages: list[Stage]
+    refused: list[StepFailure]
+
+
+class StepAbortError(Exception):
+    """No step the retry policy allows passed the checks: the run ends, and the last failure says why."""
+
+    def __init__(self, failure: StepFailure, refused: list[StepFailure]) -> None:
+        super().__init__(f"{failure.cause.value} at index {failure.index}")
+        self.failure = failure
+        self.refused = refused
+
+
+def advance_checked(
+    scheme: Scheme,
+    integrator: Integrator,
+    xi: float,
+    dy: FloatArray,
+    dxi: float,
+    first: DerivsResult,
+    land: float | None = None,
+) -> AcceptedStep:
+    """The checked step with its retry policy (Section 7.6).
+
+    A refused attempt is retried from the same state with half the step, at most `MAX_HALVINGS` times, and at most
+    `CHART_HALVINGS` times for `Gammabar^2`; beyond either the run ends (`StepAbortError`). The positivity of accepted
+    states rests on the checks, for any explicit method; that some step passes rests on the semi-discrete scheme's
+    (eq:num:positivity) and on the stages tending to the accepted state as the step shrinks. `land` is the full step's
+    arrival time (`checked_step`); a halved step lands short.
+    """
+    refused: list[StepFailure] = []
+    chart = 0
+    while True:
+        attempt = checked_step(scheme, integrator, xi, dy, dxi, first, None if refused else land)
+        if attempt.failure is None:
+            assert attempt.dy is not None
+            assert attempt.result is not None
+            return AcceptedStep(dxi, attempt.dy, attempt.result, attempt.stages, refused)
+        refused.append(attempt.failure)
+        chart += attempt.failure.cause.is_chart
+        if len(refused) > MAX_HALVINGS or chart > CHART_HALVINGS:
+            raise StepAbortError(attempt.failure, refused)
+        dxi *= 0.5
 
 
 def courant_step(result: DerivsResult, geo: Geometry, layout: Layout, courant_number: float) -> float:

@@ -6,9 +6,11 @@ sits on the grid that gives, saves the configuration with its provenance, and th
 
 1. evaluate the rate at the state (the first stage of the step) and choose the step: the smaller of the Courant
    step and the cap (eq:num:cfl), clipped to land exactly on the next snapshot time and on the end;
-2. take the Runge-Kutta step in deviation form, keeping every stage's result for the monitors;
-3. check that the state is finite and record the step's monitors, the full row when the step ends on a snapshot or
-   the configuration asks for it every step;
+2. take the checked Runge-Kutta step in deviation form (Section 7.6): every stage and the result must be finite and
+   inside the hyperbolic domain, else the attempt is refused, logged as a `rejection` event, and retried with half
+   the step; a state arrived at with a cell below `RHO_ABORT` of the background ends the run;
+3. record the step's monitors, the full row when the step ends on a snapshot or the configuration asks for it every
+   step;
 4. examine the state arrived at: run the horizon finder, record formation at the first trapped face, and, with
    excision enabled, throw the switch when its four tests pass, assert the face every excised step, move the face
    outward by re-excision, and pin a further zone when the horizon approaches the transition; record the horizon
@@ -26,12 +28,14 @@ the source file (`epoch_history`), so that it reads the mass the uninterrupted r
 a snapshot of the state it is thrown on, unexcised and already carrying the new zone: the same collapse continued
 from it with excision off runs on the same grid, which is the comparison Section 8.3 asks for.
 
-An abort is a result, not an exception: if a stage finds the state outside the hyperbolic domain, the step
-produces a non-finite state, the outer face is trapped, or an excision assertion fails, the driver records an
-`abort` event naming what failed, writes a snapshot of the last good state, and ends the run with the status
-`aborted`. The far-zone radius of the monitors is read off the initial data.
+An abort is a result, not an exception: if no step the retry policy allows passes the checks (`Gammabar^2 <= 0`, named
+by what the accepted state says it is, or the positivity or finiteness of a stage after twenty halvings), a cell
+falls below `RHO_ABORT`, the outer face is trapped, or an excision assertion fails, the driver records an `abort`
+event naming what failed, writes a snapshot of the last good state, and ends the run with the status `aborted`. The
+far-zone radius of the monitors is read off the initial data.
 """
 
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -59,8 +63,8 @@ from pbh.monitors import MonitoredStep, StageFluxes, StepInputs, monitor_step
 from pbh.output import RunReader, RunWriter, next_snapshot_time, run_map
 from pbh.readout import Epoch, first_reading, readings, starts_new_epoch
 from pbh.records import StateRecord, shell_volumes
-from pbh.state import State, is_finite
-from pbh.timestep import Scheme, advance_with_stages, step_size
+from pbh.state import State
+from pbh.timestep import AcceptedStep, Frame, Scheme, StepAbortError, StepFailure, advance_checked, step_size
 from pbh.types import FloatArray
 
 FAR_ZONE_TOLERANCE = 1e-10
@@ -115,6 +119,80 @@ class AbortError(Exception):
         self.index = index
         self.value = value
         self.reason = reason
+
+
+#: A retained cell whose density falls below this fraction of the background ends the run (owner, 2026-09-23). In
+#: deviation form a cell's content is known to about `eps dV` absolute, so its density is `eps / rho` uncertain: ten per
+#: cent at 1e-15, one per cent at 1e-14, 2e-4 here, where the numerics can still be trusted.
+RHO_ABORT = 5e-13
+#: The switch-on tests whose failure means the trapped region is too narrow for the grid: under-resolution.
+RESOLUTION_TESTS = ("inside_horizon", "margin_positive", "three_trapped")
+
+
+def rejection_payload(failure: StepFailure) -> dict[str, Any]:
+    """The `rejection` event's payload: why an attempted step was refused, where, and at which value."""
+    return {"cause": failure.cause.value, "stage": failure.stage, "index": failure.index, "value": failure.value}
+
+
+def check_resolved(accepted: AcceptedStep, xi: float, before: DerivsResult, layout: Layout) -> None:
+    """Abort if the state arrived at has a cell below `RHO_ABORT`, naming it and the last density that was resolved."""
+    rho = accepted.result.derived.rho[layout.cells]
+    c = int(np.argmin(rho))
+    if rho[c] < RHO_ABORT:
+        resolved = float(np.min(before.derived.rho[layout.cells]))
+        flag = " (below 100 eps: fewer than two digits)" if rho[c] < 100.0 * np.finfo(float).eps else ""
+        raise AbortError(
+            "rho",
+            layout.j_e + c,
+            float(rho[c]),
+            f"relative density {rho[c]:.3g} < {RHO_ABORT} in cell {layout.j_e + c}{flag}; "
+            f"the least density a step earlier, at xi = {xi:.6g}, was {resolved:.3g}",
+        )
+
+
+def chart_case(j: int, accepted: DerivsResult, U: float, X: float, frw2: float) -> str:
+    """Why a stage or result had `Gammabar^2 <= 0` at face `j`, read from the accepted state, where it is positive.
+
+    `Gamma^2 = 1 + U^2 - 2m/R <= 0` needs `2m/R >= 1 + U^2`. At the accepted state, in the physical normalisation (the
+    tilde variables over the FRW `Gammabar`): trapped, `U + Gamma < 0`, is a trapped region the excision has not caught;
+    beyond the Hubble radius, `2m/R >= 1` with `U > 0`, the chart may be folding there or a stage may have overshot its
+    margin, which the accepted state cannot tell apart; and with `2m/R < 1` only a stage overshot.
+    """
+    d = accepted.derived
+    g2 = float(d.Gammabar2[j])
+    two_m_over_R = float(d.M[j]) / (X * frw2)
+    trapped = U + math.sqrt(g2) < 0.0
+    where = f"U = {U / math.sqrt(frw2):+.3g}, 2m/R = {two_m_over_R:.3g}, Gamma^2 = {g2 / frw2:.3g} there"
+    if trapped:
+        return f"a trapped region the excision has not caught ({where})"
+    if two_m_over_R >= 1.0 and U > 0.0:
+        return f"the areal chart folding beyond the Hubble radius, or a stage overshooting its margin there ({where})"
+    return f"a stage overshooting a thin Gammabar^2 margin: check the step cap ({where})"
+
+
+def step_abort(
+    failure: StepAbortError, accepted: DerivsResult, state: State, frame: Frame, refused_switch_on: list[str]
+) -> AbortError:
+    """The named abort of a step no allowed halving could pass (Section 7.6), read at the accepted state it left.
+
+    `refused_switch_on` is the failed tests of the last switch-on the driver refused, if the run is unexcised and one
+    was: a trapped region the switch-on would not take, which names the case before the chart does.
+    """
+    f = failure.failure
+    if not f.cause.is_chart:
+        reason = f"no step passed after {len(failure.refused) - 1} halvings: {f.cause.value} at index {f.index}"
+        return AbortError(f.cause.value, f.index, f.value, reason)
+    U, X = float(state.U[f.index]), float(frame.geo.X[f.index])
+    reason = f"Gammabar^2 <= 0 at face {f.index} ({f.cause.value}, stage {f.stage}): "
+    reason += chart_case(f.index, accepted, U, X, frame.bg.Gammabar2)
+    if refused_switch_on:
+        tests = ", ".join(refused_switch_on)
+        if any(t in RESOLUTION_TESTS for t in refused_switch_on):
+            advice = "raise N or concentrate cells at the origin"
+            reason = f"horizon under-resolved (switch-on refused by {tests}): {advice}; {reason}"
+        else:
+            reason = f"switch-on refused by {tests}: the blend transition does not fit; enlarge Rtilde_max; {reason}"
+    return AbortError(f.cause.value, f.index, f.value, reason)
 
 
 def far_zone_radius(initial: StateRecord) -> float:
@@ -428,6 +506,8 @@ def run(config: RunConfig, initial: StateRecord, paths: RunPaths, history: Epoch
             epoch=history,
         )
         try:
+            if not bool(np.all(np.isfinite(r.dy))):  # a failure at the accepted state is an abort, never a retry
+                raise AbortError("state", -1, float("nan"), "the initial state is not finite")
             result, report, face = r.examine(r.state(), r.evaluate())
             r.snapshot()
             read = r.read_mass(r.record_horizon(report, result, face))
@@ -440,15 +520,22 @@ def run(config: RunConfig, initial: StateRecord, paths: RunPaths, history: Epoch
                 landing = min(next_snapshot, xi_end)
                 if r.xi + dxi >= landing - 1e-12 * max(1.0, abs(landing)):
                     dxi, limit = landing - r.xi, "output_clip"
-                # 2. the stages, and the state arrived at
+                # 2. the checked step: every stage and the result inside the domain, or a halved step (Section 7.6)
                 layout = r.layout
                 before = StageFluxes.of(result, layout)
-                dy_new, stages = advance_with_stages(r.sch, config.stepping.integrator, r.xi, r.dy, dxi, first=result)
-                xi_new = landing if dxi == landing - r.xi else r.xi + dxi
+                clipped = limit == "output_clip"
+                accepted = advance_checked(
+                    r.sch, config.stepping.integrator, r.xi, r.dy, dxi, result, landing if clipped else None
+                )
+                for failure in accepted.refused:
+                    r.event("rejection", rejection_payload(failure))
+                if accepted.refused:
+                    dxi, limit = accepted.dxi, "halved"
+                xi_new = landing if clipped and not accepted.refused else r.xi + dxi
+                dy_new, stages = accepted.dy, accepted.stages
+                check_resolved(accepted, r.xi, result, layout)
+                result = accepted.result
                 state_new = layout.unpack(r.sch.frw(xi_new) + dy_new)
-                if not is_finite(state_new, layout.j_e):
-                    raise AbortError("state", -1, float("nan"), "the state is not finite")
-                result = r.sch.evaluate_deviation(xi_new, dy_new)
                 # 3. the record of the step
                 r.step += 1
                 change = layout.pack(result.deviation_rate) - layout.pack(stages[-1].result.deviation_rate)
@@ -462,6 +549,7 @@ def run(config: RunConfig, initial: StateRecord, paths: RunPaths, history: Epoch
                         xi=r.xi,
                         dxi=dxi,
                         limit=limit,
+                        halvings=len(accepted.refused),
                         state=state_new,
                         geo=frame.geo,
                         bg=frame.bg,
@@ -495,6 +583,11 @@ def run(config: RunConfig, initial: StateRecord, paths: RunPaths, history: Epoch
             return RunResult(status="completed", steps=r.step, xi=r.xi, paths=paths)
         except NotHyperbolicError as failure:
             abort = AbortError(failure.field, failure.index, failure.value, str(failure))
+        except StepAbortError as failure:
+            for refused in failure.refused:
+                r.event("rejection", rejection_payload(refused))
+            refused_switch_on = r.last_refusal if not r.layout.excised else []
+            abort = step_abort(failure, r.evaluate(), r.state(), r.sch.frame(r.xi), refused_switch_on)
         except AbortError as failure:
             abort = failure
         r.event("abort", {"field": abort.field, "index": abort.index, "value": abort.value})

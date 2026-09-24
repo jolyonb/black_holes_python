@@ -17,15 +17,31 @@ from pbh.config import (
     RunConfig,
     ShockConfig,
 )
-from pbh.driver import Run, RunPaths, epoch_history, far_zone_radius, run
-from pbh.eos import Background
+from pbh.driver import (
+    RHO_ABORT,
+    AbortError,
+    Run,
+    RunPaths,
+    chart_case,
+    check_resolved,
+    epoch_history,
+    far_zone_radius,
+    run,
+    step_abort,
+)
+from pbh.eos import RADIATION, Background, EquationOfState
 from pbh.geometry import Geometry
 from pbh.horizon import Horizon, HorizonReport
-from pbh.kernels import Kernels
+from pbh.kernels import PRODUCTION_KERNELS, Kernels
+from pbh.layout import Layout
+from pbh.maps import IdentityMap
 from pbh.monitors import MonitoredStep
+from pbh.outer import OutgoingWave
 from pbh.output import RunReader, RunWriter
 from pbh.readout import Epoch
-from pbh.records import StateRecord, read_initial, write_initial
+from pbh.records import StateRecord, read_initial, shell_volumes, write_initial
+from pbh.state import State
+from pbh.timestep import AcceptedStep, FailureCause, Scheme, StepAbortError, StepFailure
 
 N = 40
 CONFIG = RunConfig(
@@ -117,7 +133,20 @@ def test_a_non_finite_state_aborts_as_a_result_with_the_last_good_snapshot(tmp_p
     end = reader.end
     assert end is not None
     assert end.payload["status"] == "aborted"
-    assert len(reader.snapshots) == 2  # the initial state and the last good state, the same here
+    assert len(reader.snapshots) == 1  # the last good state, the initial one: the run stops before its first snapshot
+
+
+def test_an_initial_state_outside_the_domain_aborts_before_any_step(tmp_path: Path):
+    # Evaluations outside the checked step, of the initial state here, still end the run by name when they fail.
+    paths = RunPaths.of(tmp_path, "negative")
+    initial = bessel_initial(paths)
+    delta_E = initial.delta_E.copy()
+    delta_E[3] = -2.0 * shell_volumes(initial.X)[3]  # the content of cell 3 negative
+    broken = StateRecord(delta_E, initial.delta_U, 0.0, 0.0, initial.X, 0.0, 0, {})
+    result = run(CONFIG, broken, paths)
+    assert (result.status, result.steps) == ("aborted", 0)
+    abort = next(e for e in RunReader(paths.evolution).events if e.kind == "abort")
+    assert (abort.payload["field"], abort.payload["index"]) == ("rho", 3)
 
 
 def test_data_off_the_grid_or_after_the_end_are_refused(tmp_path: Path):
@@ -153,26 +182,32 @@ def test_a_run_with_many_steps_flushes_on_its_cadence_and_can_be_read_while_runn
     assert len(RunReader(paths.evolution).steps["step"]) == result.steps
 
 
-def test_a_step_that_produces_a_non_finite_state_aborts_by_the_finiteness_check(
+def test_a_step_no_halving_passes_is_logged_attempt_by_attempt_and_aborts_by_name(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    # The stages are fine but the combination is not: patch the stepper to hand back a NaN deviation.
-    import pbh.driver as driver_module
-    from pbh.timestep import advance_with_stages
+    # Every attempt's result made non-finite: the step is halved MAX_HALVINGS times, each refusal a `rejection` event,
+    # and then the run aborts naming the cause.
+    import pbh.timestep as timestep_module
+    from pbh.timestep import MAX_HALVINGS, Attempt, FailureCause, StepFailure, checked_step
 
-    def poisoned(*args: object, **kwargs: object):
-        dy_new, stages = advance_with_stages(*args, **kwargs)  # type: ignore[arg-type]
-        dy_new[0] = float("nan")
-        return dy_new, stages
+    def poisoned(*args: object, **kwargs: object) -> Attempt:
+        attempt = checked_step(*args, **kwargs)  # type: ignore[arg-type]
+        return Attempt(None, attempt.stages, None, StepFailure(FailureCause.RESULT_NONFINITE, 0, -1, float("nan")))
 
-    monkeypatch.setattr(driver_module, "advance_with_stages", poisoned)
+    monkeypatch.setattr(timestep_module, "checked_step", poisoned)
     paths = RunPaths.of(tmp_path, "poison")
     result = run(CONFIG, bessel_initial(paths), paths)
     assert result.status == "aborted"
+    assert result.steps == 0
     reader = RunReader(paths.evolution)
-    payload = reader.events[0].payload
-    assert (payload["field"], payload["index"]) == ("state", -1)
-    assert np.isnan(payload["value"])  # JSON carries NaN
+    rejections = [e for e in reader.events if e.kind == "rejection"]
+    assert len(rejections) == MAX_HALVINGS + 1
+    assert all(e.payload["cause"] == "result_nonfinite" for e in rejections)
+    abort = next(e for e in reader.events if e.kind == "abort")
+    assert abort.payload["field"] == "result_nonfinite"
+    end = reader.end
+    assert end is not None
+    assert f"after {MAX_HALVINGS} halvings" in end.payload["reason"]
 
 
 def test_a_run_started_from_a_record_with_zones_runs_on_the_blend_and_keeps_the_formation_time(tmp_path: Path):
@@ -333,3 +368,95 @@ def test_no_reading_before_the_floor_or_the_target(tmp_path: Path):
         assert not try_reading(r)  # and not tried again so soon
     assert not [e for e in RunReader(path).events if e.kind == "readout"]
     assert epoch_history(RunReader(path), XI_FORM + 2.5) is None  # this file recorded no formation
+
+
+# --- the checked step's aborts, and a halved step (Section 7.6) ---
+
+
+def abort_scheme(N: int = 40, j_e: int = 0) -> Scheme:
+    return Scheme(EquationOfState(RADIATION), IdentityMap(4.0), Layout(N, j_e), OutgoingWave(), PRODUCTION_KERNELS)
+
+
+def accepted_at(sch: Scheme, xi: float, state: State) -> AcceptedStep:
+    dy = sch.layout.pack(state) - sch.frw(xi)
+    return AcceptedStep(0.01, dy, sch.evaluate_deviation(xi, dy), [], [])
+
+
+def test_a_cell_below_the_resolved_density_aborts_naming_it_and_the_last_resolved_density():
+    sch = abort_scheme()
+    geo = sch.frame(0.0).geo
+    E = geo.dV[:40].copy()
+    E[7] *= 1e-13
+    before = sch.evaluate(0.0, sch.frw(0.0))
+    with pytest.raises(AbortError) as abort:
+        check_resolved(accepted_at(sch, 0.0, State(E=E, U=geo.X[:41].copy(), W=0.0)), 0.0, before, sch.layout)
+    assert (abort.value.field, abort.value.index) == ("rho", 7)
+    assert abort.value.value == pytest.approx(1e-13, rel=1e-3)
+    assert f"< {RHO_ABORT} in cell 7" in abort.value.reason
+    assert "fewer than two digits" not in abort.value.reason  # 1e-13 is 450 eps
+    assert "a step earlier, at xi = 0, was 1" in abort.value.reason
+    E[7] = geo.dV[7] * 1e-12  # above the line: no abort
+    check_resolved(accepted_at(sch, 0.0, State(E=E, U=geo.X[:41].copy(), W=0.0)), 0.0, before, sch.layout)
+
+
+def test_the_chart_abort_reads_its_case_from_the_accepted_state():
+    # On FRW at xi = 0 the Hubble radius is X = 1: 2m/R = X^2, below one inside it, where only a stage can overshoot,
+    # and above it outside, where U = X > 0 and the chart may fold. Infall onto a mass with 2m/R = 2 at a face traps it.
+    sch = abort_scheme()
+    geo, bg = sch.frame(0.0).geo, sch.frame(0.0).bg
+    frw = sch.evaluate(0.0, sch.frw(0.0))
+    X = geo.X[:41]
+    inside, outside = 5, 20  # X = 0.5 and 2
+    g2 = bg.Gammabar2
+    assert "overshooting a thin Gammabar^2 margin" in chart_case(inside, frw, float(X[inside]), float(X[inside]), g2)
+    assert "folding beyond the Hubble radius" in chart_case(outside, frw, float(X[outside]), float(X[outside]), g2)
+    trapped_sch = abort_scheme(j_e=5)
+    U = -1.5 * X / X[5]
+    E = np.where(np.arange(40) >= 5, geo.dV[:40], np.nan)
+    trapped = trapped_sch.evaluate(0.0, trapped_sch.layout.pack(State(E=E, U=U, W=0.0, M_e=2.0 * float(X[5]))))
+    assert "a trapped region the excision has not caught" in chart_case(
+        5, trapped, float(U[5]), float(X[5]), bg.Gammabar2
+    )
+
+
+def test_a_chart_abort_after_a_refused_switch_on_names_the_refusal_first():
+    sch = abort_scheme()
+    frame = sch.frame(0.0)
+    state = sch.layout.unpack(sch.frw(0.0))
+    accepted = sch.evaluate(0.0, sch.frw(0.0))
+    chart = StepAbortError(StepFailure(FailureCause.STAGE_GAMMABAR2, 3, 5, -1e-3), [])
+    plain = step_abort(chart, accepted, state, frame, [])
+    assert plain.reason.startswith("Gammabar^2 <= 0 at face 5 (stage_Gammabar2, stage 3)")
+    under = step_abort(chart, accepted, state, frame, ["three_trapped"]).reason
+    assert under.startswith("horizon under-resolved (switch-on refused by three_trapped)")
+    assert "Gammabar^2 <= 0 at face 5" in under
+    blend = step_abort(chart, accepted, state, frame, ["transition_fits"]).reason
+    assert blend.startswith("switch-on refused by transition_fits: the blend transition does not fit")
+    positivity = StepAbortError(StepFailure(FailureCause.RESULT_RHO, 0, 9, -1e-9), [chart.failure] * 21)
+    assert step_abort(positivity, accepted, state, frame, ["three_trapped"]).reason == (
+        "no step passed after 20 halvings: result_rho at index 9"
+    )
+
+
+def test_a_halved_step_is_recorded_as_such(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    import pbh.timestep as timestep_module
+    from pbh.timestep import Attempt, checked_step
+
+    calls = [0]
+
+    def once(*args: object, **kwargs: object) -> Attempt:
+        calls[0] += 1
+        attempt = checked_step(*args, **kwargs)  # type: ignore[arg-type]
+        if calls[0] > 1:
+            return attempt
+        return Attempt(None, attempt.stages, None, StepFailure(FailureCause.STAGE_RHO, 2, 4, -1e-6))
+
+    monkeypatch.setattr(timestep_module, "checked_step", once)
+    paths = RunPaths.of(tmp_path, "halved")
+    config = CONFIG.model_copy(update={"evolution": EvolutionConfig(xi_end=0.05)})
+    assert run(config, bessel_initial(paths), paths).status == "completed"
+    reader = RunReader(paths.evolution)
+    first = {k: v[0] for k, v in reader.steps.items()}
+    assert (first["limit"], first["halvings"]) == ("halved", 1)
+    rejection = next(e for e in reader.events if e.kind == "rejection")
+    assert rejection.payload == {"cause": "stage_rho", "stage": 2, "index": 4, "value": -1e-6}

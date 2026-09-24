@@ -35,12 +35,16 @@ def test_a_table_holds_every_column_kind_and_shows_only_what_was_flushed(tmp_pat
     with h5.create_file(tmp_path / "t.h5") as f:
         table = Table(h5.create_group(f, "steps"), MonitoredStep, widths={"margin": 3})
         table.append(
-            MonitoredStep(step=0, xi=0.0, dxi=0.1, limit="courant", rho_0=1.0, margin=np.array([1.0, 2.0, 3.0]))
+            MonitoredStep(
+                step=0, xi=0.0, dxi=0.1, limit="courant", halvings=0, rho_0=1.0, margin=np.array([1.0, 2.0, 3.0])
+            )
         )
-        table.append(MonitoredStep(step=1, xi=0.1, dxi=0.1, limit="cap", rho_0=1.5, margin=np.array([4.0, 5.0, 6.0])))
+        table.append(
+            MonitoredStep(step=1, xi=0.1, dxi=0.1, limit="cap", halvings=0, rho_0=1.5, margin=np.array([4.0, 5.0, 6.0]))
+        )
         assert len(read_table(h5.subgroup(f, "steps"))["step"]) == 0
         table.flush()
-        table.append(MonitoredStep(step=2, xi=0.2, dxi=0.1, limit="cap", rho_0=2.0, margin=np.zeros(3)))
+        table.append(MonitoredStep(step=2, xi=0.2, dxi=0.1, limit="cap", halvings=0, rho_0=2.0, margin=np.zeros(3)))
         t = read_table(h5.subgroup(f, "steps"))
         steps = t["step"]
         assert isinstance(steps, np.ndarray)
@@ -74,7 +78,7 @@ def test_the_run_file_records_its_identity_the_steps_the_events_and_the_end(tmp_
     path = tmp_path / "run.evolution.h5"
     with RunWriter(path, CONFIG, N=40, row_type=StepRow) as out:
         for i in range(5):
-            out.step(StepRow(step=i, xi=0.1 * i, dxi=0.1, limit="courant"))
+            out.step(StepRow(step=i, xi=0.1 * i, dxi=0.1, limit="courant", halvings=0))
         out.event(3, 0.3, "formation", {"j_star": 12, "xi_form": 0.3})
         out.close(4, 0.4, "completed", steps=5)
     run = RunReader(path)
@@ -91,7 +95,7 @@ def test_the_run_file_records_its_identity_the_steps_the_events_and_the_end(tmp_
 
 def failing_run(path: Path) -> None:
     with RunWriter(path, CONFIG, N=40, row_type=StepRow) as out:
-        out.step(StepRow(step=7, xi=0.7, dxi=0.1, limit="cap"))
+        out.step(StepRow(step=7, xi=0.7, dxi=0.1, limit="cap", halvings=0))
         raise RuntimeError("boom")
 
 
@@ -141,7 +145,7 @@ def test_the_file_can_be_read_by_another_process_while_it_is_being_written(tmp_p
     path = tmp_path / "run.evolution.h5"
     with RunWriter(path, CONFIG, N=40, row_type=StepRow) as out:
         for i in range(3):
-            out.step(StepRow(step=i, xi=0.1 * i, dxi=0.1, limit="courant"))
+            out.step(StepRow(step=i, xi=0.1 * i, dxi=0.1, limit="courant", halvings=0))
         out.flush()
         out.event(2, 0.2, "formation", {})
         script = (
@@ -232,7 +236,7 @@ cfg = RunConfig(grid=GridConfig(N=40, Rtilde_max=4.0, scale=2.0), evolution=Evol
 out = RunWriter(pathlib.Path(sys.argv[1]), cfg, N=40, row_type=StepRow)
 s = 0
 while True:
-    out.step(StepRow(s, 1e-4 * s, 1e-4, "courant"))
+    out.step(StepRow(s, 1e-4 * s, 1e-4, "courant", 0))
     out.flush()
     if s % 20 == 0:
         out.snapshot(s, 1e-4 * s, Layout(40), np.zeros(Layout(40).size), None, ())

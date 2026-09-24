@@ -52,6 +52,7 @@ def inputs_for(
         xi=xi,
         dxi=0.01,
         limit="courant",
+        halvings=0,
         state=state,
         geo=f.geo,
         bg=f.bg,

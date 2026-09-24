@@ -234,7 +234,11 @@ def test_a_collapse_records_its_formation_and_its_horizon_history(tmp_path: Path
     assert result.status == "aborted"  # unexcised, the interior breaks the areal coordinate after formation
     reader = RunReader(paths.evolution)
     kinds = [e.kind for e in reader.events]
-    assert kinds == ["formation", "abort", "end"]
+    # The step that breaks the chart is tried at two halvings more, three `rejection`s, before the run aborts.
+    assert kinds == ["formation", "rejection", "rejection", "rejection", "abort", "end"]
+    end = reader.end
+    assert end is not None
+    assert "a trapped region the excision has not caught" in end.payload["reason"]
     formation = reader.events[0]
     assert 4.3 < formation.xi < 5.0
     assert formation.payload["M_AH"] > 0.0

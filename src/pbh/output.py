@@ -129,7 +129,9 @@ class StepRow:
     xi: float
     dxi: float
     limit: str
-    """Which limit set the step: `courant`, `cap` or `output_clip`."""
+    """Which limit set the step: `courant`, `cap` or `output_clip`, or `halved` if refused attempts shortened it."""
+    halvings: int
+    """How many attempts the checks refused before this step (their causes are `rejection` events)."""
 
 
 @dataclass(frozen=True)

@@ -8,21 +8,29 @@ import numpy as np
 import pytest
 from modes import mode_errors
 
+from pbh.derived import NotHyperbolicError
 from pbh.eos import RADIATION, EquationOfState
+from pbh.equations import DerivsResult
 from pbh.kernels import CENTRED_SCHEME, PRODUCTION_KERNELS, KernelSettings
 from pbh.layout import Layout
 from pbh.maps import BlendMap, IdentityMap, Map, PinnedMap, SinhStretch, Zone
 from pbh.outer import HeldAtFrw, OutgoingWave
 from pbh.state import State
 from pbh.timestep import (
+    CHART_HALVINGS,
     COURANT_NUMBER,
+    MAX_HALVINGS,
     RK4,
     SSPRK3,
     ButcherTableau,
+    FailureCause,
     Integrator,
     Scheme,
+    StepAbortError,
     StepLimit,
     advance,
+    advance_checked,
+    checked_step,
     courant_step,
     explicit_rk_step,
     step_cap,
@@ -280,3 +288,137 @@ def test_every_row_is_exact_on_frw_and_rounds_at_the_size_of_the_deviation():
     # the energy rows keep the conditioning of the discrete divergence, a factor of the cell index
     for rows, bound in [(slice(0, N), 1e-11), (slice(N, -1), 1e-12)]:
         assert np.max(np.abs(a[rows] - b[rows])) / np.max(np.abs(a[rows])) < bound
+
+
+# --- the checked step and its retry policy (Section 7.6) ---
+
+
+def checked_setup() -> tuple[Scheme, FloatArray, float, DerivsResult]:
+    sch = Scheme(EOS, SinhStretch(6.0, scale=2.0), Layout(30), OutgoingWave(), PRODUCTION_KERNELS)
+    dy = sch.layout.pack(State(E=np.zeros(30), U=np.zeros(31), W=0.0))
+    dy[:30] = 0.01 * sch.frame(0.5).geo.dV[:30] * np.sin(np.arange(30))  # a mild deviation of the contents
+    return sch, dy, 0.5, sch.evaluate_deviation(0.5, dy)
+
+
+REAL_EVALUATE = Scheme.evaluate_deviation
+
+
+class Evaluations:
+    """The scheme's evaluation, counted, failing at the `fail_at`-th call (1-based) in the way `how` says."""
+
+    def __init__(self, sch: Scheme, fail_at: set[int], how: str) -> None:
+        self.real = REAL_EVALUATE
+        self.sch, self.fail_at, self.how, self.calls, self.times = sch, fail_at, how, 0, list[float]()
+
+    def install(self, monkeypatch: pytest.MonkeyPatch) -> Evaluations:
+        """Make the scheme's evaluation this one, for the test."""
+
+        def evaluate(sch: Scheme, xi: float, dy: FloatArray) -> DerivsResult:
+            return self(sch, xi, dy)
+
+        monkeypatch.setattr(Scheme, "evaluate_deviation", evaluate)
+        return self
+
+    def __call__(self, sch: Scheme, xi: float, dy: FloatArray) -> DerivsResult:
+        self.calls += 1
+        self.times.append(xi)
+        result = self.real(sch, xi, dy)
+        if self.calls not in self.fail_at and "every" not in self.how:
+            return result
+        if self.how.startswith("nan_rate"):  # a finite input whose rate is not: the next input is non-finite
+            nan = State(E=np.full_like(result.deviation_rate.E, np.nan), U=result.deviation_rate.U, W=0.0)
+            return replace(result, deviation_rate=nan)
+        field, value = {"rho": ("rho", -1e-3), "gamma": ("Gammabar2", -1e-3), "gamma_nan": ("Gammabar2", math.nan)}[
+            self.how.removeprefix("every_")
+        ]
+        raise NotHyperbolicError(field, 3, value)
+
+
+def test_the_failure_causes_and_which_of_them_are_the_charts():
+    assert {c.value for c in FailureCause} == {
+        f"{where}_{what}" for where in ("stage", "result") for what in ("nonfinite", "rho", "Gammabar2")
+    }
+    assert {c for c in FailureCause if c.is_chart} == {FailureCause.STAGE_GAMMABAR2, FailureCause.RESULT_GAMMABAR2}
+
+
+@pytest.mark.parametrize("integrator", list(Integrator))
+@pytest.mark.parametrize(("how", "cause"), [("rho", "rho"), ("gamma", "Gammabar2"), ("gamma_nan", "nonfinite")])
+def test_a_stage_or_result_outside_the_domain_is_refused_there_and_the_state_is_kept(
+    monkeypatch: pytest.MonkeyPatch, integrator: Integrator, how: str, cause: str
+):
+    # Evaluation number s - 1 is stage s (the first stage is the accepted state's, already held); number S is the
+    # result. A NaN Gammabar^2 is a non-finite value, not a failure of the chart.
+    sch, dy, xi, first = checked_setup()
+    S = integrator.tableau.stages
+    for s in [*range(2, S + 1), 0]:
+        ev = Evaluations(sch, {s - 1 if s else S}, how)
+        ev.install(monkeypatch)
+        attempt = checked_step(sch, integrator, xi, dy.copy(), 0.01, first)
+        assert attempt.failure is not None
+        assert attempt.failure.cause.value == f"{'stage' if s else 'result'}_{cause}"
+        assert attempt.failure.stage == s
+        assert attempt.dy is None
+        assert attempt.result is None
+        assert ev.calls == (s - 1 if s else S)
+
+
+@pytest.mark.parametrize("integrator", list(Integrator))
+def test_a_non_finite_stage_input_or_result_is_refused_before_it_is_evaluated(
+    monkeypatch: pytest.MonkeyPatch, integrator: Integrator
+):
+    sch, dy, xi, first = checked_setup()
+    S = integrator.tableau.stages
+    for s in [*range(3, S + 1), 0]:  # the rate of the evaluation before makes the next input non-finite
+        ev = Evaluations(sch, {s - 2 if s else S - 1}, "nan_rate")
+        ev.install(monkeypatch)
+        attempt = checked_step(sch, integrator, xi, dy.copy(), 0.01, first)
+        assert attempt.failure is not None
+        assert attempt.failure.cause.value == f"{'stage' if s else 'result'}_nonfinite"
+        assert ev.calls == (s - 2 if s else S - 1)  # refused before its own evaluation
+
+
+@pytest.mark.parametrize("integrator", list(Integrator))
+def test_an_accepted_step_hands_back_the_rate_at_the_state_it_arrived_at(integrator: Integrator):
+    sch, dy, xi, first = checked_setup()
+    attempt = checked_step(sch, integrator, xi, dy, 0.01, first)
+    assert attempt.failure is None
+    assert attempt.dy is not None
+    assert attempt.result is not None
+    assert np.array_equal(attempt.dy, advance(sch, integrator, xi, dy, 0.01))
+    again = sch.layout.pack(sch.evaluate_deviation(xi + 0.01, attempt.dy).deviation_rate)
+    assert np.array_equal(sch.layout.pack(attempt.result.deviation_rate), again)
+    assert len(attempt.stages) == integrator.tableau.stages
+
+
+def test_a_step_clipped_to_an_output_time_is_evaluated_at_that_time(monkeypatch: pytest.MonkeyPatch):
+    sch, dy, xi, first = checked_setup()
+    ev = Evaluations(sch, set(), "")
+    ev.install(monkeypatch)
+    checked_step(sch, Integrator.RK4, xi, dy, 0.01, first, land=0.5125)
+    assert ev.times[-1] == 0.5125  # the result, at the landing time, not at xi + dxi
+
+
+def test_a_refused_attempt_is_retried_at_half_the_step_until_the_limit(monkeypatch: pytest.MonkeyPatch):
+    sch, dy, xi, first = checked_setup()
+    ev = Evaluations(sch, set(), "every_rho")
+    ev.install(monkeypatch)
+    with pytest.raises(StepAbortError) as abort:
+        advance_checked(sch, Integrator.RK4, xi, dy, 0.016, first)
+    refused = abort.value.refused
+    assert len(refused) == MAX_HALVINGS + 1
+    assert all(f.cause is FailureCause.STAGE_RHO for f in refused)
+    c_2 = float(RK4.c[1])  # stage 2 is evaluated at xi + c_2 dxi: the attempted steps halve
+    assert [(t - xi) / c_2 for t in ev.times] == pytest.approx([0.016 / 2**n for n in range(MAX_HALVINGS + 1)])
+
+
+def test_the_chart_gets_two_halvings_and_a_passing_halving_is_accepted(monkeypatch: pytest.MonkeyPatch):
+    sch, dy, xi, first = checked_setup()
+    Evaluations(sch, set(), "every_gamma").install(monkeypatch)
+    with pytest.raises(StepAbortError) as abort:
+        advance_checked(sch, Integrator.RK4, xi, dy, 0.016, first)
+    assert len(abort.value.refused) == CHART_HALVINGS + 1
+    assert abort.value.failure.cause is FailureCause.STAGE_GAMMABAR2
+    Evaluations(sch, {1}, "gamma").install(monkeypatch)  # the first attempt only
+    accepted = advance_checked(sch, Integrator.RK4, xi, dy, 0.016, first)
+    assert accepted.dxi == 0.008
+    assert [f.cause for f in accepted.refused] == [FailureCause.STAGE_GAMMABAR2]
