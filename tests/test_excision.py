@@ -29,6 +29,7 @@ from pbh.excision import (
 )
 from pbh.geometry import Geometry
 from pbh.horizon import UNEXCISED, FaceValues, Horizon, HorizonReport, HorizonRow, find_horizons, near_zone
+from pbh.kernels import PRODUCTION_KERNELS
 from pbh.layout import Layout
 from pbh.maps import BlendMap, IdentityMap, Zone
 from pbh.output import RunReader
@@ -36,6 +37,8 @@ from pbh.records import read_initial
 from pbh.state import frw_state
 from pbh.stencils import StencilWeights
 from pbh.timestep import Scheme
+
+THETA = PRODUCTION_KERNELS.theta  # the theta-limiter fraction, which fixes the outer face density
 
 RAD = EquationOfState(RADIATION)
 EXCISION = ExcisionConfig()
@@ -82,7 +85,7 @@ def slice_of(reader: RunReader, config: RunConfig, index: int):
     frame = sch.frame(record.xi)
     layout = Layout(config.grid.N)
     state = record.state
-    d = derive(state, frame.geo, frame.bg, RAD, StencilWeights.of(frame.geo, layout))
+    d = derive(state, frame.geo, frame.bg, RAD, StencilWeights.of(frame.geo, layout), THETA)
     report = find_horizons(state, d, frame.geo, frame.bg, RAD, sch.map, layout, record.xi)
     return record, state, d, frame.geo, frame.bg, report, layout
 
@@ -105,7 +108,7 @@ def test_frw_faces_are_not_outflow_faces_and_trapped_faces_are():
     bg = Background.at(RAD, 0.5)
     state = frw_state(geo)
     layout = Layout(40)
-    d = derive(state, geo, bg, RAD, StencilWeights.of(geo, layout))
+    d = derive(state, geo, bg, RAD, StencilWeights.of(geo, layout), THETA)
     # mu = alpha [X - <ephi> (U + Gammabar)] with U = X and ephi = 1 on FRW: -alpha Gammabar < 0, light escapes
     for j in (1, 10, 39):
         assert outflow_margin(j, state, d, geo, RAD, layout) == pytest.approx(-0.5 * math.sqrt(bg.Gammabar2))
@@ -191,7 +194,7 @@ def test_excising_keeps_the_cumulative_mass_at_every_retained_face(collapse: tup
     assert np.all(np.isnan(excised.E[:j_e]))
     assert np.all(np.isnan(excised.U[:j_e]))
     assert excised.M_e == pytest.approx(3.0 * np.sum(state.E[:j_e]))
-    d_excised = derive(excised, geo, bg, RAD, StencilWeights.of(geo, excised_layout))
+    d_excised = derive(excised, geo, bg, RAD, StencilWeights.of(geo, excised_layout), THETA)
     assert d_excised.M[j_e:] == pytest.approx(d.M[j_e:], rel=1e-14)
     assert d_excised.mt[j_e:] == pytest.approx(d.mt[j_e:], rel=1e-14)
     # a second move, further out, adds the dropped cells to the mass inside

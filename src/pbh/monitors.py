@@ -1,13 +1,13 @@
 """The monitors of a run before formation: the scalars recorded every step (output specification, Section 3).
 
-Most runs never have their monitors read, so the record has two tiers. Every step records what is free or one
-reduction each: the step, the smallest density and `Gammabar^2` of the state arrived at, the total mass, the
-Runge-Kutta-weighted outer flux with its integral and the bookkeeping residual, the central density and the outer
-boundary's scalars; about one per cent of a step. At every snapshot, where someone looking at the fields will want
-them, and on every step if the configuration's `monitor_every_step` is on, the row is full: the locations of the
-minima, the Courant cell, the floor count, the far zone, the boundary energy, the grid scale, the steepness probe,
-and the under-resolution monitors of the criticality study, about a fifth of a step. On the other steps those
-columns hold NaN, or `-1` for counts.
+Most runs never have their monitors read, so the record has two tiers. Every step records what is free or one reduction
+each: the step, the smallest density and `Gammabar^2` of the state arrived at, the total mass, the Runge-Kutta-weighted
+outer flux with its integral and the bookkeeping residual, the central density and the outer boundary's scalars; about
+one per cent of a step. At every snapshot, where someone looking at the fields will want them, and on every step if the
+configuration's `monitor_every_step` is on, the row is full: the locations of the minima, the Courant cell, the
+theta-limiter's bind count, the far zone, the boundary energy, the grid scale, the steepness probe, and the
+under-resolution monitors of the criticality study, about a fifth of a step. On the other steps those columns hold NaN,
+or `-1` for counts.
 
 `StageFluxes` is what each stage of a step contributes, three scalars; `MonitoredStep` is the row of the step table,
 `StepRow` extended with both tiers; `monitor_step` fills it.
@@ -32,7 +32,6 @@ from pbh.derived import Derived
 from pbh.eos import Background, EquationOfState
 from pbh.equations import DerivsResult
 from pbh.geometry import Geometry
-from pbh.kernels import KernelSettings
 from pbh.layout import Layout
 from pbh.outer import characteristic_pair
 from pbh.output import StepRow
@@ -110,7 +109,7 @@ class MonitoredStep(StepRow):
     # --- at snapshots, or every step with monitor_every_step ---
     rho_min_cell: int
     Gammabar2_min_face: int
-    floor_activations: int
+    theta_binds: int
     courant_ratio: float
     courant_cell: int
     Theta_at_courant: float
@@ -177,9 +176,7 @@ class StepInputs:
     far_zone_from: float
 
 
-def monitor_step(
-    inputs: StepInputs, eos: EquationOfState, layout: Layout, settings: KernelSettings, full: bool = True
-) -> MonitoredStep:
+def monitor_step(inputs: StepInputs, eos: EquationOfState, layout: Layout, full: bool = True) -> MonitoredStep:
     """Fill the step record from a completed step: the first tier always, the second when `full`."""
     i = inputs
     N, j_e = layout.N, layout.j_e
@@ -211,7 +208,7 @@ def monitor_step(
         return MonitoredStep(i.step, i.xi, i.dxi, i.limit, **every_step, **UNSET_COLUMNS)
 
     # the second tier
-    diag = full_diagnostics(i, eos, layout, settings, u_plus, u_minus, every_step["rho_0"])
+    diag = full_diagnostics(i, eos, layout, u_plus, u_minus, every_step["rho_0"])
     return MonitoredStep(i.step, i.xi, i.dxi, i.limit, **every_step, **dataclasses.asdict(diag))
 
 
@@ -219,7 +216,6 @@ def full_diagnostics(
     i: StepInputs,
     eos: EquationOfState,
     layout: Layout,
-    settings: KernelSettings,
     u_plus: float,
     u_minus: float,
     rho_0: float,
@@ -231,14 +227,13 @@ def full_diagnostics(
     X = geo.X[: N + 1]
     w = float(eos.w)
 
-    # validity, located; the floor
+    # validity, located; the theta-limiter
     rho_min_cell = j_e + int(np.argmin(d.rho[cells]))
     Gammabar2_min_face = j_e + int(np.argmin(d.Gammabar2[faces]))
-    floor = 0
+    theta_binds = 0
     kernels = i.result.kernels
     if kernels is not None:
-        at_floor = (kernels.rho_L[j_e + 1 : N + 1] <= settings.rho_floor) | (kernels.rho_R[j_e:N] <= settings.rho_floor)
-        floor = int(np.sum(at_floor))
+        theta_binds = int(np.sum(kernels.theta_scale[cells] < 1.0))
 
     # the Courant cell and the speeds at its faster face
     Lam_hat = np.maximum(sp.Lam[j_e:N], sp.Lam[j_e + 1 : N + 1])
@@ -291,7 +286,7 @@ def full_diagnostics(
     return Diagnostics(
         rho_min_cell=rho_min_cell,
         Gammabar2_min_face=Gammabar2_min_face,
-        floor_activations=floor,
+        theta_binds=theta_binds,
         courant_ratio=float(ratio[k]),
         courant_cell=j_e + k,
         Theta_at_courant=float(sp.Theta[faster]),
@@ -328,7 +323,7 @@ class Diagnostics:
 
     rho_min_cell: int
     Gammabar2_min_face: int
-    floor_activations: int
+    theta_binds: int
     courant_ratio: float
     courant_cell: int
     Theta_at_courant: float
@@ -416,11 +411,11 @@ def limiter_clipped(
 ) -> np.ndarray[tuple[int], np.dtype[np.bool_]]:
     """Which retained cells the density limiter clipped: their reconstructed slope in `s` is not the unclipped one.
 
-    The reconstruction's slope of cell `c` is `(rho_L,c+1 - rho_c) / (X_{c+1}^2 - sbar_c)`. An interior cell's
-    unclipped slope is the mean of its two one-sided differences in `sbar`; the first and last retained cells' is their
-    single adjacent difference, which the positivity clip of the reconstruction cuts back near vacuum. All are formed
-    from the deviations `rho - 1`, as the reconstruction forms them, so that near FRW no rounding of the density to its
-    FRW size reads as a clipped slope.
+    The reconstruction's slope of cell `c` is `(rho_L,c+1 - rho_c) / (X_{c+1}^2 - sbar_c)`. An interior cell's unclipped
+    slope is the mean of its two one-sided differences in `sbar`; the first and last retained cells' is their single
+    adjacent difference. The theta-limiter scales any of them back near vacuum, and counts as a clip here. All are
+    formed from the deviations `rho - 1`, as the reconstruction forms them, so that near FRW no rounding of the density
+    to its FRW size reads as a clipped slope.
     """
     N, j_e = layout.N, layout.j_e
     clipped = np.zeros(N, dtype=bool)

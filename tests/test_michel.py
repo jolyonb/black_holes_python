@@ -29,6 +29,8 @@ from pbh.state import State
 from pbh.stencils import StencilWeights
 from pbh.timestep import Scheme
 
+THETA = PRODUCTION_KERNELS.theta  # the theta-limiter fraction, which fixes the outer face density
+
 RAD = EquationOfState(RADIATION)
 ALPHA = float(RAD.alpha)
 EPSILON = 1e-8  # the hole's mass in Hubble radii: the background is negligible and the flow steady
@@ -88,7 +90,7 @@ def test_the_state_on_the_grid_has_the_flows_lapse_and_gamma_and_its_horizon_at_
     geo, bg = frame.geo, frame.bg
     assert state.M_e == hole_mass_tilde(EPSILON, XI, RAD) == 2.0 * EPSILON
     assert np.all(state.U[layout.j_e :] < 0.0)
-    d = derive(state, geo, bg, RAD, StencilWeights.of(geo, layout))
+    d = derive(state, geo, bg, RAD, StencilWeights.of(geo, layout), THETA)
     r = geo.X[: layout.N + 1] / EPSILON  # r / M at xi = 0
     flow = michel_flow(r[layout.j_e :])
     assert np.sqrt(d.Gammabar2[layout.j_e :]) == pytest.approx(flow.N, rel=1e-6)  # Gammabar = e^((1-alpha) xi) Gamma

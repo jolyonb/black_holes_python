@@ -22,8 +22,7 @@ strengths `(tau_u, tau_rho, tau_W)` are fixed by the energy estimate and by accu
 
 `HeldAtFrw` holds the outer face at its FRW value, `U_N = X_N`, which the paper uses for the converging-pulse and
 converging-shell tests of Table tab:num:tests ("with the outer face held at FRW, `U_N = X_N` in place of
-eq:num:sat"); the flux is the base flux of eq:num:energy at face `N` with the extrapolated face density, and `W` is
-not used.
+eq:num:sat"); the flux is the base flux of eq:num:energy at face `N` with the face-`N` density, and `W` is not used.
 
 Every closure takes the same `OuterInputs`, the handful of face-`N` quantities the rows can depend on, so that the
 stage does not know which closure it is talking to.
@@ -47,9 +46,9 @@ class OuterInputs:
         W: The auxiliary scalar of Section 7.5.
         delta_U_N: The relative velocity deviation at the outer face, `U_N / X_N - 1`.
         delta_rho_N_1: The relative density deviation of the last cell, `rho_{N-1} - 1`, half a cell inside the face.
-        rho_f_N: The extrapolated face density `<rho>_N`.
+        rho_f_N: The face density `<rho>_N`: the last cell's theta-limited density at face `N` (Section 7.5).
         delta_rho_f_N: Its deviation, `<rho>_N - 1`.
-        ephi_f_N: The extrapolated face lapse `<ephi>_N`.
+        ephi_f_N: The face lapse `<ephi>_N`: the lapse of that same density, so that face `N` has one state.
         delta_ephi_f_N: Its deviation, `<ephi>_N - 1`.
         mt_N: The tilde mass at the outer face.
         delta_m_N: Its relative deviation, `mt_N - 1`.
@@ -118,7 +117,7 @@ class HeldAtFrw(OuterClosure):
     """The outer face held at its FRW value, `U_N = X_N` (Section 7.8; a test closure).
 
     The velocity follows the face, `d_xi U_N = (d_xi X)_N`, which is zero on a static map; the flux through the face
-    is the base flux of eq:num:energy with the extrapolated face density; `W` is not used. A held face reflects, so
+    is the base flux of eq:num:energy with the face-`N` density; `W` is not used. A held face reflects, so
     this closure serves only tests whose signals never reach the boundary or are meant to reflect from it.
     """
 

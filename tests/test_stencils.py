@@ -81,13 +81,31 @@ def test_the_outer_row_is_exact_on_a_quadratic_and_the_excision_row_is_one_diffe
 # --- the two-cell average and the origin ---
 
 
-def test_the_face_value_is_the_two_cell_average_with_the_printed_end_rows():
+def test_the_face_value_is_the_two_cell_average_with_the_origin_row_and_none_at_the_outer_face():
     geo = geometry(IdentityMap, 6, 3.0)
     f = np.array([1.0, 2.0, 4.0, 8.0, 16.0, 32.0])
     avg = weights(geo).face_average(f)
     assert avg[0] == 1.0  # <f>_0 = f_0
     assert np.array_equal(avg[1:6], 0.5 * (f[:-1] + f[1:]))
-    assert avg[6] == 1.5 * 32.0 - 0.5 * 16.0  # <f>_N = 3/2 f_{N-1} - 1/2 f_{N-2}
+    assert math.isnan(avg[6])  # face N has one state, the outer face density and its lapse, not an average
+
+
+@pytest.mark.parametrize("family", FAMILIES)
+def test_the_outer_face_density_is_the_last_cells_profile_and_is_exact_on_a_field_linear_in_s(family: Family):
+    geo = geometry(family, 12, 3.0)
+    delta = 0.3 - 0.02 * geo.sbar[:-1]  # rho = 1.3 - 0.02 X^2, nowhere near theta rho: the limiter does not bind
+    rho_N, delta_N = weights(geo).outer_face_density(delta, 0.2)
+    assert delta_N == pytest.approx(0.3 - 0.02 * geo.X[12] ** 2, rel=1e-12)
+    assert rho_N == 1.0 + delta_N
+
+
+def test_the_outer_face_density_is_held_at_theta_times_a_nearly_empty_last_cell():
+    # An extrapolation, 3/2 rho_(N-1) - 1/2 rho_(N-2), would be negative here.
+    geo = geometry(IdentityMap, 12, 3.0)
+    rho = np.ones(12)
+    rho[10], rho[11] = 1.0, 1e-3
+    rho_N, _ = weights(geo).outer_face_density(rho - 1.0, 0.2)
+    assert rho_N == pytest.approx(0.2e-3, rel=1e-9)
 
 
 def test_entries_below_the_excision_face_are_nan():

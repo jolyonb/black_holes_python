@@ -30,6 +30,7 @@ from pbh.types import FloatArray
 RAD = EquationOfState(RADIATION)
 N = 60
 SCHEME = Scheme(RAD, IdentityMap(6.0), Layout(N), OutgoingWave(), PRODUCTION_KERNELS)
+THETA = PRODUCTION_KERNELS.theta
 WEIGHTS = tuple(float(b) for b in RK4.b)
 
 
@@ -70,12 +71,12 @@ def test_on_frw_the_record_is_the_background_and_every_deviation_is_zero():
     xi = 0.4
     f = SCHEME.frame(xi)
     state = frw_state(f.geo)
-    row = monitor_step(inputs_for(SCHEME, xi, state), RAD, SCHEME.layout, SCHEME.settings)
+    row = monitor_step(inputs_for(SCHEME, xi, state), RAD, SCHEME.layout)
     assert isinstance(row, MonitoredStep)
     assert (row.step, row.xi, row.dxi, row.limit) == (3, xi, 0.01, "courant")
     assert row.rho_min == 1.0
     assert row.Gammabar2_min == pytest.approx(1.0)
-    assert row.floor_activations == 0
+    assert row.theta_binds == 0
     assert row.M_total == pytest.approx(f.geo.X[N] ** 3)
     assert row.F_N == pytest.approx(
         3.0 * f.geo.X[N] ** 2 * (2.0 / 3.0) * 0.5, rel=1e-12
@@ -111,7 +112,7 @@ def test_the_full_row_locates_the_minima_and_the_courant_cell():
     E[17] *= 1.5  # a mass excess in cell 17: Gammabar^2 drops just outside it, most at face 18
     E[30] *= 0.5  # a low density in cell 30 (a deficit raises Gammabar^2, so the minimum stays at face 18)
     perturbed = State(E=E, U=state.U, W=0.0)
-    row = monitor_step(inputs_for(SCHEME, xi, perturbed), RAD, SCHEME.layout, SCHEME.settings)
+    row = monitor_step(inputs_for(SCHEME, xi, perturbed), RAD, SCHEME.layout)
     assert (row.rho_min, row.rho_min_cell) == (pytest.approx(0.5), 30)
     assert row.Gammabar2_min < 1.0
     assert row.Gammabar2_min_face == 18
@@ -150,7 +151,7 @@ def test_the_bookkeeping_residual_of_an_rk4_step_is_round_off():
     new = sch.layout.unpack(sch.frw(xi + dxi) + dy_new)
     inputs = inputs_for(sch, xi + dxi, new, stages, delta_M_total_before=stages[0].delta_M_total)
     inputs = dataclasses.replace(inputs, dxi=dxi)
-    row = monitor_step(inputs, RAD, sch.layout, sch.settings)
+    row = monitor_step(inputs, RAD, sch.layout)
     assert row.bookkeeping_residual < 1e-13
     assert row.F_N == pytest.approx(sum(b * s.F_N for b, s in zip(WEIGHTS, stages, strict=True)))
     assert row.F_N_integral == pytest.approx(dxi * row.F_N)
@@ -168,7 +169,7 @@ def test_the_outer_boundary_the_centre_and_the_far_zone_read_the_state():
     U = X * (1.0 + 0.005 * np.exp(-(X**2)))
     U[0] = 0.0
     state = State(E=E, U=U, W=0.002)
-    row = monitor_step(inputs_for(SCHEME, xi, state, far_zone_from=4.0), RAD, SCHEME.layout, SCHEME.settings)
+    row = monitor_step(inputs_for(SCHEME, xi, state, far_zone_from=4.0), RAD, SCHEME.layout)
     d = SCHEME.evaluate(xi, SCHEME.layout.pack(state)).derived
     u_plus, u_minus = characteristic_pair(float(d.delta_U[N]), float(d.delta_rho[N - 1]), float(X[N]), f.bg.c_s)
     assert (row.u_plus, row.u_minus, row.W) == (u_plus, u_minus, 0.002)
@@ -189,7 +190,7 @@ def test_the_steepness_probe_on_a_step_profile():
     frw = frw_state(f.geo)
     rho = np.where(f.geo.Xm[:N] < 1.5, 1.3, 1.0)  # a mild dense core of radius 1.5 on the uniform grid, dX = 0.1
     state = State(E=frw.E * rho, U=frw.U, W=0.0)
-    row = monitor_step(inputs_for(SCHEME, xi, state), RAD, SCHEME.layout, SCHEME.settings)
+    row = monitor_step(inputs_for(SCHEME, xi, state), RAD, SCHEME.layout)
     assert row.core_cells == N  # 1 / 1.3 is above a half
     assert row.largest_cell_jump == pytest.approx(np.log(1.3))
     assert row.steepest_X == pytest.approx(1.5)
@@ -206,7 +207,7 @@ def test_the_core_count_and_the_under_resolution_monitors_on_a_gaussian_core():
     frw = frw_state(f.geo)
     rho = 1.0 + 3.0 * np.exp(-((f.geo.Xm[:N] / 0.5) ** 2))  # central density 4, half of it at X = 0.5 sqrt(ln 3)
     state = State(E=frw.E * rho, U=frw.U, W=0.0)
-    row = monitor_step(inputs_for(SCHEME, xi, state), RAD, SCHEME.layout, SCHEME.settings)
+    row = monitor_step(inputs_for(SCHEME, xi, state), RAD, SCHEME.layout)
     assert row.core_cells == 5  # cells with Xm = 0.05 .. 0.45 lie inside 0.524
     assert row.rho_0 == pytest.approx(rho[0])
     assert row.viscous_over_pressure_core == 0.0  # FRW velocity: no velocity jump, no viscous pressure
@@ -222,7 +223,7 @@ def test_a_supersonic_zone_is_counted_and_located():
     state = State(E=frw.E, U=U, W=0.0)
     _, result = evaluate(SCHEME, xi, state)
     supersonic = np.abs(result.speeds.Theta[: N + 1]) > result.speeds.a[: N + 1]
-    row = monitor_step(inputs_for(SCHEME, xi, state), RAD, SCHEME.layout, SCHEME.settings)
+    row = monitor_step(inputs_for(SCHEME, xi, state), RAD, SCHEME.layout)
     assert 1 <= row.supersonic_faces == int(np.sum(supersonic)) <= 5
     assert row.supersonic_outer_X == pytest.approx(f.geo.X[np.flatnonzero(supersonic)[-1]])
 
@@ -230,9 +231,7 @@ def test_a_supersonic_zone_is_counted_and_located():
 def test_the_companion_and_the_running_integral_pass_through():
     xi = 0.4
     state = frw_state(SCHEME.frame(xi).geo)
-    row = monitor_step(
-        inputs_for(SCHEME, xi, state, rate_change=0.6, F_N_integral_before=2.0), RAD, SCHEME.layout, SCHEME.settings
-    )
+    row = monitor_step(inputs_for(SCHEME, xi, state, rate_change=0.6, F_N_integral_before=2.0), RAD, SCHEME.layout)
     assert row.companion == pytest.approx(0.01 / 6.0 * 0.6)
     assert row.F_N_integral == pytest.approx(2.0 + 0.01 * row.F_N)
 
@@ -242,9 +241,9 @@ def test_off_radiation_the_boundary_energy_is_not_defined_and_the_centred_scheme
     sch = Scheme(dust_like, IdentityMap(6.0), Layout(N), OutgoingWave(), CENTRED_SCHEME)
     xi = 0.4
     state = frw_state(sch.frame(xi).geo)
-    row = monitor_step(inputs_for(sch, xi, state), dust_like, sch.layout, sch.settings)
+    row = monitor_step(inputs_for(sch, xi, state), dust_like, sch.layout)
     assert np.isnan(row.boundary_energy)
-    assert (row.floor_activations, row.clipped_cells, row.reconstruction_jump, row.viscous_over_pressure_core) == (
+    assert (row.theta_binds, row.clipped_cells, row.reconstruction_jump, row.viscous_over_pressure_core) == (
         0,
         0,
         0,
@@ -259,7 +258,7 @@ def test_an_excised_layout_is_monitored_on_the_retained_cells_only():
     xi = 0.4
     f = sch.frame(xi)
     state = frw_state(f.geo, j_e)
-    row = monitor_step(inputs_for(sch, xi, state), RAD, layout, sch.settings)
+    row = monitor_step(inputs_for(sch, xi, state), RAD, layout)
     assert row.rho_min == 1.0
     assert row.rho_min_cell >= j_e
     assert row.rho_0 == 1.0  # the innermost retained cell
@@ -269,15 +268,15 @@ def test_an_excised_layout_is_monitored_on_the_retained_cells_only():
     assert row.bookkeeping_residual < 1e-14
 
 
-def test_the_floor_activations_count_reconstructed_face_densities_at_the_floor():
+def test_the_theta_binds_count_the_cells_whose_slope_the_theta_limiter_scaled():
     xi = 0.4
     f = SCHEME.frame(xi)
     frw = frw_state(f.geo)
     E = frw.E.copy()
-    E[30] *= 1e-13  # a cell below the floor: the reconstruction to its faces is floored
-    state = State(E=E, U=frw.U, W=0.0)
-    row = monitor_step(inputs_for(SCHEME, xi, state), RAD, SCHEME.layout, SCHEME.settings)
-    assert row.floor_activations >= 1
+    E[29:32] *= np.array([1e-4, 1e-8, 1e-4])  # a valley: mc would take cells 29 and 31 down to the valley bottom,
+    state = State(E=E, U=frw.U, W=0.0)  # far below theta times theirs, so their slopes are scaled; 30 is a minimum
+    row = monitor_step(inputs_for(SCHEME, xi, state), RAD, SCHEME.layout)
+    assert row.theta_binds == 2
 
 
 # --- the pieces ---
@@ -313,7 +312,7 @@ def test_the_limiter_clipping_detector_sees_a_kink_and_not_a_smooth_field():
     assert not np.any(clipped[12:])
 
 
-def test_the_monitor_counts_the_end_cells_when_their_positivity_clip_binds():
+def test_the_monitor_counts_the_end_cells_when_the_theta_limiter_binds_there():
     sch = SCHEME
     layout, geo = sch.layout, sch.frame(0.0).geo
     frw = frw_state(geo)
@@ -326,7 +325,7 @@ def test_the_monitor_counts_the_end_cells_when_their_positivity_clip_binds():
     assert clipped[0]
     assert clipped[N - 1]
     mild = np.ones(N)
-    mild[0], mild[N - 1] = 1.1, 0.9  # one-sided slopes that keep the profiles positive: no clip
+    mild[0], mild[N - 1] = 1.1, 0.9  # one-sided slopes that keep the faces above theta rho: no limiting
     result = sch.evaluate(0.0, layout.pack(State(E=frw.E * mild, U=frw.U, W=0.0)))
     assert result.kernels is not None
     clipped = limiter_clipped(result.derived.delta_rho, result.kernels.delta_rho_L, geo, layout)
@@ -336,10 +335,10 @@ def test_the_monitor_counts_the_end_cells_when_their_positivity_clip_binds():
 
 @pytest.mark.parametrize("j_e", [0, 5])
 @pytest.mark.parametrize(("excess", "clipped"), [(1.1, True), (0.9, False)])
-def test_the_monitor_sees_an_end_cell_clip_of_a_tenth(j_e: int, excess: float, clipped: bool):
-    # The end cells' one-sided slopes set to `excess` times the value at which the profile touches zero at the far
-    # face: 1.1 is clipped back by a tenth, 0.9 not at all. A detector blind to small clips, or one that reads
-    # round-off as a clip, fails one of the two.
+def test_the_monitor_sees_an_end_cell_theta_limit_of_a_tenth(j_e: int, excess: float, clipped: bool):
+    # The end cells' one-sided slopes set to `excess` times the slope at which the profile reaches theta rho at the far
+    # face: 1.1 is scaled back by a tenth, 0.9 not at all. A detector blind to a small limit, or one that reads
+    # round-off as one, fails one of the two.
     n = 24
     radii, _ = SinhStretch(4.0, scale=2.0).radii(0.0, n)
     geo = Geometry.of(radii, np.zeros_like(radii))
@@ -348,11 +347,12 @@ def test_the_monitor_sees_an_end_cell_clip_of_a_tenth(j_e: int, excess: float, c
     X2, sbar = geo.X**2, geo.sbar
     rho = np.ones(n)
     e, f = j_e, n - 1
-    rho[e] = 0.01  # rising outward: the profile touches zero at the inner face at slope rho_e / (sbar_e - X_e^2)
-    rho[e + 1] = rho[e] + excess * rho[e] / (sbar[e] - X2[e]) * (sbar[e + 1] - sbar[e])
-    rho[f] = 0.01  # falling outward: zero at the outer face at slope -rho_f / (X_N^2 - sbar_f)
-    rho[f - 1] = rho[f] + excess * rho[f] / (X2[f + 1] - sbar[f]) * (sbar[f] - sbar[f - 1])
-    _, _, delta_L, _ = reconstruct_density(rho - 1.0, geo, weights, DensityLimiter.MC, 1e-12)
+    drop = (1.0 - THETA) * 0.01  # the largest drop below the mean the theta-limiter allows
+    rho[e] = 0.01  # rising outward: theta rho at the inner face at slope drop / (sbar_e - X_e^2)
+    rho[e + 1] = rho[e] + excess * drop / (sbar[e] - X2[e]) * (sbar[e + 1] - sbar[e])
+    rho[f] = 0.01  # falling outward: theta rho at the outer face at slope -drop / (X_N^2 - sbar_f)
+    rho[f - 1] = rho[f] + excess * drop / (X2[f + 1] - sbar[f]) * (sbar[f] - sbar[f - 1])
+    _, _, delta_L, _, _ = reconstruct_density(rho - 1.0, geo, weights, DensityLimiter.MC, THETA)
     flags = limiter_clipped(rho - 1.0, delta_L, geo, layout)
     assert flags[e] == clipped
     assert flags[f] == clipped
@@ -364,7 +364,7 @@ def test_a_plain_step_records_the_first_tier_and_leaves_the_second_unset():
     frw = frw_state(f.geo)
     rho = 1.0 + 3.0 * np.exp(-((f.geo.Xm[:N] / 0.5) ** 2))
     state = State(E=frw.E * rho, U=frw.U, W=0.0)
-    row = monitor_step(inputs_for(SCHEME, xi, state), RAD, SCHEME.layout, SCHEME.settings, full=False)
+    row = monitor_step(inputs_for(SCHEME, xi, state), RAD, SCHEME.layout, full=False)
     assert row.rho_0 == pytest.approx(rho[0])
     assert row.rho_min == pytest.approx(1.0, rel=1e-6)
     assert row.bookkeeping_residual < 1e-14
@@ -374,7 +374,7 @@ def test_a_plain_step_records_the_first_tier_and_leaves_the_second_unset():
     assert np.isnan(row.reconstruction_jump)
     assert np.isnan(row.boundary_energy)
     assert (row.rho_min_cell, row.courant_cell, row.core_cells, row.clipped_cells) == (-1, -1, -1, -1)
-    assert (row.clipped_in_core, row.supersonic_faces, row.floor_activations) == (-1, -1, -1)
+    assert (row.clipped_in_core, row.supersonic_faces, row.theta_binds) == (-1, -1, -1)
 
 
 # --- the monitors that were only weakly checked, against independent expectations ---
@@ -412,9 +412,7 @@ def test_the_far_zone_reports_the_largest_deviation_beyond_its_radius_and_nothin
     E[50] *= 1.0002  # cell 50, Xm = 5.05, beyond 4: counts
     U = frw.U.copy()
     U[55] *= 1.0001  # face 55, X = 5.5: counts
-    row = monitor_step(
-        inputs_for(SCHEME, xi, State(E=E, U=U, W=0.0), far_zone_from=4.0), RAD, SCHEME.layout, SCHEME.settings
-    )
+    row = monitor_step(inputs_for(SCHEME, xi, State(E=E, U=U, W=0.0), far_zone_from=4.0), RAD, SCHEME.layout)
     assert row.far_zone_delta_rho == pytest.approx(2e-4, rel=1e-8)
     assert row.far_zone_delta_U == pytest.approx(1e-4, rel=1e-8)
 
@@ -428,7 +426,7 @@ def test_the_steepness_values_the_inner_odd_even_amplitude_and_the_four_cell_rat
     rho[:4] = [1.0, 1.02, 1.0, 1.02]  # an inner sawtooth of amplitude 0.01 about 1.01: alternating component 0.02
     rho[Xm > 5.0] = 1.01  # a jump of 1.01 at X = 5 (between cells 49 and 50), seen by the four-cell probe outside 5
     state = State(E=frw.E * rho, U=frw.U, W=0.0)
-    row = monitor_step(inputs_for(SCHEME, xi, state), RAD, SCHEME.layout, SCHEME.settings)
+    row = monitor_step(inputs_for(SCHEME, xi, state), RAD, SCHEME.layout)
     assert row.odd_even_inner == pytest.approx(0.02 / 1.0)  # relative to rho_0 = 1
     assert row.largest_four_cell_ratio_outside_5 == pytest.approx(1.01)
     assert row.largest_cell_jump_outside_3 == pytest.approx(np.log(1.01))
@@ -450,7 +448,7 @@ def test_the_reconstruction_jump_and_the_viscous_ratio_are_the_kernels_own_value
     _, result = evaluate(SCHEME, xi, state)
     assert result.kernels is not None
     k, d = result.kernels, result.derived
-    row = monitor_step(inputs_for(SCHEME, xi, state), RAD, SCHEME.layout, SCHEME.settings)
+    row = monitor_step(inputs_for(SCHEME, xi, state), RAD, SCHEME.layout)
     assert row.core_cells == 5
     assert row.viscous_over_pressure_core == pytest.approx(np.max(np.abs(k.q[:5]) / (d.rho[:5] / 3.0)))
     assert row.viscous_over_pressure_core > 1e-3

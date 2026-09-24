@@ -35,18 +35,22 @@ could be mirrored freely, but at second order that adds nothing, since for an od
 origin equals the mirrored centred one; an even field must not be mirrored, because a density that a converging front
 has cusped at the origin is not smooth there (Section 7.2).
 
-At the outer face `N` the face value is extrapolated, `<f>_N = 3/2 f_{N-1} - 1/2 f_{N-2}`, no gradient is formed (the
-outer row of Section 7.5 has no pressure difference), and the velocity gradient is the three-point one-sided row of
-eq:num:stencils. At an excision face `j_e` (Section 8.3) the retained data lie on one side only, and the rows are the
-first-order ones of eq:numbh:rows1: the face value is the cell behind it, `<f>_je = f_je`, no pressure gradient is
-formed, and the velocity gradient is the one retained difference `(U_{j_e+1} - U_{j_e}) / dX_{j_e}`. Their boundary
-form is the continuum characteristic flux, so the energy estimate certifies them. Section 8.3 says why the
-second-order rows it also discusses are not implemented: no diagonal energy weight certifies them, and near vacuum
-their extrapolated face density reaches zero.
+At the outer face `N` no cell field is averaged: the face has one state, the density `rho_hat_N` reconstructed from the
+last cell (its one-sided slope in `s`, theta-limited as in eq:num:theta) and the lapse of that same density
+(`outer_face_density`, Section 7.5). An extrapolated face value `3/2 f_{N-1} - 1/2 f_{N-2}` would be second
+order too, but for the density and the lapse it turns negative beside a nearly empty last cell. No gradient is formed at
+face `N` (the outer row of Section 7.5 has no pressure difference), and the velocity gradient is the three-point
+one-sided row of eq:num:stencils. At an excision face `j_e` (Section 8.3) the retained data lie on one side only, and
+the rows are the first-order ones of eq:numbh:rows1: the face value is the cell behind it, `<f>_je = f_je`, no pressure
+gradient is formed, and the velocity gradient is the one retained difference `(U_{j_e+1} - U_{j_e}) / dX_{j_e}`. Their
+boundary form is the continuum characteristic flux, so the energy estimate certifies them. Section 8.3 says why the
+second-order rows it also discusses are not implemented: no diagonal energy weight certifies them, and near vacuum their
+extrapolated face density reaches zero.
 
 Every coefficient of these stencils depends on the geometry alone, so on a static map it is the same at every stage
 (Section 7.1). `StencilWeights.of(geo, layout)` computes them once; the caller caches it together with the
-geometry, and its three methods apply the stencils to a field and do nothing but multiply and subtract.
+geometry, and its methods apply the stencils to a field and do nothing but multiply and subtract, bar the one
+theta-limited reconstruction at face `N`.
 
 Outputs are face arrays, `N + 1` long, NaN where the operator is not defined (below `j_e`; `(D_s f)_N`;
 `(D_U U)_0`), following the convention of `layout.py`.
@@ -73,6 +77,8 @@ class StencilWeights:
         outer_U: The three coefficients of `U_N`, `U_{N-1}`, `U_{N-2}` in the one-sided row at the outer face.
         excision_U: `1 / dX_{j_e}`, the factor of the one retained difference `U_{j_e+1} - U_{j_e}` in the velocity
             gradient at the excision face; never read without one.
+        outer_rho: The last cell's `(sbar_{N-1} - sbar_{N-2}, X_{N-1}^2 - sbar_{N-1}, X_N^2 - sbar_{N-1})`: the
+            divisor of its one-sided slope in `s`, and the offsets in `s` of its two faces from its mean.
     """
 
     layout: Layout
@@ -80,6 +86,7 @@ class StencilWeights:
     centred_U: FloatArray
     outer_U: tuple[float, float, float]
     excision_U: float
+    outer_rho: tuple[float, float, float]
 
     @classmethod
     def of(cls, geo: Geometry, layout: Layout) -> Self:
@@ -92,7 +99,16 @@ class StencilWeights:
         centred_U[1:N] = 1.0 / (X[2 : N + 1] - X[0 : N - 1])
         outer_U = cls._one_sided_three_point(float(geo.dX[N - 1]), float(geo.dX[N - 2]))
         excision_U = 1.0 / float(geo.dX[j_e])  # the one retained difference at an excision face
-        return cls(layout=layout, grad_s=grad_s, centred_U=centred_U, outer_U=outer_U, excision_U=excision_U)
+        X2, sbar = X**2, geo.sbar
+        outer_rho = (float(geo.dS[N - 1]), float(X2[N - 1] - sbar[N - 1]), float(X2[N] - sbar[N - 1]))
+        return cls(
+            layout=layout,
+            grad_s=grad_s,
+            centred_U=centred_U,
+            outer_U=outer_U,
+            excision_U=excision_U,
+            outer_rho=outer_rho,
+        )
 
     def face_average(self, f: FloatArray) -> FloatArray:
         """The face value `<f>_j` of a cell field (eq:num:stencils, first line; eq:numbh:rows1 at `j_e`).
@@ -101,15 +117,33 @@ class StencilWeights:
             f: A cell field (`N` entries), the density or the lapse.
 
         Returns:
-            `<f>_j` at the retained faces: the two-cell average inside, the extrapolation at face `N`, `f_0` at the
-            origin, and at an excision face the cell behind it.
+            `<f>_j` at the retained faces `j < N`: the two-cell average inside, `f_0` at the origin, and at an
+            excision face the cell behind it. NaN at face `N`, whose state is `outer_face_density`'s.
         """
         N, j_e = self.layout.N, self.layout.j_e
         avg = np.full(N + 1, np.nan)
         avg[j_e + 1 : N] = 0.5 * (f[j_e : N - 1] + f[j_e + 1 : N])
-        avg[N] = 1.5 * f[N - 1] - 0.5 * f[N - 2]
         avg[j_e] = f[j_e]  # f_0 at the origin; the cell behind an excision face
         return avg
+
+    def outer_face_density(self, delta_rho: FloatArray, theta: float) -> tuple[float, float]:
+        """The density `rho_hat_N` at the outer face and its deviation `rho_hat_N - 1` (Section 7.5, eq:num:theta).
+
+        The last cell's profile in `s`, with its one-sided slope `(rho_{N-1} - rho_{N-2}) / (sbar_{N-1} -
+        sbar_{N-2})` scaled by the theta-limiter so that both its face values are at least `theta rho_{N-1}`,
+        evaluated at face `N`. It is the reconstruction's own `rho^L_N` (kernels.reconstruct_density), formed here too
+        because the face needs it with the kernels off as well.
+
+        Args:
+            delta_rho: The cell densities' deviations `rho - 1`.
+            theta: The theta-limiter's fraction, `0 < theta < 1`.
+        """
+        N = self.layout.N
+        dS, s_in, s_out = self.outer_rho
+        last = delta_rho[N - 1 : N]
+        slope = (last - delta_rho[N - 2 : N - 1]) / dS  # formed as the reconstruction forms it, to the last bit
+        _, _, delta_out = theta_limited_faces(last, slope * s_in, slope * s_out, theta)
+        return 1.0 + float(delta_out[0]), float(delta_out[0])
 
     def gradient_s(self, f: FloatArray) -> FloatArray:
         """The gradient `(D_s f)_j = 2 X_j (f_j - f_{j-1}) / dS_j` of a cell field (eq:num:stencils, second line).
@@ -163,3 +197,31 @@ class StencilWeights:
             -(Delta_1 + Delta_2) / (Delta_1 * Delta_2),
             Delta_1 / (Delta_2 * (Delta_1 + Delta_2)),
         )
+
+
+def theta_limited_faces(
+    delta_rho: FloatArray, off_in: FloatArray, off_out: FloatArray, theta: float
+) -> tuple[FloatArray, FloatArray, FloatArray]:
+    """The two face values of cells whose linear profiles are scaled by the theta-limiter (eq:num:theta).
+
+    A cell with density `rho_c` and face offsets `off_in`, `off_out` from its mean (the slope times `X^2 - sbar_c` at
+    each face) keeps its mean and has its offsets scaled by the one factor `t = min(1, (1 - theta) rho_c / m)`, `m`
+    the larger drop below the mean, so that both face values are at least `theta rho_c`. Where no face drops that far,
+    `t = 1` and the profile is untouched. Formed on the deviations: a face value is `1 + (delta_rho_c + t off)`.
+
+    Args:
+        delta_rho: The cells' deviations `rho_c - 1`.
+        off_in: The offset of each cell's inner face value from its mean.
+        off_out: The offset of its outer face value.
+        theta: The fraction, `0 < theta < 1`.
+
+    Returns:
+        `(t, delta_in, delta_out)`: the scale factor of each cell, and the deviations `rho - 1` of its inner and outer
+        face values.
+    """
+    rho = 1.0 + delta_rho
+    drop = -np.minimum(np.minimum(off_in, off_out), 0.0)  # the larger drop below the mean, >= 0
+    allowed = (1.0 - theta) * rho
+    with np.errstate(divide="ignore", invalid="ignore"):  # where drop is 0 the ratio is not taken
+        t = np.where(drop > allowed, allowed / np.where(drop > 0.0, drop, 1.0), 1.0)
+    return t, delta_rho + t * off_in, delta_rho + t * off_out

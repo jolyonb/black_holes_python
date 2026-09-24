@@ -80,8 +80,9 @@ class Derived:
         delta_U: The relative velocity deviation `U_j / X_j - 1 = delta U_j / X_j` (faces `1..N`; NaN at the origin).
         delta_m: The relative mass deviation `mt_j - 1 = delta M_j / X_j^3` (faces `1..N`; NaN at the origin).
         Gammabar2: `Gammabar_j^2` (faces), the first line of eq:num:facefields.
-        rho_f: The face density `<rho>_j` (faces).
-        ephi_f: The face lapse `<ephi>_j` (faces).
+        rho_f: The face density `<rho>_j` (faces): the two-cell average, and at face `N` the last cell's
+            theta-limited density there (`StencilWeights.outer_face_density`).
+        ephi_f: The face lapse `<ephi>_j` (faces): the two-cell average, and at face `N` the lapse of `rho_f[N]`.
         delta_rho_f: The face density's deviation `<rho>_j - 1 = <delta_rho>_j` (faces).
         delta_ephi_f: The face lapse's deviation `<ephi>_j - 1 = <delta_ephi>_j` (faces).
     """
@@ -108,6 +109,7 @@ def derive(
     bg: Background,
     eos: EquationOfState,
     w: StencilWeights,
+    theta: float,
     deviation: State | None = None,
 ) -> Derived:
     """Form the derived fields of one stage, asserting hyperbolicity on the retained entries.
@@ -118,6 +120,7 @@ def derive(
         bg: The background at this stage's time (for the FRW `Gammabar^2`).
         eos: The equation of state (for the lapse exponent).
         w: The stencil weights, which carry the layout and average the cell fields to the faces.
+        theta: The theta-limiter's fraction, which fixes the outer face's density (Section 7.5).
         deviation: The state's deviation from FRW, `state - frw_state(geo, j_e)`, if the caller holds it; otherwise
             it is recovered from the state. `Gammabar^2` and the relative deviations read it.
 
@@ -171,6 +174,14 @@ def derive(
         Gammabar2[0] = bg.Gammabar2  # M / X ~ X^2 -> 0 at the origin, and U_0 = 0
     _assert_positive(Gammabar2, faces, "Gammabar2")
 
+    # The face values: the two-cell averages, and at the outer face its one state, the last cell's theta-limited
+    # density there and the lapse of that same density (Section 7.5), never an extrapolation, which can turn negative.
+    rho_f, delta_rho_f = w.face_average(rho), w.face_average(delta_rho)
+    ephi_f, delta_ephi_f = w.face_average(ephi), w.face_average(delta_ephi)
+    rho_f[N], delta_rho_f[N] = w.outer_face_density(delta_rho, theta)
+    ephi_N, delta_ephi_N = eos.lapse_and_deviation(rho_f[N : N + 1], delta_rho_f[N : N + 1])
+    ephi_f[N], delta_ephi_f[N] = ephi_N[0], delta_ephi_N[0]
+
     return Derived(
         rho=rho,
         ephi=ephi,
@@ -182,10 +193,10 @@ def derive(
         delta_U=delta_U,
         delta_m=delta_m,
         Gammabar2=Gammabar2,
-        rho_f=w.face_average(rho),
-        ephi_f=w.face_average(ephi),
-        delta_rho_f=w.face_average(delta_rho),
-        delta_ephi_f=w.face_average(delta_ephi),
+        rho_f=rho_f,
+        ephi_f=ephi_f,
+        delta_rho_f=delta_rho_f,
+        delta_ephi_f=delta_ephi_f,
     )
 
 

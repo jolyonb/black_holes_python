@@ -17,6 +17,7 @@ from pbh.eos import RADIATION, Background, EquationOfState
 from pbh.geometry import Geometry
 from pbh.horizon import HorizonReport, HorizonRow, NearZone, find_horizons, near_zone
 from pbh.initial import cell_contents
+from pbh.kernels import PRODUCTION_KERNELS
 from pbh.layout import Layout
 from pbh.maps import IdentityMap, Map, SinhStretch
 from pbh.output import RunReader
@@ -24,6 +25,8 @@ from pbh.records import read_initial
 from pbh.state import State, frw_state
 from pbh.stencils import StencilWeights
 from pbh.types import FloatArray
+
+THETA = PRODUCTION_KERNELS.theta  # the theta-limiter fraction, which fixes the outer face density
 
 RAD = EquationOfState(RADIATION)
 E_XI = 25.0
@@ -57,7 +60,7 @@ def exact_roots(rho: Profile, brackets: list[tuple[float, float]]) -> list[float
 def report_for(m: Map, N: int, rho: Profile, v: float) -> tuple[HorizonReport, Geometry]:
     state, geo, bg = density_state(m, N, rho, v)
     layout = Layout(N)
-    d = derive(state, geo, bg, RAD, StencilWeights.of(geo, layout))
+    d = derive(state, geo, bg, RAD, StencilWeights.of(geo, layout), THETA)
     return find_horizons(state, d, geo, bg, RAD, m, layout, XI), geo
 
 
@@ -75,7 +78,7 @@ def test_frw_has_no_trapped_face_no_horizon_and_a_margin_of_one_at_the_origin():
     bg = Background.at(RAD, 0.5)
     state = frw_state(geo)
     layout = Layout(40)
-    d = derive(state, geo, bg, RAD, StencilWeights.of(geo, layout))
+    d = derive(state, geo, bg, RAD, StencilWeights.of(geo, layout), THETA)
     report = find_horizons(state, d, geo, bg, RAD, m, layout, 0.5)
     assert report.trapped_faces == 0
     assert report.horizons == ()
@@ -184,7 +187,7 @@ def test_the_core_margin_is_over_the_faces_inside_the_half_density_radius():
     state = State(E=E, U=U, W=0.0)
     bg = Background.at(RAD, XI)
     layout = Layout(N)
-    d = derive(state, geo, bg, RAD, StencilWeights.of(geo, layout))
+    d = derive(state, geo, bg, RAD, StencilWeights.of(geo, layout), THETA)
     report = find_horizons(state, d, geo, bg, RAD, m, layout, XI)
     margin = 1.0 + state.U / np.sqrt(d.Gammabar2)
     assert report.margin == pytest.approx(np.min(margin[1:]))

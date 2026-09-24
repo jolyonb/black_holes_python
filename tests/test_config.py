@@ -61,7 +61,7 @@ def test_every_key_can_be_set(tmp_path: Path):
 fluid: {w: 1/2}
 grid: {map: uniform, N: 10, Rtilde_max: 3}
 outer: {closure: held, tau_u: 1.0, tau_rho: 1.5, tau_W: 0.5}
-shocks: {kernels: centred, density_limiter: minmod, c_v: 0.5, rho_floor: 1.0e-10}
+shocks: {kernels: centred, density_limiter: minmod, c_v: 0.5, theta: 0.3}
 excision: {eta: 0.75, tau_on: 0.4, c_t: 3.0, c_Delta: 1.0}
 stepping: {integrator: ssprk3, courant_number: 0.4, cap_tolerance: 1.0e-6, cap_efolds: 3.0}
 output: {snapshot_spacing: 0.1, snapshot_spacing_after: 0.02, flush_every: 50, monitor_every_step: true}
@@ -71,7 +71,7 @@ evolution: {xi_end: 2.5}
     assert c.fluid.w == Fraction(1, 2)
     assert c.grid == GridConfig(N=10, Rtilde_max=3.0, map=MapFamily.UNIFORM)
     assert (c.outer.closure, c.outer.tau_u, c.outer.tau_rho, c.outer.tau_W) == (OuterChoice.HELD, 1.0, 1.5, 0.5)
-    assert c.shocks.build() == KernelSettings(Kernels.CENTRED, DensityLimiter.MINMOD, 0.5, 1e-10)
+    assert c.shocks.build() == KernelSettings(Kernels.CENTRED, DensityLimiter.MINMOD, 0.5, 0.3)
     assert (c.excision.eta, c.excision.tau_on, c.excision.c_t, c.excision.c_Delta) == (0.75, 0.4, 3.0, 1.0)
     assert (c.stepping.integrator, c.stepping.courant_number) == (Integrator.SSPRK3, 0.4)
     assert (c.stepping.cap_tolerance, c.stepping.cap_efolds) == (1e-6, 3.0)
@@ -175,7 +175,7 @@ def test_a_saved_configuration_is_complete_carries_its_provenance_and_reloads_un
         "kernels": "production",
         "density_limiter": "mc",
         "c_v": 1.0,
-        "rho_floor": 1e-12,
+        "theta": 0.2,
         "viscous_flux": "density_weighted",
         "cap_tension": True,
     }

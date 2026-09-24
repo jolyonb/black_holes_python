@@ -475,7 +475,6 @@ def run(config: RunConfig, initial: StateRecord, paths: RunPaths, history: Epoch
                     ),
                     r.sch.eos,
                     layout,
-                    r.sch.settings,
                     full=at_snapshot or output.monitor_every_step,
                 )
                 r.F_N_integral = row.F_N_integral

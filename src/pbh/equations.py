@@ -173,7 +173,7 @@ def calc_derivs(
 
     if deviation is None:
         deviation = deviation_from_frw(state, geo, j_e)
-    d = derive(state, geo, bg, eos, w, deviation)
+    d = derive(state, geo, bg, eos, w, settings.theta, deviation)
     sp = speeds(d, deviation, geo, eos, faces)
     D_s_rho = w.gradient_s(d.delta_rho)  # the same difference as of rho, without its rounding to the FRW size
     delta_D = w.velocity_gradient(deviation.U)  # (D_U U)_j - 1: every row of D_U gives exactly 1 on U = X
@@ -185,8 +185,8 @@ def calc_derivs(
     F_frw = (alpha * w_eos * X - X_xi) * X**2  # the FRW flux, to which the deviation is added for the whole flux
     kernels = None
     if settings.kernels is Kernels.PRODUCTION:
-        rho_L, rho_R, delta_rho_L, delta_rho_R = reconstruct_density(
-            d.delta_rho, geo, w, settings.density_limiter, settings.rho_floor
+        rho_L, rho_R, delta_rho_L, delta_rho_R, theta_scale = reconstruct_density(
+            d.delta_rho, geo, w, settings.density_limiter, settings.theta
         )
         J, q, q_f, Q = viscous_pressure(state, geo, d, sp.Lam, eos, w, settings.c_v, settings.cap_tension)
         q_L, q_R = viscous_sides(q, q_f, d.rho, rho_L, rho_R, w.layout, settings.viscous_flux)
@@ -201,6 +201,7 @@ def calc_derivs(
             q_f=q_f,
             Q=Q,
             F=F_frw + delta_F,
+            theta_scale=theta_scale,
         )
     else:
         delta_F = np.full(N + 1, np.nan)

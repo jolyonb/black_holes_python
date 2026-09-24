@@ -5,7 +5,7 @@ same stage written the plain way, as eq:num:facefields, eq:num:energy, eq:num:ve
 print it, with the FRW parts left in: it carries round-off of the FRW size and is otherwise the same function of the
 state. The tests require the two to agree on strongly nonlinear states, where a slip in the rearranged algebra would
 show at order one. It shares with the stage only the derived fields and the stencils. The shock-capturing kernels are
-written again here, cell by cell in the whole state: the density reconstruction with its end-cell positivity clip, the
+written again here, cell by cell in the whole state: the density reconstruction with its theta-limiter, the
 limited jump and the viscous pressure with its tension cap, its face value and its force, and the viscous pressure each
 side of a face carries, so that a slip in any of them shows as a disagreement.
 """
@@ -34,13 +34,13 @@ def minmod3(*values: float) -> float:
 
 
 def reconstruct(
-    rho: FloatArray, geo: Geometry, N: int, j_e: int, limiter: DensityLimiter, floor: float
+    rho: FloatArray, geo: Geometry, N: int, j_e: int, limiter: DensityLimiter, theta: float
 ) -> tuple[FloatArray, FloatArray]:
-    """eq:num:recon in the whole density, cell by cell: `(rho_L, rho_R)` on the faces.
+    """eq:num:recon and eq:num:theta in the whole density, cell by cell: `(rho_L, rho_R)` on the faces.
 
-    Each retained cell's profile is `rho_c + slope_c (s - sbar_c)`. An interior cell's slope is the MC (or minmod)
-    limit of its two one-sided differences in `sbar`; an end cell's is its single one-sided difference, cut back just
-    far enough that the profile stays non-negative between the cell's faces.
+    Each retained cell's profile is `rho_c + t_c slope_c (s - sbar_c)`. An interior cell's slope is the MC (or
+    minmod) limit of its two one-sided differences in `sbar`; an end cell's is its single one-sided difference. The
+    factor `t_c <= 1` is the largest that keeps both face values at least `theta rho_c`.
     """
     X2, sbar = geo.X**2, geo.sbar
     slope = np.full(N, np.nan)
@@ -57,15 +57,16 @@ def reconstruct(
         else:
             one = d_out if d_in is None else d_in
             assert one is not None
-            # non-negative at the inner face X_c^2 and at the outer face X_(c+1)^2
-            top, bottom = rho[c] / (sbar[c] - X2[c]), -rho[c] / (X2[c + 1] - sbar[c])
-            slope[c] = min(max(one, bottom), top)
+            slope[c] = one
     rho_L, rho_R = np.full(N + 1, np.nan), np.full(N + 1, np.nan)
     for c in range(j_e, N):
-        rho_L[c + 1] = rho[c] + slope[c] * (X2[c + 1] - sbar[c])
-        rho_R[c] = rho[c] + slope[c] * (X2[c] - sbar[c])
+        inner, outer = slope[c] * (X2[c] - sbar[c]), slope[c] * (X2[c + 1] - sbar[c])  # the offsets from the mean
+        drop = max(-min(inner, outer), 0.0)
+        t = min(1.0, (1.0 - theta) * rho[c] / drop) if drop > 0.0 else 1.0
+        rho_L[c + 1] = rho[c] + t * outer
+        rho_R[c] = rho[c] + t * inner
     rho_L[j_e], rho_R[N] = rho_R[j_e], rho_L[N]
-    return np.maximum(rho_L, floor), np.maximum(rho_R, floor)
+    return rho_L, rho_R
 
 
 def face_pressures(
@@ -161,7 +162,7 @@ def whole_state_rate(
     N, j_e = layout.N, layout.j_e
     cells, faces = layout.cells, layout.faces
     alpha, w_eos = float(eos.alpha), float(eos.w)
-    d = derive(state, geo, bg, eos, w)
+    d = derive(state, geo, bg, eos, w, settings.theta)
     X, X_xi, U = geo.X, geo.X_xi, state.U
 
     # eq:num:facefields
@@ -175,7 +176,7 @@ def whole_state_rate(
     # the flux: eq:num:hll with the kernels, the base flux of eq:num:energy without
     F = np.full(N + 1, np.nan)
     if settings.kernels is Kernels.PRODUCTION:
-        rho_L, rho_R = reconstruct(d.rho, geo, N, j_e, settings.density_limiter, settings.rho_floor)
+        rho_L, rho_R = reconstruct(d.rho, geo, N, j_e, settings.density_limiter, settings.theta)
         args = (geo, d.rho, d.ephi, d.Gammabar2, Lam, alpha, w_eos, N, j_e, settings.c_v, settings.cap_tension)
         q, q_f, Q = viscous(U.copy(), *args)
         q_L, q_R = face_pressures(q, q_f, d.rho, rho_L, rho_R, N, j_e, settings.viscous_flux)

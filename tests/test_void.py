@@ -18,24 +18,29 @@ N = 200 and 400 do not: the semi-discrete operator itself drives the cell negati
   cell's own content. `ViscousFlux.DENSITY_WEIGHTED` carries each side's own `q / rho` at that side's reconstructed
   density, as the fluid pressure `w rho` already is in the same flux.
 * The end cells' slopes. The first and last retained cells took an unlimited one-sided slope; near vacuum that put a
-  face value 40 times above the cell's own density, and the HLL diffusion drained the cell through it. The slope is
-  now clipped so that the cell's linear profile in `s` stays non-negative between its faces. The clip never binds in
-  resolved smooth flow but does bind in violent flow, under either viscous flux: it is part of the scheme, not a guard.
+  face value 40 times above the cell's own density, and the HLL diffusion drained the cell through it. The slope was
+  first clipped so that the cell's profile stayed non-negative between its faces, with every face value floored at
+  `1e-12`. The theta-limiter replaces both: every cell's slope is scaled, where it must be, so that both its face
+  values are at least theta times its density, which also bounds a face value's lapse. It never binds in resolved
+  smooth flow but does in violent flow: it is part of the scheme, not a guard.
 * The viscous defect again, at the excision face: there the first retained cell's `q` was carried unscaled at a face
   density floored to `1e-12`, whose lapse is a thousand, and the test below measures the drain that gives. It is now
-  carried at the face density like the rest. Near-threshold collapses lost their first retained cell about a third of
-  an e-fold after formation, and this drain is the likely cause, but that is inferred, not demonstrated.
+  carried at the face density like the rest, and the theta-limiter holds that face density at theta times the cell's,
+  so that the cell now loses content there at its own lapse. Near-threshold collapses lost their first retained cell
+  about a third of an e-fold after formation, and this drain is the likely cause, but that is inferred, not
+  demonstrated.
 * Tension (found by the v3 review). In expansion the viscous pressure is a tension, and beside a nearly empty cell it
   exceeded the fluid pressure some 150-fold (q / rho = -52 against w = 1/3); the total pressure, and the enthalpy the
   flux carries, turned negative, and a face whose flow ran inward pumped energy out of the cell inside it. `cap_tension`
   holds `q >= -w rho`.
 
 With all four fixed the void survives without a trapped surface for V = 10, 15 and 20 at N = 200, 400 and 800, emptying
-to 7e-11 of the background (V = 20, N = 800). Stronger pulls make a black hole at the centre instead: a trapped surface
-appears for V = 50 at N = 200 and for V = 30 and 50 at N = 400 and 800. Without excision those runs end three ways: with
-no trapped face left on the grid (V = 50 at N = 200), with the trapped region still on it (V = 30 at N = 400), or in an
-abort with Gammabar^2 < 0 at the first faces (V = 50 at N = 400; V = 30 and 50 at N = 800). Positivity is measured here,
-not proved: nothing in the scheme certifies it.
+to 5e-11 of the background (V = 20, N = 800; 7e-11 with the clip and floor the theta-limiter replaced). Stronger pulls
+make a black hole at the centre instead: a trapped surface appears for V = 50 at N = 200 and for V = 30 and 50 at N =
+400 and 800. Without excision those runs end three ways: with no trapped face left on the grid (V = 50 at N = 200), with
+the trapped region still on it (V = 30 at N = 400), or in an abort with Gammabar^2 < 0 at the first faces (V = 50 at N =
+400; V = 30 and 50 at N = 800); those stronger pulls were run with the clip and the floor, and the slow tests below
+re-assert survival with the theta-limiter. Positivity is measured here, not proved: nothing in the scheme certifies it.
 """
 
 import math
@@ -56,7 +61,7 @@ from pbh.timestep import COURANT_NUMBER, Integrator, Scheme, advance, courant_st
 EOS = EquationOfState(RADIATION)
 AVERAGED_Q = KernelSettings(
     viscous_flux=ViscousFlux.AVERAGED, cap_tension=False
-)  # as first printed, but for the end-cell clip
+)  # as first printed, but for the theta-limiter
 
 
 def pull_apart(N: int, V: float, settings: KernelSettings, xi_end: float = 6.0) -> tuple[bool, float, float]:
@@ -101,20 +106,21 @@ def test_the_production_kernels_keep_stronger_voids_positive(N: int, V: float):
     assert rho_min < 1e-5
 
 
-# --- the excision face: the first retained cell is not drained through a floored face ---
+# --- the excision face: the first retained cell loses into the hole at its own rate ---
 
 
-def excised_state(settings: KernelSettings) -> tuple[float, float]:
-    """A nearly empty first retained cell being compressed, beside the hole: `(F_je over its content, its q)`.
+def excised_state(settings: KernelSettings, rho_e: float) -> tuple[float, float]:
+    """A nearly empty first retained cell being compressed, beside the hole: `(F_je / E_je, rho^R_je / rho_je)`.
 
-    The face is trapped, the cell's profile is clipped to zero at it, so the face density there is the floor and its
-    lapse is a thousand; the infall is faster outward, so the cell is compressed and its viscous pressure positive.
+    The face is trapped and the infall is faster outward, so the cell is compressed and its viscous pressure positive.
+    Its one-sided slope would carry its profile below zero at the face, so the theta-limiter holds the face value there
+    at `theta rho_je`.
     """
     N, j_e = 40, 5
     sch = Scheme(EOS, SinhStretch(4.0, 2.0), Layout(N, j_e), OutgoingWave(), settings)
     geo = sch.frame(0.0).geo
     rho = np.ones(N)
-    rho[j_e] = 1e-8
+    rho[j_e] = rho_e
     X = geo.X[: N + 1]
     U = -1.5 * X / X[j_e]  # infall, trapping the excision face ...
     U[j_e + 1 :] *= 2.0  # ... and a step faster from the first cell's outer face on: the cell is compressed
@@ -123,17 +129,22 @@ def excised_state(settings: KernelSettings) -> tuple[float, float]:
     res = sch.evaluate(0.0, sch.layout.pack(State(E=E, U=U, W=0.0, M_e=M_e)))
     assert U[j_e] + math.sqrt(res.derived.Gammabar2[j_e]) < 0.0  # trapped
     assert res.kernels is not None
-    assert res.kernels.rho_R[j_e] == 1e-12
-    return float(res.F[j_e] / E[j_e]), float(res.kernels.q[j_e])
+    return float(res.F[j_e] / E[j_e]), float(res.kernels.rho_R[j_e] / rho_e)
 
 
-def test_the_first_retained_cell_is_not_drained_through_a_floored_excision_face():
-    # The flux through the excision face, the cell's loss into the hole, over the cell's content.
-    drain_weighted, q = excised_state(PRODUCTION_KERNELS)
-    drain_averaged, _ = excised_state(AVERAGED_Q)
-    assert q > 0.0
-    assert abs(drain_weighted) < 10.0  # the floored density's own transport: 1e-12 at a lapse of 1000
-    assert drain_averaged < -300.0  # the printed flux: q_je unscaled, at the lapse of the floored face density
+@pytest.mark.parametrize("settings", [PRODUCTION_KERNELS, AVERAGED_Q])
+def test_the_first_retained_cell_loses_into_the_hole_at_its_own_lapse(settings: KernelSettings):
+    # The loss over the content scales as the cell's own lapse, rho^(-1/4): emptying the cell ten-thousandfold makes it
+    # lose tenfold faster, not ten-thousandfold as a drain that ignored its content would. With the face value floored
+    # at 1e-12 and q carried unscaled, as first printed, the averaged flux drained this cell at 1e4 times its content
+    # per unit xi whatever the content; the theta-limiter keeps the face at theta rho under either viscous flux.
+    rate_full, face_full = excised_state(settings, 1e-8)
+    rate_empty, face_empty = excised_state(settings, 1e-12)
+    theta = PRODUCTION_KERNELS.theta
+    assert face_full == pytest.approx(theta, rel=1e-6)
+    assert face_empty == pytest.approx(theta, rel=1e-3)
+    assert rate_full < 0.0  # into the hole
+    assert rate_empty / rate_full == pytest.approx(1e4**0.25, rel=1e-2)
 
 
 # --- the density-weighted flux costs nothing where the flow is smooth ---
@@ -213,8 +224,10 @@ def test_a_tension_beyond_the_fluid_pressure_no_longer_drains_the_cell_beside_it
     # Uncapped, the expanding neighbour's tension reaches q / rho = -52 (or -12), the total pressure and with it the
     # enthalpy its flux carries turn negative, and the inward flow through face j_e + 1 pumps out some 1e7 times the
     # first cell's content in one step; capped at the fluid pressure, that face carries energy in, under either
-    # viscous flux. Face j_e is the other defect: under the average it takes more than the cell's whole content in
-    # one step, density-weighted about 1e-3 of it, with or without the cap. Each fix cures its own face only.
+    # viscous flux. Face j_e was the other defect: with its face value floored, the average took more than the cell's
+    # whole content through it in one step. The theta-limiter now holds that face value at theta rho, so the cell loses
+    # a share of its own content there under either flux, 15 to 40 per cent of it in this step, the density-weighted
+    # flux the smaller share, and the cap does not enter.
     out_e, out_e1, least = tension_state(KernelSettings(viscous_flux=flux, cap_tension=cap), dip)
     if cap:
         assert least == pytest.approx(-float(EOS.w), rel=1e-12)  # the cap binds
@@ -222,7 +235,7 @@ def test_a_tension_beyond_the_fluid_pressure_no_longer_drains_the_cell_beside_it
     else:
         assert least < -10.0
         assert out_e1 > 1e6
+    assert 0.0 < out_e < 0.5
+    averaged, _, _ = tension_state(KernelSettings(viscous_flux=ViscousFlux.AVERAGED, cap_tension=cap), dip)
     if flux is ViscousFlux.DENSITY_WEIGHTED:
-        assert out_e < 1e-2
-    else:
-        assert out_e > 1.0
+        assert out_e < averaged

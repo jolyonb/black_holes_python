@@ -29,6 +29,7 @@ from pbh.stencils import StencilWeights
 EOS = EquationOfState(RADIATION)
 HELD = HeldAtFrw()
 MINMOD_KERNELS = KernelSettings(density_limiter=DensityLimiter.MINMOD)
+THETA = PRODUCTION_KERNELS.theta
 
 
 @dataclass(frozen=True)
@@ -75,7 +76,7 @@ def test_the_reconstruction_is_exact_on_a_field_linear_in_s(m: Map, limiter: Den
     su = Setup.of(m, 24)
     a, b = 1.0, 0.05
     rho = a + b * su.geo.sbar[:-1]  # the shell average of a + b X^2 is its value at sbar
-    rho_L, rho_R, _, _ = reconstruct_density(rho - 1.0, su.geo, su.w, limiter, 1e-12)
+    rho_L, rho_R, _, _, _ = reconstruct_density(rho - 1.0, su.geo, su.w, limiter, THETA)
     exact = a + b * su.geo.X**2
     assert rho_L[1:] == pytest.approx(exact[1:], rel=1e-12)
     assert rho_R[:-1] == pytest.approx(exact[:-1], rel=1e-12)
@@ -99,28 +100,37 @@ def test_face_values_stay_between_the_neighbouring_cells_on_rough_data(limiter: 
     su = Setup.of(IdentityMap(4.0), 30)
     rng = np.random.default_rng(3)
     rho = rng.uniform(0.5, 2.0, size=30)
-    rho_L, rho_R, _, _ = reconstruct_density(rho - 1.0, su.geo, su.w, limiter, 1e-12)
+    rho_L, rho_R, _, _, _ = reconstruct_density(rho - 1.0, su.geo, su.w, limiter, THETA)
     for j in range(2, 29):  # interior faces whose two cells are both limited
         lo, hi = min(rho[j - 1], rho[j]), max(rho[j - 1], rho[j])
         assert lo - 1e-12 <= rho_L[j] <= hi + 1e-12
         assert lo - 1e-12 <= rho_R[j] <= hi + 1e-12
 
 
-def test_the_floor_is_applied_to_every_face_value():
-    su = Setup.of(IdentityMap(4.0), 10)
-    rho = np.full(10, 1e-14)
-    rho_L, rho_R, delta_L, delta_R = reconstruct_density(rho - 1.0, su.geo, su.w, DensityLimiter.MC, 1e-12)
-    assert np.all(rho_L == 1e-12)
-    assert np.all(rho_R == 1e-12)
-    assert np.all(delta_L == 1e-12 - 1.0)  # a floored value's deviation is the floor's
-    assert np.all(delta_R == 1e-12 - 1.0)
+@pytest.mark.parametrize("j_e", [0, 5])
+def test_near_vacuum_every_face_value_is_at_least_theta_times_its_cell_and_every_mean_is_kept(j_e: int):
+    # Densities spread over twelve decades, so that the theta-limiter binds in many cells, interior and end.
+    N = 30
+    su = Setup.of(SinhStretch(4.0, scale=2.0), N, j_e=j_e)
+    rng = np.random.default_rng(6)
+    rho = 10.0 ** rng.uniform(-12.0, 0.0, size=N)
+    rho_L, rho_R, _, _, t = reconstruct_density(rho - 1.0, su.geo, su.w, DensityLimiter.MC, THETA)
+    X2, sbar = su.geo.X**2, su.geo.sbar
+    c = np.arange(j_e, N)
+    inner, outer = rho_R[c], rho_L[c + 1]  # the cell's own two face values
+    roundoff = 8.0 * np.finfo(float).eps  # the face values are formed as 1 + (rho_c - 1 + offset)
+    assert np.all(np.minimum(inner, outer) >= THETA * rho[c] - roundoff)
+    lam_in = (X2[c + 1] - sbar[c]) / (X2[c + 1] - X2[c])  # the linear profile's mean over the cell is its value at sbar
+    assert lam_in * inner + (1.0 - lam_in) * outer == pytest.approx(rho[c], rel=1e-12, abs=roundoff)
+    assert np.sum(t[c] < 1.0) >= 3  # it binds (mc has already flattened most of the random extrema)
+    assert np.all(t[c] <= 1.0)
 
 
 def test_the_reconstructed_deviations_are_the_face_values_less_one():
     su = Setup.of(SinhStretch(4.0, scale=2.0), 24)
     rng = np.random.default_rng(5)
     delta_rho = 0.1 * rng.uniform(-1, 1, size=24)
-    rho_L, rho_R, delta_L, delta_R = reconstruct_density(delta_rho, su.geo, su.w, DensityLimiter.MC, 1e-12)
+    rho_L, rho_R, delta_L, delta_R, _ = reconstruct_density(delta_rho, su.geo, su.w, DensityLimiter.MC, THETA)
     assert delta_L == pytest.approx(rho_L - 1.0, abs=1e-15)
     assert delta_R == pytest.approx(rho_R - 1.0, abs=1e-15)
 
@@ -129,40 +139,44 @@ def test_at_an_excision_face_the_inside_value_is_the_outside_one_and_the_first_s
     su = Setup.of(SinhStretch(4.0, scale=2.0), 24, j_e=5)
     rng = np.random.default_rng(4)
     rho = 1.0 + 0.1 * rng.uniform(-1, 1, size=24)
-    rho_L, rho_R, _, _ = reconstruct_density(rho - 1.0, su.geo, su.w, DensityLimiter.MC, 1e-12)
+    rho_L, rho_R, _, _, _ = reconstruct_density(rho - 1.0, su.geo, su.w, DensityLimiter.MC, THETA)
     assert rho_L[5] == rho_R[5]
-    slope = (rho[6] - rho[5]) / su.geo.dS[6]  # the single one-sided difference: the clip does not bind here
+    slope = (rho[6] - rho[5]) / su.geo.dS[6]  # the single one-sided difference: the theta-limiter does not bind here
     assert rho_R[5] == pytest.approx(rho[5] + slope * (su.geo.X[5] ** 2 - su.geo.sbar[5]))
     assert np.all(np.isnan(rho_L[:5]))
     assert np.all(np.isnan(rho_R[:5]))
 
 
 @pytest.mark.parametrize("j_e", [0, 5])
-def test_the_first_retained_cell_is_clipped_where_its_profile_would_turn_negative_inside(j_e: int):
+def test_the_first_retained_cell_is_theta_limited_where_its_profile_would_fall_below_theta_inside(j_e: int):
     # A nearly empty first cell beside a denser one: its one-sided slope would carry its profile below zero at its
-    # inner face, so the slope is clipped to vanish there, and the outer face value is then
-    # rho (X_(e+1)^2 - X_e^2) / (sbar_e - X_e^2), written here from the geometry alone.
+    # inner face, so the slope is scaled until the inner face value is theta rho, and the outer face value is then
+    # rho [1 + (1 - theta) (X_(e+1)^2 - sbar_e) / (sbar_e - X_e^2)], written here from the geometry alone.
     N, e = 24, j_e
     su = Setup.of(SinhStretch(4.0, scale=2.0), N, j_e=j_e)
     rho = np.ones(N)
     rho[e], rho[e + 1] = 1e-6, 1e-2
-    rho_L, rho_R, _, _ = reconstruct_density(rho - 1.0, su.geo, su.w, DensityLimiter.MC, 1e-12)
+    rho_L, rho_R, _, _, _ = reconstruct_density(rho - 1.0, su.geo, su.w, DensityLimiter.MC, THETA)
     X2, sbar = su.geo.X**2, su.geo.sbar
-    assert rho_L[e + 1] == pytest.approx(1e-6 * (X2[e + 1] - X2[e]) / (sbar[e] - X2[e]), rel=1e-6)
-    assert rho_R[e] == 1e-12  # zero at the inner face, then floored
+    ratio = (X2[e + 1] - sbar[e]) / (sbar[e] - X2[e])
+    assert rho_R[e] == pytest.approx(THETA * 1e-6, rel=1e-6)
+    assert rho_L[e + 1] == pytest.approx(1e-6 * (1.0 + (1.0 - THETA) * ratio), rel=1e-6)
 
 
-def test_the_last_cell_is_clipped_where_its_profile_would_turn_negative_inside():
+def test_the_last_cell_is_theta_limited_where_its_profile_would_fall_below_theta_inside():
     # The mirror image at the outer face: a nearly empty last cell inside a denser one takes a slope that would carry
-    # it below zero at the outer face, so the slope is clipped to vanish there.
+    # it below zero at the outer face, so the slope is scaled until the outer face value is theta rho. That face value
+    # is also the outer face's density (Section 7.5).
     N = 24
     su = Setup.of(SinhStretch(4.0, scale=2.0), N)
     rho = np.ones(N)
     rho[N - 1], rho[N - 2] = 1e-6, 1e-2
-    rho_L, rho_R, _, _ = reconstruct_density(rho - 1.0, su.geo, su.w, DensityLimiter.MC, 1e-12)
+    rho_L, rho_R, _, _, _ = reconstruct_density(rho - 1.0, su.geo, su.w, DensityLimiter.MC, THETA)
     X2, sbar = su.geo.X**2, su.geo.sbar
-    assert rho_R[N - 1] == pytest.approx(1e-6 * (X2[N] - X2[N - 1]) / (X2[N] - sbar[N - 1]), rel=1e-6)
-    assert rho_L[N] == 1e-12
+    ratio = (sbar[N - 1] - X2[N - 1]) / (X2[N] - sbar[N - 1])
+    assert rho_L[N] == pytest.approx(THETA * 1e-6, rel=1e-6)
+    assert rho_R[N - 1] == pytest.approx(1e-6 * (1.0 + (1.0 - THETA) * ratio), rel=1e-6)
+    assert su.w.outer_face_density(rho - 1.0, THETA) == (rho_L[N], rho_L[N] - 1.0)
 
 
 # --- FRW: every kernel is inert on the background, on every map ---

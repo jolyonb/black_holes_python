@@ -266,10 +266,10 @@ AVERAGED_CAPPED = KernelSettings(viscous_flux=ViscousFlux.AVERAGED)
 @pytest.mark.parametrize("settings", [PRODUCTION_KERNELS, UNCAPPED, AVERAGED_Q, AVERAGED_CAPPED])
 @pytest.mark.parametrize("j_e", [0, 5])
 def test_the_deviation_form_is_the_printed_stage_beside_vacuum_with_tension(settings: KernelSettings, j_e: int):
-    # Every positivity piece at once: the end-cell clip binds at both ends, one cell is in tension beyond the fluid
+    # Every positivity piece at once: the theta-limiter binds at both ends, one cell is in tension beyond the fluid
     # pressure (capped or not, as the setting says) and one in compression beyond it (which the cap leaves alone), and
-    # the one-sided sides that the clip and the density weighting set all carry weight. The reference writes every
-    # kernel again, the cap in the force as well as in the flux, so a slip in any of them shows here.
+    # the one-sided sides that the theta-limiter and the density weighting set all carry weight. The reference writes
+    # every kernel again, the cap in the force as well as in the flux, so a slip in any of them shows here.
     state, geo, bg, w = vacuum_state(j_e)
     N = w.layout.N
     X = geo.X[: N + 1]
@@ -277,8 +277,11 @@ def test_the_deviation_form_is_the_printed_stage_beside_vacuum_with_tension(sett
     ref = whole_state_rate(state, geo, bg, EOS, w, None, settings)
     k, sp, cells, faces = res.kernels, res.speeds, w.layout.cells, w.layout.faces
     assert k is not None
-    assert k.rho_R[j_e] == settings.rho_floor  # the clip binds at both ends
-    assert k.rho_L[N] == settings.rho_floor
+    rho = res.derived.rho
+    assert k.theta_scale[j_e] < 1.0  # the theta-limiter binds at both ends ...
+    assert k.theta_scale[N - 1] < 1.0
+    assert k.rho_R[j_e] == pytest.approx(settings.theta * rho[j_e], rel=1e-9)  # ... holding those faces at theta rho
+    assert k.rho_L[N] == pytest.approx(settings.theta * rho[N - 1], rel=1e-9)
     assert sp.Theta[N - 1] - sp.a[N - 1] < 0.0  # the last cell's side of face N - 1 carries weight
     q_over_rho = k.q[cells] / res.derived.rho[cells]
     assert np.max(q_over_rho) > float(EOS.w)  # a compression beyond the fluid pressure

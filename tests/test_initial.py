@@ -20,12 +20,15 @@ from pbh.initial import (
     nonlinear_correction,
     project,
 )
+from pbh.kernels import PRODUCTION_KERNELS
 from pbh.layout import Layout
 from pbh.maps import IdentityMap, SinhStretch
 from pbh.outer import characteristic_pair
 from pbh.profiles import Gaussian
 from pbh.stencils import StencilWeights
 from pbh.types import FloatArray
+
+THETA = PRODUCTION_KERNELS.theta  # the theta-limiter fraction, which fixes the outer face density
 
 RAD = EquationOfState(RADIATION)
 BG_0 = Background.at(RAD, 0.0)
@@ -280,7 +283,7 @@ def test_the_state_holds_the_mass_exactly_with_the_velocity_corrected_and_w_at_t
     assert state.W == characteristic_pair(float(delta_U_N), float(delta_rho_N_1), float(X[N]), BG_0.c_s)[1]
     assert 0.0 < mode.correction_ratio(geo, BG_0) < 0.05
     # and the data are admissible, as derive agrees
-    derive(state, geo, BG_0, RAD, StencilWeights.of(geo, Layout(N)))
+    derive(state, geo, BG_0, RAD, StencilWeights.of(geo, Layout(N)), THETA)
 
 
 def test_the_correction_can_be_switched_off():

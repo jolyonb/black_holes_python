@@ -10,10 +10,13 @@ import pytest
 from pbh.derived import NotHyperbolicError, derive
 from pbh.eos import RADIATION, Background, EquationOfState
 from pbh.geometry import Geometry
+from pbh.kernels import PRODUCTION_KERNELS
 from pbh.layout import Layout
 from pbh.maps import IdentityMap, Map, SinhStretch
 from pbh.state import State, frw_state
 from pbh.stencils import StencilWeights
+
+THETA = PRODUCTION_KERNELS.theta  # the theta-limiter fraction, which fixes the outer face density
 
 EOS = EquationOfState(RADIATION)
 type Family = Callable[[float], Map]
@@ -34,7 +37,7 @@ def setup(
 @pytest.mark.parametrize("j_e", [0, 3])
 def test_on_frw_every_derived_field_has_its_frw_value(family: Family, j_e: int):
     geo, bg, w = setup(family, 40, 6.0, j_e=j_e)
-    d = derive(frw_state(geo, j_e), geo, bg, EOS, w)
+    d = derive(frw_state(geo, j_e), geo, bg, EOS, w, THETA)
     cells, faces = w.layout.cells, w.layout.faces
     assert d.rho[cells] == pytest.approx(1.0, rel=1e-14)
     assert d.ephi[cells] == pytest.approx(1.0, rel=1e-14)
@@ -48,7 +51,7 @@ def test_on_frw_every_derived_field_has_its_frw_value(family: Family, j_e: int):
 def test_on_frw_gammabar2_and_the_deviations_are_frw_to_the_bit_at_any_radius(family: Family, j_e: int):
     # Fifty Hubble radii across, where U^2 and M / X are each 2500 times Gammabar^2 and cancel.
     geo, bg, w = setup(family, 2000, 50.0 * math.exp(0.6 * 0.5), j_e=j_e)
-    d = derive(frw_state(geo, j_e), geo, bg, EOS, w)
+    d = derive(frw_state(geo, j_e), geo, bg, EOS, w, THETA)
     assert np.all(d.Gammabar2[w.layout.faces] == bg.Gammabar2)
     assert np.all(d.delta_rho[w.layout.cells] == 0.0)
     assert np.all(d.delta_U[max(j_e, 1) :] == 0.0)
@@ -62,7 +65,7 @@ def test_gammabar2_and_the_deviations_keep_the_digits_the_state_loses():
     dU = 1e-6 * geo.X * np.sin(np.pi * x) ** 2
     frw = frw_state(geo)
     state = State(E=frw.E + dE, U=frw.U + dU, W=0.0)  # what a stage is handed: y_FRW + delta y, rounded
-    d = derive(state, geo, bg, EOS, w, State(E=dE, U=dU, W=0.0))
+    d = derive(state, geo, bg, EOS, w, THETA, State(E=dE, U=dU, W=0.0))
     naive = bg.Gammabar2 + state.U[1:] ** 2 - 3.0 * np.cumsum(state.E) / geo.X[1:]
 
     # The reference, in exact arithmetic on the unrounded deviation, with the FRW mass X^3.
@@ -93,7 +96,7 @@ def test_gammabar2_and_the_deviations_keep_the_digits_the_state_loses():
 
 def test_entries_below_the_excision_face_are_nan_and_the_origin_mt_is_nan():
     geo, bg, w = setup(IdentityMap, 10, 2.0, j_e=3)
-    d = derive(frw_state(geo, 3), geo, bg, EOS, w)
+    d = derive(frw_state(geo, 3), geo, bg, EOS, w, THETA)
     for name in ("rho", "ephi", "delta_rho"):
         assert np.all(np.isnan(getattr(d, name)[:3]))
         assert np.all(np.isfinite(getattr(d, name)[3:]))
@@ -101,7 +104,7 @@ def test_entries_below_the_excision_face_are_nan_and_the_origin_mt_is_nan():
         assert np.all(np.isnan(getattr(d, name)[:3]))
         assert np.all(np.isfinite(getattr(d, name)[3:]))
     geo0, bg0, lay0 = setup(IdentityMap, 10, 2.0)
-    d0 = derive(frw_state(geo0), geo0, bg0, EOS, lay0)
+    d0 = derive(frw_state(geo0), geo0, bg0, EOS, lay0, THETA)
     assert math.isnan(d0.mt[0])
     assert d0.M[0] == 0.0
     assert d0.Gammabar2[0] == bg0.Gammabar2
@@ -116,7 +119,7 @@ def test_the_innermost_face_mass_is_the_innermost_density_identically():
     s = frw_state(geo)
     E = s.E.copy()
     E[0] *= 1.37
-    d = derive(State(E=E, U=s.U, W=0.0), geo, bg, EOS, w)
+    d = derive(State(E=E, U=s.U, W=0.0), geo, bg, EOS, w, THETA)
     assert d.mt[1] == pytest.approx(d.rho[0], rel=1e-15)
 
 
@@ -129,7 +132,7 @@ def test_exact_contents_of_an_even_density_give_the_printed_mass_exactly(family:
     X = np.append(geo.X, 0.0)  # a dummy beyond N; only differences between faces 0..N are used
     antiderivative = X**3 / 3 + r2 * X**5 / 5 + r4 * X**7 / 7  # int X^2 rho dX
     E = np.diff(antiderivative[: w.layout.N + 1])
-    d = derive(State(E=E, U=geo.X.copy(), W=0.0), geo, bg, EOS, w)
+    d = derive(State(E=E, U=geo.X.copy(), W=0.0), geo, bg, EOS, w, THETA)
     X_faces = geo.X[1:]
     assert d.mt[1:] == pytest.approx(1 + 0.6 * r2 * X_faces**2 + (3 / 7) * r4 * X_faces**4, rel=1e-13)
 
@@ -140,7 +143,7 @@ def test_the_cumulative_sum_is_accurate_to_round_off_at_large_n():
     geo, bg, w = setup(IdentityMap, 4000, 20.0)
     rng = np.random.default_rng(7)
     E = geo.dV * rng.uniform(0.999, 1.001, size=w.layout.N)  # near FRW, so Gammabar^2 stays positive at X = 20
-    d = derive(State(E=E, U=geo.X.copy(), W=0.0), geo, bg, EOS, w)
+    d = derive(State(E=E, U=geo.X.copy(), W=0.0), geo, bg, EOS, w, THETA)
     exact = np.array([3.0 * math.fsum(E[:j]) for j in range(1, w.layout.N + 1)])
     assert np.max(np.abs(d.M[1:] / exact - 1.0)) < 5e-15
 
@@ -152,7 +155,7 @@ def test_after_excision_the_mass_starts_at_m_e_and_sums_only_retained_cells():
     geo, bg, w = setup(IdentityMap, 10, 2.0, j_e=4)
     s = frw_state(geo, 4)
     M_e = 2.5 * s.M_e
-    d = derive(State(E=s.E, U=s.U, W=0.0, M_e=M_e), geo, bg, EOS, w)
+    d = derive(State(E=s.E, U=s.U, W=0.0, M_e=M_e), geo, bg, EOS, w, THETA)
     assert d.M[4] == M_e
     assert d.M[5:] == pytest.approx(M_e + 3.0 * np.cumsum(s.E[4:]))
     assert d.mt[4] == pytest.approx(M_e / geo.X[4] ** 3)
@@ -167,7 +170,7 @@ def test_a_non_positive_density_aborts_naming_the_cell():
     E = s.E.copy()
     E[6] = -1e-3
     with pytest.raises(NotHyperbolicError, match=r"rho\[6\]") as info:
-        derive(State(E=E, U=s.U, W=0.0), geo, bg, EOS, w)
+        derive(State(E=E, U=s.U, W=0.0), geo, bg, EOS, w, THETA)
     assert (info.value.field, info.value.index) == ("rho", 6)
     assert info.value.value == pytest.approx(-1e-3 / geo.dV[6])
 
@@ -178,7 +181,7 @@ def test_a_non_positive_gammabar2_aborts_naming_the_face():
     E = s.E.copy()
     E[2] *= 400.0  # far too much mass inside face 3: M_3 / X_3 exceeds e^xi + U_3^2
     with pytest.raises(NotHyperbolicError, match=r"Gammabar2\[3\]") as info:
-        derive(State(E=E, U=s.U, W=0.0), geo, bg, EOS, w)
+        derive(State(E=E, U=s.U, W=0.0), geo, bg, EOS, w, THETA)
     assert (info.value.field, info.value.index) == ("Gammabar2", 3)
 
 
@@ -188,10 +191,10 @@ def test_a_nan_in_a_retained_cell_aborts_rather_than_passing_silently():
     E = s.E.copy()
     E[1] = np.nan
     with pytest.raises(NotHyperbolicError, match=r"rho\[1\]"):
-        derive(State(E=E, U=s.U, W=0.0), geo, bg, EOS, w)
+        derive(State(E=E, U=s.U, W=0.0), geo, bg, EOS, w, THETA)
 
 
 def test_excised_entries_do_not_trigger_the_abort():
     geo, bg, w = setup(IdentityMap, 10, 2.0, j_e=3)
     s = Layout(10, 3).unpack(Layout(10, 3).pack(frw_state(geo, 3)))  # NaN below j_e
-    derive(s, geo, bg, EOS, w)  # no exception
+    derive(s, geo, bg, EOS, w, THETA)  # no exception

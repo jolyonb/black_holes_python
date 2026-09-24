@@ -23,7 +23,7 @@ shocks:
   kernels: production         # the shock-capturing kernels of Section 7.7, or centred for the base scheme
   density_limiter: mc         # mc or minmod
   c_v: 1.0                    # the viscosity constant
-  rho_floor: 1.0e-12          # the floor on reconstructed face densities
+  theta: 0.2                  # the theta-limiter: every face value at least theta times its cell's density (0.1-0.3)
   viscous_flux: density_weighted  # the viscous work in the energy flux: density_weighted, or averaged (the printed face average)
   cap_tension: true           # cap the viscous tension at the fluid pressure, q >= -w rho
 

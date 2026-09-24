@@ -7,9 +7,10 @@ beyond `c_v = 1`, none is switched on by a detector, and all reduce to the base 
 (a) The transported density is reconstructed to both sides of every face by a piecewise-linear profile in `s = X^2`
     with the monotonized-central limiter (eq:num:recon). The reconstruction is in `s` for the reason of Section 7.2:
     in `X` with mirrored ghosts it would be first order at the first cells. The first and last retained cells take
-    their single adjacent one-sided difference, clipped only so far that the cell's linear profile in `s` stays
-    non-negative between its faces, and every face value is floored at `rho_floor`. The clip is a positivity limiter:
-    it never binds in resolved smooth flow, but it does bind in violent flow, under either viscous flux.
+    their single adjacent one-sided difference. Every retained cell's slope is then scaled, where it must be, by the
+    theta-limiter (eq:num:theta), so that both its face values are at least `theta` times its density: a positivity
+    limiter that keeps the cell's mean, never binds in resolved smooth flow, and bounds a face value's lapse by
+    `theta^(-w/(1+w))` times the cell's. No face value is floored.
 (b) The energy flux is the HLL flux of the one-sided single-variable flux `F_j(rho)`, which carries the lapse of the
     same reconstructed density and the work term of the viscous pressure (eq:num:hll). Without the work term its
     derivative with respect to `X^2 rho` is the grid velocity at that side's own lapse, close to `Theta_j` and so inside
@@ -34,12 +35,12 @@ Positivity is measured, not proved: the pull-apart void of test_void and the nea
 positive with these kernels, but nothing here certifies it, and RK4 is not strong-stability-preserving.
 
 At an excision face `j_e` (Section 8.3) the kernels add their own one-sided rows and no others: the reconstructed
-density from inside the face is the value from outside, `rho^L_je = rho^R_je`; the first retained cell's density
-slope is its single one-sided difference and the velocity slope at the face the single adjacent difference, as at
-faces `0` and `N`; the viscous pressure enters the flux as the first retained cell's `q / rho` at its reconstructed
-face density (under `AVERAGED`, its unscaled cell value `<q>_je = q_je`), and its force is the
-end row `Q_je = 2 sbar_je q_je / (X_je^2 Delta X_je)`, the one-sided gradient over the half cell with `q` vanishing at
-the face.
+density from inside the face is the value from outside, `rho^L_je = rho^R_je`; the first retained cell's density slope
+is its single one-sided difference, theta-limited like every other, and the velocity slope at the face the single
+adjacent difference, as at faces `0` and `N`; the viscous pressure enters the flux as the first retained cell's
+`q / rho` at its reconstructed face density (under `AVERAGED`, its unscaled cell value `<q>_je = q_je`), and its force
+is the end row `Q_je = 2 sbar_je q_je / (X_je^2 Delta X_je)`, the one-sided gradient over the half cell with `q`
+vanishing at the face.
 
 The centred base scheme remains available as a test switch (`Kernels.CENTRED`); Section 7.4 says why it is never a
 production configuration.
@@ -55,7 +56,7 @@ from pbh.eos import EquationOfState
 from pbh.geometry import Geometry
 from pbh.layout import Layout
 from pbh.state import State
-from pbh.stencils import StencilWeights
+from pbh.stencils import StencilWeights, theta_limited_faces
 from pbh.types import FloatArray
 
 
@@ -84,8 +85,8 @@ class ViscousFlux(Enum):
 
     AVERAGED = "averaged"
     """Both one-sided fluxes carry the face average `<q>_j` of eq:num:stencils, and the excision face the first
-    retained cell's unscaled `q_je`: with `cap_tension` off, the scheme as first printed except for the end-cell
-    clip of the density reconstruction, which is not switchable."""
+    retained cell's unscaled `q_je`: with `cap_tension` off, the scheme as first printed except for the
+    theta-limiter of the density reconstruction, which is not switchable."""
 
     DENSITY_WEIGHTED = "density_weighted"
     """Each one-sided flux carries its own cell's viscous pressure, at that side's reconstructed density (see
@@ -102,7 +103,8 @@ class KernelSettings:
         kernels: Production kernels, or the centred base scheme.
         density_limiter: The limiter of the density reconstruction; the velocity limiter is minmod and not a choice.
         c_v: The one constant of the viscous pressure, `1`.
-        rho_floor: The floor on every reconstructed face density, `1e-12`.
+        theta: The theta-limiter's fraction: every reconstructed face value is at least `theta` times its cell's
+            density (eq:num:theta), `0 < theta < 1`. It also fixes the outer face's density (Section 7.5).
         viscous_flux: The viscous work term of the energy flux: density-weighted (production) or the face average.
         cap_tension: Whether the viscous tension is capped at the fluid pressure, `q >= -w rho` (production).
     """
@@ -110,7 +112,7 @@ class KernelSettings:
     kernels: Kernels = Kernels.PRODUCTION
     density_limiter: DensityLimiter = DensityLimiter.MC
     c_v: float = 1.0
-    rho_floor: float = 1e-12
+    theta: float = 0.2
     viscous_flux: ViscousFlux = ViscousFlux.DENSITY_WEIGHTED
     cap_tension: bool = True
 
@@ -133,6 +135,7 @@ class KernelResult:
         q_f: Its face value `<q>_j`.
         Q: Its force at the faces, the areal form of eq:num:qvisc.
         F: The HLL energy flux through the retained faces `j < N` (face `N` is the outer closure's).
+        theta_scale: The theta-limiter's factor on each retained cell's slope, `1` where it did not bind (cells).
     """
 
     rho_L: FloatArray
@@ -144,6 +147,7 @@ class KernelResult:
     q_f: FloatArray
     Q: FloatArray
     F: FloatArray
+    theta_scale: FloatArray
 
 
 def minmod(*slopes: FloatArray) -> FloatArray:
@@ -156,9 +160,9 @@ def minmod(*slopes: FloatArray) -> FloatArray:
 
 
 def reconstruct_density(
-    delta_rho: FloatArray, geo: Geometry, w: StencilWeights, limiter: DensityLimiter, floor: float
-) -> tuple[FloatArray, FloatArray, FloatArray, FloatArray]:
-    """The density to both sides of every retained face, piecewise linear in `s = X^2` (eq:num:recon).
+    delta_rho: FloatArray, geo: Geometry, w: StencilWeights, limiter: DensityLimiter, theta: float
+) -> tuple[FloatArray, FloatArray, FloatArray, FloatArray, FloatArray]:
+    """The density to both sides of every retained face, piecewise linear in `s = X^2` (eq:num:recon, eq:num:theta).
 
     The reconstruction is linear and the limiters see only differences, so it is carried out on the deviation
     `rho - 1` and one is added back: in exact arithmetic the same values, without the rounding of `rho` to its FRW
@@ -169,12 +173,12 @@ def reconstruct_density(
         geo: The geometry.
         w: The stencil weights, for the retained ranges.
         limiter: mc or minmod for the interior cells.
-        floor: The floor applied to every face density.
+        theta: The theta-limiter's fraction.
 
     Returns:
-        `(rho_L, rho_R, delta_rho_L, delta_rho_R)` at the faces: the density from the cell inside the face and from
-        the cell outside it, and their deviations; a floored value's deviation is `floor - 1`. At the origin and at an
-        excision face `rho_L = rho_R`; at the outer face `rho_R = rho_L`.
+        `(rho_L, rho_R, delta_rho_L, delta_rho_R, t)` at the faces: the density from the cell inside the face and
+        from the cell outside it, and their deviations; and the theta-limiter's factor on each retained cell. At the
+        origin and at an excision face `rho_L = rho_R`; at the outer face `rho_R = rho_L`.
     """
     layout = w.layout
     N, j_e = layout.N, layout.j_e
@@ -183,7 +187,7 @@ def reconstruct_density(
     d = np.full(N + 1, np.nan)
     d[j_e + 1 : N] = (delta_rho[j_e + 1 : N] - delta_rho[j_e : N - 1]) / dS[j_e + 1 : N]
     # The limited slope of every retained cell: the interior cells from their two faces, the first and last retained
-    # cells from their single adjacent difference, clipped below.
+    # cells from their single adjacent difference, which keeps second order at the origin.
     slope = np.full(N, np.nan)
     c = np.arange(j_e + 1, N - 1)
     d_in, d_out = d[c], d[c + 1]
@@ -195,25 +199,26 @@ def reconstruct_density(
         slope[c] = minmod(d_in, d_out)
     slope[j_e] = d[j_e + 1]
     slope[N - 1] = d[N - 1]
-    # The two end cells keep their one-sided difference for second order at the origin, but not so far that their
-    # profile turns negative inside the cell: near vacuum the unlimited slope put a face value tens of times above the
-    # cell's own density and the HLL diffusion then drained the cell through it (the pull-apart void at V = 15,
-    # test_void). The clip binds only where the linear profile in s would cross zero between the cell's faces: never
-    # in resolved smooth flow, but in violent flow it does, under either viscous flux.
-    for e in (j_e, N - 1):
-        rho_e = 1.0 + delta_rho[e]
-        slope[e] = min(max(slope[e], -rho_e / (X2[e + 1] - sbar[e])), rho_e / (sbar[e] - X2[e]))
+    # The theta-limiter scales every retained cell's slope, where it must, so that both its face values are at least
+    # theta times its density. mc already keeps an interior cell's face values between its neighbours', so there it
+    # binds only beside a neighbour emptier by a factor 1/theta; at an end cell it stops the one-sided extrapolation
+    # from reaching zero. It replaces a floor: near vacuum a floored face value sat far above its cell's content, and a
+    # face value near zero has an unbounded lapse (Section 7.7).
+    cells = slice(j_e, N)
+    t = np.full(N, np.nan)
+    t[cells], delta_in, delta_out = theta_limited_faces(
+        delta_rho[cells],
+        slope[cells] * (X2[j_e:N] - sbar[cells]),
+        slope[cells] * (X2[j_e + 1 : N + 1] - sbar[cells]),
+        theta,
+    )
     delta_L = np.full(N + 1, np.nan)
     delta_R = np.full(N + 1, np.nan)
-    inside = slice(j_e, N)  # cell c is inside face c + 1 ...
-    delta_L[j_e + 1 : N + 1] = delta_rho[inside] + slope[inside] * (X2[j_e + 1 : N + 1] - sbar[inside])
-    delta_R[j_e:N] = delta_rho[inside] + slope[inside] * (X2[j_e:N] - sbar[inside])  # ... and outside face c
+    delta_L[j_e + 1 : N + 1] = delta_out  # cell c is inside face c + 1 ...
+    delta_R[j_e:N] = delta_in  # ... and outside face c
     delta_L[j_e] = delta_R[j_e]  # nothing inside the innermost face: transmissive (F_0 = 0 anyway at the origin)
     delta_R[N] = delta_L[N]
-    rho_L, rho_R = np.maximum(1.0 + delta_L, floor), np.maximum(1.0 + delta_R, floor)
-    delta_L[1.0 + delta_L < floor] = floor - 1.0
-    delta_R[1.0 + delta_R < floor] = floor - 1.0
-    return rho_L, rho_R, delta_L, delta_R
+    return 1.0 + delta_L, 1.0 + delta_R, delta_L, delta_R, t
 
 
 def viscous_pressure(

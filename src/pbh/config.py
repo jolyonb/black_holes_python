@@ -24,7 +24,7 @@ assembled from all of them. The driver reads the file and never sees a raw strin
       kernels: production       # production (Section 7.7) or centred (the base scheme, a test switch)
       density_limiter: mc       # mc or minmod
       c_v: 1.0
-      rho_floor: 1.0e-12
+      theta: 0.2                # the theta-limiter: every face value at least theta times its cell's density
       viscous_flux: density_weighted  # density_weighted (each side its own q/rho at its face density) or averaged
       cap_tension: true         # cap the viscous tension at the fluid pressure, q >= -w rho
     stepping:
@@ -169,14 +169,14 @@ class ShockConfig(Section):
     kernels: Kernels = Field(default=Kernels.PRODUCTION, strict=False)
     density_limiter: DensityLimiter = Field(default=DensityLimiter.MC, strict=False)
     c_v: float = 1.0
-    rho_floor: float = 1e-12
+    theta: float = Field(default=0.2, gt=0.0, lt=1.0)
     viscous_flux: ViscousFlux = Field(default=ViscousFlux.DENSITY_WEIGHTED, strict=False)
     cap_tension: bool = True
 
     def build(self) -> KernelSettings:
         """The kernel settings."""
         return KernelSettings(
-            self.kernels, self.density_limiter, self.c_v, self.rho_floor, self.viscous_flux, self.cap_tension
+            self.kernels, self.density_limiter, self.c_v, self.theta, self.viscous_flux, self.cap_tension
         )
 
 
