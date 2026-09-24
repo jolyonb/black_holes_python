@@ -176,8 +176,11 @@ class PenaltyStrengths:
     more: the pair is half a cell off the face, an `O(Delta X)` defect, and the flux velocity and the ODE forcing are
     second order only along the line `tau_rho = 2 - tau_u / 2`, `tau_W = 1 - tau_u / 2`; strengths off that line
     make the boundary first order, which `is_second_order` reports. The production choice is `(2, 1, 0)`, the member
-    of the line at which the raw pair is itself second order at the face and the flux velocity is the
-    characteristic value `U*_N = X_N (1 + (u_+ + W) / 2)`.
+    of the line at which the outgoing amplitude `u_+` formed from the stored pair is itself second order at the face
+    and the flux velocity is the characteristic value `U*_N = X_N (1 + (u_+ + W) / 2)`. The members of the pair are
+    not: the stored `U_N` and `rho_{N-1}` each carry an `O(Delta X)` error, which cancel in `u_+`, and `U_N` converges
+    at first order at the face. What the boundary hands the interior, the flux velocity `U*_N` and the ODE's forcing
+    `u_+`, is second order, so no global order is lost.
 
     The strengths are unrelated to the sound horizon `tau` of the background.
     """
