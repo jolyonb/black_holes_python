@@ -143,6 +143,15 @@ class MonitoredStep(StepRow):
     clipped_in_core: int
     reconstruction_jump: float
     """`max |rho_R - rho_L| / <rho>` over the faces."""
+    widened_faces: int
+    """Faces where a chord speed widened the HLL bounds: `Lambda^+ - Lambda^-` more than 0.1 per cent above the acoustic
+    width `(Theta + a)^+ - (Theta - a)^-`."""
+    widening_ratio: float
+    """The largest ratio of `Lambda^+ - Lambda^-` to the acoustic width over the faces."""
+    q_over_rho_max: float
+    """The largest `q / rho` over the retained cells: the strongest compression's viscous pressure, which widens the
+    bounds through the chord speeds."""
+    q_over_rho_max_cell: int
 
 
 @dataclass(frozen=True)
@@ -273,12 +282,21 @@ def full_diagnostics(
     half = np.flatnonzero(d.rho[cells] <= 0.5 * rho_0)
     core_cells = int(half[0]) if half.size else N - j_e
     core = slice(j_e, j_e + max(core_cells, 1))
+    widened, widening, q_max, q_max_cell = 0, 1.0, 0.0, j_e
     if kernels is not None:
         viscous = float(np.max(np.abs(kernels.q[core]) / (w * d.rho[core])))
         clipped = limiter_clipped(d.delta_rho, kernels.delta_rho_L, geo, layout)
         first = max(j_e, 1)  # face 0 carries no reconstruction
         jumps = kernels.delta_rho_R[first:N] - kernels.delta_rho_L[first:N]
         jump = float(np.max(np.abs(jumps) / d.rho_f[first:N]))
+        # the chord speeds' widening of the HLL bounds, against the acoustic width
+        f = slice(first, N)
+        acoustic = np.maximum(sp.Theta[f] + sp.a[f], 0.0) - np.minimum(sp.Theta[f] - sp.a[f], 0.0)
+        ratio_w = (kernels.Lam_plus[f] - kernels.Lam_minus[f]) / acoustic
+        widened, widening = int(np.sum(ratio_w > 1.001)), float(np.max(ratio_w))
+        q_over_rho = kernels.q[cells] / d.rho[cells]
+        k_q = int(np.argmax(q_over_rho))
+        q_max, q_max_cell = float(q_over_rho[k_q]), j_e + k_q
     else:
         viscous, jump = 0.0, 0.0
         clipped = np.zeros(N, dtype=bool)
@@ -314,6 +332,10 @@ def full_diagnostics(
         clipped_cells=int(np.sum(clipped)),
         clipped_in_core=int(np.sum(clipped[core])),
         reconstruction_jump=jump,
+        widened_faces=widened,
+        widening_ratio=widening,
+        q_over_rho_max=q_max,
+        q_over_rho_max_cell=q_max_cell,
     )
 
 
@@ -351,6 +373,10 @@ class Diagnostics:
     clipped_cells: int
     clipped_in_core: int
     reconstruction_jump: float
+    widened_faces: int
+    widening_ratio: float
+    q_over_rho_max: float
+    q_over_rho_max_cell: int
 
 
 NAN = float("nan")
@@ -385,6 +411,10 @@ UNSET = Diagnostics(
     -1,
     -1,
     NAN,
+    -1,
+    NAN,
+    NAN,
+    -1,
 )
 """The second-tier columns on a step they are not evaluated: NaN, and `-1` for indices and counts."""
 UNSET_COLUMNS = dataclasses.asdict(UNSET)  # converted once: a plain step must stay cheap

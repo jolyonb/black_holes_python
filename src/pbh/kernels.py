@@ -12,12 +12,12 @@ beyond `c_v = 1`, none is switched on by a detector, and all reduce to the base 
     limiter that keeps the cell's mean, never binds in resolved smooth flow, and bounds a face value's lapse by
     `theta^(-w/(1+w))` times the cell's. No face value is floored.
 (b) The energy flux is the HLL flux of the one-sided single-variable flux `F_j(rho)`, which carries the lapse of the
-    same reconstructed density and the work term of the viscous pressure (eq:num:hll). Without the work term its
-    derivative with respect to `X^2 rho` is the grid velocity at that side's own lapse, close to `Theta_j` and so inside
-    the HLL bounds `Theta_j +- a_j` unless the lapse jumps across the face; the work term adds a speed of order
-    `q / rho`. No donor velocity has to be chosen, and on FRW it is the centred flux of eq:num:energy. It is returned
-    as its deviation from the FRW flux, which the energy rows need (`equations.py`), and the reconstruction works in
-    the density's deviation for the same reason.
+    same reconstructed density and the work term of the viscous pressure (eq:num:hll). Its bounds contain the acoustic
+    speeds `Theta_j +- a_j` and each side's chord speed `F_j / (X_j^2 rho)`, which makes the flux a combination of the
+    two sides' face values with non-negative weights: no cell is drained through a face by its neighbour's content.
+    No donor velocity has to be chosen, and on FRW it is the centred flux of eq:num:energy. It is returned as its
+    deviation from the FRW flux, which the energy rows need (`equations.py`), and the reconstruction works in the
+    density's deviation for the same reason.
 (c) The peculiar velocity `upsilon = U - X` is reconstructed to the cell midpoints from both faces with the minmod
     limiter, and the limited jump across each cell (eq:num:jump), the full jump at a shock and `O(Delta X^2)` where the
     flow is smooth, is fed back as a viscous pressure on the cells (eq:num:qvisc), normalised like a Rusanov term
@@ -31,8 +31,10 @@ beyond `c_v = 1`, none is switched on by a detector, and all reduce to the base 
     minmod and never a compressive one (Section 7.7). The taper `q_{N-1} = 0` is the switch-off the outer closure of
     Section 7.5 asks for.
 
-Positivity is measured, not proved: the pull-apart void of test_void and the near-threshold collapses keep every cell
-positive with these kernels, but nothing here certifies it, and RK4 is not strong-stability-preserving.
+With these kernels the energy row is positive for the semi-discrete scheme (eq:num:positivity): every term of a cell's
+rate is a gain from a neighbour's face value, the non-negative source, or a loss through the cell's own face values
+that is at most a finite multiple of its content, so no neighbour drains a cell (tests/test_positivity.py). An
+explicit step can still overshoot; that is the time stepper's concern (Section 7.6).
 
 At an excision face `j_e` (Section 8.3) the kernels add their own one-sided rows and no others: the reconstructed
 density from inside the face is the value from outside, `rho^L_je = rho^R_je`; the first retained cell's density slope
@@ -136,6 +138,8 @@ class KernelResult:
         Q: Its force at the faces, the areal form of eq:num:qvisc.
         F: The HLL energy flux through the retained faces `j < N` (face `N` is the outer closure's).
         theta_scale: The theta-limiter's factor on each retained cell's slope, `1` where it did not bind (cells).
+        Lam_plus: The upper bound `Lambda^+_j` of the HLL flux at the retained faces `j < N`.
+        Lam_minus: Its lower bound `Lambda^-_j`.
     """
 
     rho_L: FloatArray
@@ -148,6 +152,8 @@ class KernelResult:
     Q: FloatArray
     F: FloatArray
     theta_scale: FloatArray
+    Lam_plus: FloatArray
+    Lam_minus: FloatArray
 
 
 def minmod(*slopes: FloatArray) -> FloatArray:
@@ -337,7 +343,7 @@ def hll_flux(
     a: FloatArray,
     eos: EquationOfState,
     w: StencilWeights,
-) -> FloatArray:
+) -> tuple[FloatArray, FloatArray, FloatArray]:
     """The HLL energy flux through the retained faces `j < N` (eq:num:hll) as its deviation from the FRW flux.
 
     The one-sided flux
@@ -346,8 +352,17 @@ def hll_flux(
                       + alpha (rho^(-w/(1+w)) U_j - X_j) X_j^2 q
 
     is evaluated on each side, at that side's reconstructed density with the lapse of that same density and at that
-    side's viscous pressure `q_L` or `q_R` (`viscous_sides`), and combined with the signal-speed bounds
-    `Lambda^+ = max(Theta + a, 0)`, `Lambda^- = min(Theta - a, 0)`.
+    side's viscous pressure `q_L` or `q_R` (`viscous_sides`), and combined with the bounds
+
+        Lambda^+ = max(Theta + a, v^L, v^R, 0),     Lambda^- = min(Theta - a, v^L, v^R, 0),
+
+    which contain the acoustic speeds and each side's chord speed `v = F_j(rho, q) / (X^2 rho)`. The flux is then
+    `X^2 [A rho^L - B rho^R]` with `A, B >= 0`: each side's contribution is proportional to its own face value, so a
+    cell loses content only through its own face values and no neighbour drains it (Section 7.7). The acoustic bounds
+    alone miss the chord even on FRW, where it is the pressure work `alpha w X` against a grid velocity of zero,
+    beyond `X = e^((1-alpha) xi) / sqrt(w)`; including it there costs at most a doubling of the dissipation, and nothing
+    at linear order, since the flux of a uniform state does not depend on the bounds. The bounds enter the flux only:
+    the Courant speed stays `Lambda_j = |Theta_j| + a_j`.
 
     The HLL combination is affine in the one-sided fluxes, with weights `Lambda^+ / (Lambda^+ - Lambda^-)` and
     `-Lambda^- / (Lambda^+ - Lambda^-)` summing to one, so subtracting the FRW flux `F_FRW = (alpha w X - d_xi X) X^2`
@@ -373,7 +388,8 @@ def hll_flux(
         w: The stencil weights, for the layout.
 
     Returns:
-        `F_j - F_FRW,j` at the retained faces `j < N`; `0` at the origin, where both vanish.
+        `(F_j - F_FRW,j, Lambda^+_j, Lambda^-_j)` at the retained faces `j < N`: the flux deviation, `0` at the origin,
+        where both vanish, and the two bounds.
     """
     layout = w.layout
     N, j_e = layout.N, layout.j_e
@@ -383,19 +399,23 @@ def hll_flux(
     frw_speed = alpha * w_eos * X - X_xi  # the FRW flux is frw_speed X^2
     X2 = X * X
 
-    def one_sided(rho: FloatArray, delta_rho: FloatArray, q: FloatArray) -> FloatArray:
+    def one_sided(rho: FloatArray, delta_rho: FloatArray, q: FloatArray) -> tuple[FloatArray, FloatArray]:
+        """The one-sided flux less the FRW flux, and the chord speed `F_j(rho, q) / (X^2 rho)`."""
         ephi, delta_ephi = eos.lapse_and_deviation(rho, delta_rho)
         drift = alpha * (X * delta_ephi + ephi * dU)  # alpha (e^phi U - X)
-        return X2 * (frw_speed * delta_rho + (1.0 + w_eos) * drift * rho + drift * q)
+        chord = frw_speed + (1.0 + w_eos) * drift + drift * q / rho
+        return X2 * (frw_speed * delta_rho + (1.0 + w_eos) * drift * rho + drift * q), chord
 
-    Lam_plus = np.maximum(Theta[faces] + a[faces], 0.0)
-    Lam_minus = np.minimum(Theta[faces] - a[faces], 0.0)
+    G_L, v_L = one_sided(rho_L[faces], delta_rho_L[faces], q_L[faces])
+    G_R, v_R = one_sided(rho_R[faces], delta_rho_R[faces], q_R[faces])
+    zero = np.zeros_like(X)
+    Lam_plus = np.full(N + 1, np.nan)
+    Lam_minus = np.full(N + 1, np.nan)
+    Lam_plus[faces] = np.maximum.reduce([Theta[faces] + a[faces], v_L, v_R, zero])
+    Lam_minus[faces] = np.minimum.reduce([Theta[faces] - a[faces], v_L, v_R, zero])
+    Lp, Lm = Lam_plus[faces], Lam_minus[faces]
     delta_F = np.full(N + 1, np.nan)
-    delta_F[faces] = (
-        Lam_plus * one_sided(rho_L[faces], delta_rho_L[faces], q_L[faces])
-        - Lam_minus * one_sided(rho_R[faces], delta_rho_R[faces], q_R[faces])
-        + Lam_plus * Lam_minus * X2 * (delta_rho_R[faces] - delta_rho_L[faces])
-    ) / (Lam_plus - Lam_minus)
+    delta_F[faces] = (Lp * G_L - Lm * G_R + Lp * Lm * X2 * (delta_rho_R[faces] - delta_rho_L[faces])) / (Lp - Lm)
     if j_e == 0:
         delta_F[0] = 0.0
-    return delta_F
+    return delta_F, Lam_plus, Lam_minus

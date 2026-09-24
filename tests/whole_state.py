@@ -187,11 +187,13 @@ def whole_state_rate(
             transport = (alpha * ((1.0 + w_eos) * ephi * U[f] - X[f]) - X_xi[f]) * X[f] ** 2 * rho
             return transport + alpha * (ephi * U[f] - X[f]) * X[f] ** 2 * q_side[f]
 
-        Lp = np.maximum(Theta[f] + a[f], 0.0)
-        Lm = np.minimum(Theta[f] - a[f], 0.0)
-        F[f] = (
-            Lp * one_sided(rho_L[f], q_L) - Lm * one_sided(rho_R[f], q_R) + Lp * Lm * X[f] ** 2 * (rho_R[f] - rho_L[f])
-        ) / (Lp - Lm)
+        F_L, F_R = one_sided(rho_L[f], q_L), one_sided(rho_R[f], q_R)
+        with np.errstate(invalid="ignore"):  # 0 / 0 at the origin, whose flux is zero whatever the bounds
+            v_L, v_R = F_L / (X[f] ** 2 * rho_L[f]), F_R / (X[f] ** 2 * rho_R[f])  # the chord speeds
+        v_L, v_R = np.nan_to_num(v_L), np.nan_to_num(v_R)
+        Lp = np.maximum(np.maximum(Theta[f] + a[f], 0.0), np.maximum(v_L, v_R))
+        Lm = np.minimum(np.minimum(Theta[f] - a[f], 0.0), np.minimum(v_L, v_R))
+        F[f] = (Lp * F_L - Lm * F_R + Lp * Lm * X[f] ** 2 * (rho_R[f] - rho_L[f])) / (Lp - Lm)
     else:
         Q = np.zeros(N + 1)
         F[faces] = (cE[faces] - X_xi[faces]) * X[faces] ** 2 * d.rho_f[faces]

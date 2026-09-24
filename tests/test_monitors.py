@@ -1,6 +1,7 @@
 """Tests of pbh.monitors: the stage quantities, the step record, and the pieces they are built from."""
 
 import dataclasses
+import math
 
 import numpy as np
 import pytest
@@ -277,6 +278,21 @@ def test_the_theta_binds_count_the_cells_whose_slope_the_theta_limiter_scaled():
     state = State(E=E, U=frw.U, W=0.0)  # far below theta times theirs, so their slopes are scaled; 30 is a minimum
     row = monitor_step(inputs_for(SCHEME, xi, state), RAD, SCHEME.layout)
     assert row.theta_binds == 2
+
+
+def test_on_frw_the_chord_widens_the_bounds_beyond_the_crossover_by_the_pressure_work():
+    # On FRW the chord speed is the pressure work alpha w X against a grid velocity of zero, so beyond the crossover
+    # X_c = e^((1-alpha) xi) / sqrt(w) the bounds are [-a, alpha w X] instead of [-a, a]: a width ratio of
+    # (alpha w X + a) / (2 a), largest at the outermost flux face, and no compression anywhere.
+    sch = Scheme(RAD, IdentityMap(24.0), Layout(N), OutgoingWave(), PRODUCTION_KERNELS)
+    f = sch.frame(0.0)
+    row = monitor_step(inputs_for(sch, 0.0, frw_state(f.geo)), RAD, sch.layout)
+    alpha, w = float(RAD.alpha), float(RAD.w)
+    a = alpha * math.sqrt(w)  # at xi = 0
+    X = f.geo.X[: N + 1]
+    assert row.widened_faces == int(np.sum(alpha * w * X[1:N] > 1.001 * a))
+    assert row.widening_ratio == pytest.approx((alpha * w * X[N - 1] + a) / (2.0 * a), rel=1e-12)
+    assert row.q_over_rho_max == 0.0
 
 
 # --- the pieces ---

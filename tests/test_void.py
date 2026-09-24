@@ -40,7 +40,9 @@ make a black hole at the centre instead: a trapped surface appears for V = 50 at
 400 and 800. Without excision those runs end three ways: with no trapped face left on the grid (V = 50 at N = 200), with
 the trapped region still on it (V = 30 at N = 400), or in an abort with Gammabar^2 < 0 at the first faces (V = 50 at N =
 400; V = 30 and 50 at N = 800); those stronger pulls were run with the clip and the floor, and the slow tests below
-re-assert survival with the theta-limiter. Positivity is measured here, not proved: nothing in the scheme certifies it.
+re-assert survival with the theta-limiter. The chord-widened bounds of the HLL flux came after them: with them the
+semi-discrete scheme is positive (eq:num:positivity, tests/test_positivity.py), and what this file measures is the
+fully discrete step.
 """
 
 import math
@@ -222,9 +224,12 @@ def test_a_tension_beyond_the_fluid_pressure_no_longer_drains_the_cell_beside_it
     dip: float, flux: ViscousFlux, cap: bool
 ):
     # Uncapped, the expanding neighbour's tension reaches q / rho = -52 (or -12), the total pressure and with it the
-    # enthalpy its flux carries turn negative, and the inward flow through face j_e + 1 pumps out some 1e7 times the
-    # first cell's content in one step; capped at the fluid pressure, that face carries energy in, under either
-    # viscous flux. Face j_e was the other defect: with its face value floored, the average took more than the cell's
+    # enthalpy its flux carries turn negative, and under the averaged flux the inward flow through face j_e + 1 pumps
+    # out 1e8 to 1e9 times the first cell's content in one step. Capped at the fluid pressure, that face carries energy
+    # in, under either viscous flux. The density-weighted flux does not need the cap for that: its chord speeds carry
+    # the neighbour's q / rho, the bounds widen to contain them, and the face then takes from the first cell no more
+    # than round-off of its content (Section 7.7). The average is not proportional to the side's density, so no bounds
+    # make it so. Face j_e was the other defect: with its face value floored, the average took more than the cell's
     # whole content through it in one step. The theta-limiter now holds that face value at theta rho, so the cell loses
     # a share of its own content there under either flux, 15 to 40 per cent of it in this step, the density-weighted
     # flux the smaller share, and the cap does not enter.
@@ -234,7 +239,10 @@ def test_a_tension_beyond_the_fluid_pressure_no_longer_drains_the_cell_beside_it
         assert out_e1 < 0.0
     else:
         assert least < -10.0
-        assert out_e1 > 1e6
+        if flux is ViscousFlux.AVERAGED:
+            assert out_e1 > 1e6
+        else:
+            assert abs(out_e1) < 1e-6
     assert 0.0 < out_e < 0.5
     averaged, _, _ = tension_state(KernelSettings(viscous_flux=ViscousFlux.AVERAGED, cap_tension=cap), dip)
     if flux is ViscousFlux.DENSITY_WEIGHTED:
