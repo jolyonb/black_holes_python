@@ -21,6 +21,7 @@ from pbh.excision import (
     attempt_switch_on,
     check_face,
     excise,
+    label_of,
     outflow_margin,
     packed_deviation,
     place_transition,
@@ -31,7 +32,7 @@ from pbh.geometry import Geometry
 from pbh.horizon import UNEXCISED, FaceValues, Horizon, HorizonReport, HorizonRow, find_horizons, near_zone
 from pbh.kernels import PRODUCTION_KERNELS
 from pbh.layout import Layout
-from pbh.maps import BlendMap, IdentityMap, Zone
+from pbh.maps import BlendMap, IdentityMap, SinhStretch, Zone
 from pbh.output import RunReader
 from pbh.records import read_initial
 from pbh.state import frw_state
@@ -120,8 +121,9 @@ def test_the_switch_on_is_refused_while_the_shell_is_thin_and_thrown_once_it_has
     reader, config = collapse
     formed = formed_snapshots(reader, config)
     assert formed
-    _, state, d, geo, _, report, layout = slice_of(reader, config, formed[-1])
-    attempt = attempt_switch_on(report, state, d, geo, RAD, layout, EXCISION, ())
+    record, state, d, geo, _, report, layout = slice_of(reader, config, formed[-1])
+    grid = config.grid.build()
+    attempt = attempt_switch_on(report, state, d, geo, RAD, layout, EXCISION, (), grid, record.xi)
     assert isinstance(attempt, SwitchAttempt)
     assert attempt.passed
     assert attempt.failed == []
@@ -137,7 +139,7 @@ def test_the_switch_on_is_refused_while_the_shell_is_thin_and_thrown_once_it_has
     h = report.h.copy()
     h[: attempt.j_e + 2] = np.abs(h[: attempt.j_e + 2])
     thin = dataclasses.replace(report, h=h, trapped_faces=int(np.sum(h < 0.0)))
-    refused = attempt_switch_on(thin, state, d, geo, RAD, layout, EXCISION, ())
+    refused = attempt_switch_on(thin, state, d, geo, RAD, layout, EXCISION, (), grid, record.xi)
     assert not refused.passed
     assert refused.failed == ["three_trapped"]
     assert refused.inside_horizon
@@ -149,22 +151,29 @@ def test_a_repeated_switch_on_must_move_the_face_outward_and_must_not_overlap_th
 ):
     reader, config = collapse
     index = formed_snapshots(reader, config)[-1]
-    _, state, d, geo, _, report, layout = slice_of(reader, config, index)
-    attempt = attempt_switch_on(report, state, d, geo, RAD, layout, EXCISION, ())
+    record, state, d, geo, _, report, layout = slice_of(reader, config, index)
+    grid = config.grid.build()
+    attempt = attempt_switch_on(report, state, d, geo, RAD, layout, EXCISION, (), grid, record.xi)
     assert attempt.passed
     # the same slice seen from a run already excised beyond the candidate face: the face stays where it is
     excised_state, excised_layout = excise(state, layout, attempt.j_e + 2)
-    again = attempt_switch_on(report, excised_state, d, geo, RAD, excised_layout, EXCISION, ())
+    again = attempt_switch_on(
+        report, excised_state, d, geo, RAD, excised_layout, EXCISION, (), config.grid.build(), record.xi
+    )
     assert again.j_e == attempt.j_e + 2
     assert again.inside_horizon
     # with an existing zone the new transition starts beyond its end, so the two never overlap ...
     earlier = Zone(xi_on=0.0, tau_on=0.3, x_t=attempt.x_t - attempt.Delta_t, Delta_t=0.5 * attempt.Delta_t)
-    extension = attempt_switch_on(report, state, d, geo, RAD, layout, EXCISION, (earlier,))
+    extension = attempt_switch_on(
+        report, state, d, geo, RAD, layout, EXCISION, (earlier,), config.grid.build(), record.xi
+    )
     assert extension.no_overlap
     assert extension.x_t - extension.Delta_t == pytest.approx(earlier.outer_edge)
     # ... unless that puts it past the static outer part, which the fourth test refuses
     far = Zone(xi_on=0.0, tau_on=0.3, x_t=0.6, Delta_t=0.1)
-    assert not attempt_switch_on(report, state, d, geo, RAD, layout, EXCISION, (far,)).transition_fits
+    assert not attempt_switch_on(
+        report, state, d, geo, RAD, layout, EXCISION, (far,), config.grid.build(), record.xi
+    ).transition_fits
 
 
 def test_an_extension_starts_exactly_where_the_last_zone_ends_whatever_the_rounding():
@@ -220,7 +229,7 @@ def test_the_face_assertions_pass_inside_the_trapped_region_and_fail_outside_it(
     reader, config = collapse
     index = formed_snapshots(reader, config)[-1]
     record, state, d, geo, bg, report, layout = slice_of(reader, config, index)
-    attempt = attempt_switch_on(report, state, d, geo, RAD, layout, EXCISION, ())
+    attempt = attempt_switch_on(report, state, d, geo, RAD, layout, EXCISION, (), config.grid.build(), record.xi)
     assert attempt.passed
     excised, excised_layout = excise(state, layout, attempt.j_e)
     sch = Scheme(RAD, config.grid.build(), excised_layout, config.outer.build(), config.shocks.build())
@@ -520,14 +529,56 @@ def test_a_refused_zone_extension_is_logged_once_per_change_of_reasons(
     real = driver_module.attempt_switch_on
 
     def refusing(*args: Any, **kwargs: Any) -> SwitchAttempt:
-        return dataclasses.replace(real(*args, **kwargs), transition_fits=False)
+        return dataclasses.replace(real(*args, **kwargs), no_overlap=False)
 
     monkeypatch.setattr(driver_module, "attempt_switch_on", refusing)
     index = excised_index(reader)
     resumed = restart_short(directory, path, "refused", index, reader.snapshot(index).xi + 0.05)
     attempts = [e for e in resumed.events if e.kind == "zone_attempt"]
     assert len(attempts) == 1  # refused at every step, logged once
-    assert attempts[0].payload["failed"] == ["transition_fits"]
+    assert attempts[0].payload["failed"] == ["no_overlap"]
+
+
+def test_a_transition_that_cannot_fit_ends_the_run_at_once_naming_the_radius_it_needs(
+    excised: tuple[RunReader, Path, Path], monkeypatch: pytest.MonkeyPatch
+):
+    # The horizon only grows, so a zone that does not fit now never will: the run ends instead of refusing forever.
+    import pbh.driver as driver_module
+
+    reader, path, directory = excised
+    monkeypatch.setattr(driver_module, "zone_needs_extension", always)
+    real = driver_module.attempt_switch_on
+
+    def too_big(*args: Any, **kwargs: Any) -> SwitchAttempt:
+        return dataclasses.replace(real(*args, **kwargs), transition_fits=False)
+
+    monkeypatch.setattr(driver_module, "attempt_switch_on", too_big)
+    index = excised_index(reader)
+    resumed = restart_short(directory, path, "no_room", index, reader.snapshot(index).xi + 0.05)
+    assert [e.kind for e in resumed.events][-2:] == ["abort", "end"]
+    abort = next(e for e in resumed.events if e.kind == "abort")
+    assert abort.payload["field"] == "transition_fits"
+    end = resumed.end
+    assert end is not None
+    assert "enlarge Rtilde_max" in end.payload["reason"]
+
+
+def test_the_transition_spans_the_areal_radii_and_on_the_uniform_map_the_labels_are_the_old_rule():
+    # On the sinh stretch the labels near the origin are inflated, and a rule in labels would refuse a hole that fits:
+    # the transition is placed by areal radius, (c_t -+ c_Delta) X_AH, through the map.
+    for grid in (IdentityMap(12.0), SinhStretch(12.0, scale=3.0)):
+        X_AH = 1.0
+        x_in, x_out = (label_of(grid, 0.0, (EXCISION.c_t + s * EXCISION.c_Delta) * X_AH) for s in (-1.0, 1.0))
+        for x, X in (
+            (x_in, (EXCISION.c_t - EXCISION.c_Delta) * X_AH),
+            (x_out, (EXCISION.c_t + EXCISION.c_Delta) * X_AH),
+        ):
+            assert float(grid.radius_at(0.0, np.array([x]))[0]) == pytest.approx(X, rel=1e-14)
+    x_AH = 1.0 / 12.0  # the uniform map: X = 12 x, so the areal rule is the label rule c_t x_AH, c_Delta x_AH
+    x_in, x_out = (label_of(IdentityMap(12.0), 0.0, (EXCISION.c_t + s * EXCISION.c_Delta) * 1.0) for s in (-1.0, 1.0))
+    assert 0.5 * (x_in + x_out) == pytest.approx(EXCISION.c_t * x_AH, rel=1e-14)
+    assert 0.5 * (x_out - x_in) == pytest.approx(EXCISION.c_Delta * x_AH, rel=1e-14)
+    assert label_of(IdentityMap(12.0), 0.0, 100.0) == 2.0  # beyond the grid: enough to fail the fit
 
 
 def test_a_zone_extension_can_move_the_face_out_to_the_new_horizon(

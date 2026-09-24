@@ -431,8 +431,8 @@ def test_a_chart_abort_after_a_refused_switch_on_names_the_refusal_first():
     under = step_abort(chart, accepted, state, frame, ["three_trapped"]).reason
     assert under.startswith("horizon under-resolved (switch-on refused by three_trapped)")
     assert "Gammabar^2 <= 0 at face 5" in under
-    blend = step_abort(chart, accepted, state, frame, ["transition_fits"]).reason
-    assert blend.startswith("switch-on refused by transition_fits: the blend transition does not fit")
+    overlap = step_abort(chart, accepted, state, frame, ["no_overlap"]).reason
+    assert overlap.startswith("switch-on refused by no_overlap; Gammabar^2 <= 0 at face 5")
     positivity = StepAbortError(StepFailure(FailureCause.RESULT_RHO, 0, 9, -1e-9), [chart.failure] * 21)
     assert step_abort(positivity, accepted, state, frame, ["three_trapped"]).reason == (
         "no step passed after 20 halvings: result_rho at index 9"

@@ -14,8 +14,10 @@ Its label is the rest-radius rule corrected by the ramp factor (eq:numbh:xe),
 and four things are required (Section 8.2): the face lies inside the horizon and outside the origin,
 `1 <= j_e < j_*`; the outflow margin `mu` of eq:exc:margin is positive there, the light-cone test, stricter than
 the sound condition the stencils need; the faces `j_e`, `j_e + 1` and `j_e + 2` are all trapped, so that every
-point the closure's rows touch lies where nothing returns; and the map's transition `x_t + Delta_t = (c_t +
-c_Delta) x_AH` lies below `0.8`, so that the outer face sits on the static part of the map. If any fails the step
+point the closure's rows touch lies where nothing returns; and the map's transition, placed to span the areal radii
+`(c_t -+ c_Delta) X_AH`, ends below the label `0.8`, so that the outer face sits on the static part of the map. The
+transition is placed in areal radius, not in label: on a stretched map the labels near the origin are inflated, and a
+rule in labels would refuse holes that fit (Section 8.1). If any fails the step
 is taken unexcised and the test repeated: the trapped region is a thin shell when it first appears and thickens
 inward. A refused attempt is an event, and so is the switch.
 
@@ -43,7 +45,7 @@ from pbh.equations import Speeds
 from pbh.geometry import Geometry
 from pbh.horizon import FaceValues, HorizonReport
 from pbh.layout import Layout
-from pbh.maps import Zone
+from pbh.maps import Map, Zone
 from pbh.state import State
 from pbh.types import FloatArray
 
@@ -75,7 +77,10 @@ class SwitchAttempt:
             if that lies further out, since the face never moves inward.
         margin_positive: Test two, `mu > 0` at `j_e`, with `mu` the value.
         three_trapped: Test three, the faces `j_e` to `j_e + 2` trapped, with `h` their trapping values.
-        transition_fits: Test four, `x_t + Delta_t < 0.8`, with the two labels.
+        transition_fits: Test four, `x_t + Delta_t < 0.8`, with the two labels of the transition, placed to span the
+            areal radii `(c_t -+ c_Delta) X_AH`, an extension's pushed outward beyond the last zone; `X_out` is the
+            radius where it ends and `X_static` the radius of label `0.8`.
+            A failure is final: the horizon only grows.
         no_overlap: With existing zones, the new transition starts beyond the last one's end; an extension is placed
             there if the horizon alone would put it closer in.
     """
@@ -92,6 +97,8 @@ class SwitchAttempt:
     transition_fits: bool
     x_t: float
     Delta_t: float
+    X_out: float
+    X_static: float
     no_overlap: bool
 
     @property
@@ -145,8 +152,13 @@ def attempt_switch_on(
     layout: Layout,
     excision: ExcisionConfig,
     zones: tuple[Zone, ...],
+    grid: Map,
+    xi: float,
 ) -> SwitchAttempt:
-    """Run the four tests of Section 8.2 on the apparent horizon of `report`; the caller must have one."""
+    """Run the four tests of Section 8.2 on the apparent horizon of `report`; the caller must have one.
+
+    `grid` is the map the run is on at `xi`, which places the transition's areal radii at their labels.
+    """
     apparent = report.apparent
     assert apparent is not None, "a switch-on needs an apparent horizon"
     N = layout.N
@@ -157,10 +169,12 @@ def attempt_switch_on(
     mu = outflow_margin(j_e, state, d, geo, eos, layout) if inside else float("nan")
     h = tuple(float(report.h[j]) if j <= N else float("nan") for j in (j_e, j_e + 1, j_e + 2))
     three = inside and j_e + 2 <= N and all(value < 0.0 for value in h)
-    # the transition, sized from the horizon; an extension starts it beyond the last zone's end at the least
-    Delta_t = excision.c_Delta * apparent.x
-    x_t = place_transition(excision.c_t * apparent.x, Delta_t, zones)
+    # the transition, spanning the areal radii (c_t -+ c_Delta) X_AH; an extension starts it beyond the last zone's end
+    x_in, x_out = (label_of(grid, xi, (excision.c_t + s * excision.c_Delta) * apparent.X) for s in (-1.0, 1.0))
+    Delta_t = 0.5 * (x_out - x_in)
+    x_t = place_transition(0.5 * (x_in + x_out), Delta_t, zones)
     fits = x_t + Delta_t < OUTER_STATIC_LABEL
+    X_out = float(grid.radius_at(xi, np.array([x_t + Delta_t]))[0])  # where it ends, an extension's pushed outward
     no_overlap = not zones or x_t - Delta_t >= zones[-1].outer_edge  # the test `BlendMap` makes, exactly
     return SwitchAttempt(
         x_AH=apparent.x,
@@ -175,8 +189,28 @@ def attempt_switch_on(
         transition_fits=fits,
         x_t=x_t,
         Delta_t=Delta_t,
+        X_out=X_out,
+        X_static=float(grid.radius_at(xi, np.array([OUTER_STATIC_LABEL]))[0]),
         no_overlap=no_overlap,
     )
+
+
+def label_of(grid: Map, xi: float, X: float) -> float:
+    """The label `u` at which the map puts the areal radius `X` at time `xi`, by bisection: every map is increasing.
+
+    Labels beyond the outer face are returned up to `2`, which is enough to tell that a transition does not fit.
+    """
+    lo, hi = 0.0, 2.0
+    if float(grid.radius_at(xi, np.array([hi]))[0]) <= X:
+        return hi
+    while True:
+        mid = 0.5 * (lo + hi)
+        if mid in (lo, hi):  # converged to the last bit
+            return hi
+        if float(grid.radius_at(xi, np.array([mid]))[0]) < X:
+            lo = mid
+        else:
+            hi = mid
 
 
 def place_transition(x_t: float, Delta_t: float, zones: tuple[Zone, ...]) -> float:

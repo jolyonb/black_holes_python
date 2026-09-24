@@ -191,7 +191,7 @@ def step_abort(
             advice = "raise N or concentrate cells at the origin"
             reason = f"horizon under-resolved (switch-on refused by {tests}): {advice}; {reason}"
         else:
-            reason = f"switch-on refused by {tests}: the blend transition does not fit; enlarge Rtilde_max; {reason}"
+            reason = f"switch-on refused by {tests}; {reason}"  # a transition that cannot fit has aborted already
     return AbortError(f.cause.value, f.index, f.value, reason)
 
 
@@ -404,8 +404,18 @@ class Run:
         pinned_now = bool(self.zones) and self.zones[-1].xi_on == self.xi
         earlier = self.zones[:-1] if pinned_now else self.zones
         attempt = attempt_switch_on(
-            report, state, result.derived, frame.geo, self.sch.eos, self.layout, excision, earlier
+            report,
+            state,
+            result.derived,
+            frame.geo,
+            self.sch.eos,
+            self.layout,
+            excision,
+            earlier,
+            self.sch.map,
+            self.xi,
         )
+        self.fail_if_no_room(attempt)
         if not attempt.passed:
             self.refuse(attempt, "switch_attempt")
             return result, report, None
@@ -424,12 +434,33 @@ class Run:
                 return self.face_checked(result, report)
         if zone_needs_extension(report, self.zones, excision.zone_extension_at):
             attempt = attempt_switch_on(
-                report, state, result.derived, frame.geo, self.sch.eos, self.layout, excision, self.zones
+                report,
+                state,
+                result.derived,
+                frame.geo,
+                self.sch.eos,
+                self.layout,
+                excision,
+                self.zones,
+                self.sch.map,
+                self.xi,
             )
+            self.fail_if_no_room(attempt)
             if attempt.passed:
                 return self.face_checked(self.extend_zone(attempt, state), report)
             self.refuse(attempt, "zone_attempt")
         return result, report, face
+
+    def fail_if_no_room(self, attempt: SwitchAttempt) -> None:
+        """End the run if the map's transition cannot fit on the grid: the horizon only grows, so it never will."""
+        if not attempt.transition_fits:
+            raise AbortError(
+                "transition_fits",
+                attempt.j_star,
+                attempt.X_out,
+                f"the pinned zone's transition must reach X = {attempt.X_out:.4g}, beyond the static part of the grid, "
+                f"which starts at X = {attempt.X_static:.4g}: enlarge Rtilde_max",
+            )
 
     def face_checked(self, result: DerivsResult, report: HorizonReport) -> Examination:
         """After the layout changed: the finder again on the new layout, and the face asserted there."""

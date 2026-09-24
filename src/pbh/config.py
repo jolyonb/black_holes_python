@@ -195,11 +195,12 @@ class ExcisionConfig(Section):
     """The ramp time of the switch-on, in `xi` (admissible `0.2` to `0.5`)."""
 
     c_t: float = Field(default=4.0, gt=0.0)
-    """The transition's centre in units of the apparent-horizon label at switch-on, `x_t = c_t x_AH`."""
+    """The transition's centre in areal radius, in units of the apparent horizon's at switch-on: `c_t X_AH`."""
 
     c_Delta: float = Field(default=1.5, gt=0.0)
-    """The transition's half-width in the same units, `Delta_t = c_Delta x_AH`; `x_t + Delta_t` must stay below `0.8`,
-    which is checked at switch-on."""
+    """The transition's half-width in the same units: it spans the areal radii `(c_t -+ c_Delta) X_AH`, placed at their
+    labels through the map. It must end below the label `0.8`; if it cannot, the run ends at switch-on, since the
+    horizon only grows."""
 
     enabled: bool = True
     """Whether to excise at all. Off, a collapse continues on its grid until the interior breaks the areal

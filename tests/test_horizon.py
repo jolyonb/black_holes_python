@@ -299,6 +299,7 @@ def test_formation_is_recorded_on_the_first_step_with_a_trapped_face(tmp_path: P
     config = RunConfig(
         grid=GridConfig(N=N, Rtilde_max=4.0, map=MapFamily.UNIFORM),
         output=OutputConfig(snapshot_spacing=0.01),
+        excision=ExcisionConfig(enabled=False),  # the finder's record alone: this hole is too big for the grid's zone
         evolution=EvolutionConfig(xi_end=XI + 0.02),
     )
     state, geo, _ = density_state(IdentityMap(4.0), N, one_shell, v=-1.5)
@@ -315,3 +316,36 @@ def test_formation_is_recorded_on_the_first_step_with_a_trapped_face(tmp_path: P
     assert len(table["xi"]) == result.steps + 1  # the examination of the initial state, then one per step
     assert np.asarray(table["trapped_faces"])[0] > 0
     assert reader.snapshot(len(reader.snapshots) - 1).xi_form == formation.xi
+
+
+def test_a_refused_switch_on_is_logged_and_the_run_goes_on_unexcised(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    # The same trapped shell with excision on, every attempt refused for a stencil not yet trapped: the refusal is an
+    # event, once, and the run steps on unexcised.
+    import dataclasses
+
+    import pbh.driver as driver_module
+    from pbh.excision import SwitchAttempt
+    from pbh.records import StateRecord, write_initial
+
+    real = driver_module.attempt_switch_on
+
+    def thin(*args: object, **kwargs: object) -> SwitchAttempt:
+        attempt = real(*args, **kwargs)  # type: ignore[arg-type]
+        return dataclasses.replace(attempt, three_trapped=False, transition_fits=True)
+
+    monkeypatch.setattr(driver_module, "attempt_switch_on", thin)
+    N = 100
+    config = RunConfig(
+        grid=GridConfig(N=N, Rtilde_max=4.0, map=MapFamily.UNIFORM),
+        output=OutputConfig(snapshot_spacing=0.01),
+        evolution=EvolutionConfig(xi_end=XI + 0.02),
+    )
+    state, geo, _ = density_state(IdentityMap(4.0), N, one_shell, v=-1.5)
+    paths = RunPaths.of(tmp_path, "thin")
+    write_initial(paths.initial, StateRecord.of(state, geo.X[: N + 1], XI, 0, {"method": "test"}))
+    result = run(config, read_initial(paths.initial), paths)
+    reader = RunReader(paths.evolution)
+    attempts = [e for e in reader.events if e.kind == "switch_attempt"]
+    assert len(attempts) == 1
+    assert attempts[0].payload["failed"] == ["three_trapped"]
+    assert result.steps >= 1
