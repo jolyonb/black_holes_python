@@ -409,7 +409,8 @@ def test_the_chart_abort_reads_its_case_from_the_accepted_state():
     inside, outside = 5, 20  # X = 0.5 and 2
     g2 = bg.Gammabar2
     assert "overshooting a thin Gammabar^2 margin" in chart_case(inside, frw, float(X[inside]), float(X[inside]), g2)
-    assert "folding beyond the Hubble radius" in chart_case(outside, frw, float(X[outside]), float(X[outside]), g2)
+    far = chart_case(outside, frw, float(X[outside]), float(X[outside]), g2)
+    assert "beyond the Hubble radius, most likely a stage overshooting" in far
     trapped_sch = abort_scheme(j_e=5)
     U = -1.5 * X / X[5]
     E = np.where(np.arange(40) >= 5, geo.dV[:40], np.nan)

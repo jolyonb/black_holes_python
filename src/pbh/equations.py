@@ -190,7 +190,7 @@ def calc_derivs(
         )
         J, q, q_f, Q = viscous_pressure(state, geo, d, sp.Lam, eos, w, settings.c_v, settings.cap_tension)
         q_L, q_R = viscous_sides(q, q_f, d.rho, rho_L, rho_R, w.layout, settings.viscous_flux)
-        delta_F, Lam_plus, Lam_minus = hll_flux(
+        delta_F, Lam_plus, Lam_minus, v_L, v_R = hll_flux(
             rho_L, rho_R, delta_rho_L, delta_rho_R, q_L, q_R, deviation, geo, sp.Theta, sp.a, eos, w
         )
         kernels = KernelResult(
@@ -206,6 +206,8 @@ def calc_derivs(
             theta_scale=theta_scale,
             Lam_plus=Lam_plus,
             Lam_minus=Lam_minus,
+            v_L=v_L,
+            v_R=v_R,
         )
     else:
         delta_F = np.full(N + 1, np.nan)

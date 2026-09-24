@@ -140,6 +140,8 @@ class KernelResult:
         theta_scale: The theta-limiter's factor on each retained cell's slope, `1` where it did not bind (cells).
         Lam_plus: The upper bound `Lambda^+_j` of the HLL flux at the retained faces `j < N`.
         Lam_minus: Its lower bound `Lambda^-_j`.
+        v_L: The chord speed `F_j / (X_j^2 rho^L_j)` of the side inside each face.
+        v_R: The chord speed of the side outside it.
     """
 
     rho_L: FloatArray
@@ -154,6 +156,8 @@ class KernelResult:
     theta_scale: FloatArray
     Lam_plus: FloatArray
     Lam_minus: FloatArray
+    v_L: FloatArray
+    v_R: FloatArray
 
 
 def minmod(*slopes: FloatArray) -> FloatArray:
@@ -343,7 +347,7 @@ def hll_flux(
     a: FloatArray,
     eos: EquationOfState,
     w: StencilWeights,
-) -> tuple[FloatArray, FloatArray, FloatArray]:
+) -> tuple[FloatArray, FloatArray, FloatArray, FloatArray, FloatArray]:
     """The HLL energy flux through the retained faces `j < N` (eq:num:hll) as its deviation from the FRW flux.
 
     The one-sided flux
@@ -388,8 +392,8 @@ def hll_flux(
         w: The stencil weights, for the layout.
 
     Returns:
-        `(F_j - F_FRW,j, Lambda^+_j, Lambda^-_j)` at the retained faces `j < N`: the flux deviation, `0` at the origin,
-        where both vanish, and the two bounds.
+        `(F_j - F_FRW,j, Lambda^+_j, Lambda^-_j, v^L_j, v^R_j)` at the retained faces `j < N`: the flux deviation,
+        `0` at the origin, where both vanish, the two bounds, and the two sides' chord speeds.
     """
     layout = w.layout
     N, j_e = layout.N, layout.j_e
@@ -413,9 +417,12 @@ def hll_flux(
     Lam_minus = np.full(N + 1, np.nan)
     Lam_plus[faces] = np.maximum.reduce([Theta[faces] + a[faces], v_L, v_R, zero])
     Lam_minus[faces] = np.minimum.reduce([Theta[faces] - a[faces], v_L, v_R, zero])
+    chord_L = np.full(N + 1, np.nan)
+    chord_R = np.full(N + 1, np.nan)
+    chord_L[faces], chord_R[faces] = v_L, v_R
     Lp, Lm = Lam_plus[faces], Lam_minus[faces]
     delta_F = np.full(N + 1, np.nan)
     delta_F[faces] = (Lp * G_L - Lm * G_R + Lp * Lm * X2 * (delta_rho_R[faces] - delta_rho_L[faces])) / (Lp - Lm)
     if j_e == 0:
         delta_F[0] = 0.0
-    return delta_F, Lam_plus, Lam_minus
+    return delta_F, Lam_plus, Lam_minus, chord_L, chord_R

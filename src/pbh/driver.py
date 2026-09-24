@@ -155,8 +155,8 @@ def chart_case(j: int, accepted: DerivsResult, U: float, X: float, frw2: float) 
 
     `Gamma^2 = 1 + U^2 - 2m/R <= 0` needs `2m/R >= 1 + U^2`. At the accepted state, in the physical normalisation (the
     tilde variables over the FRW `Gammabar`): trapped, `U + Gamma < 0`, is a trapped region the excision has not caught;
-    beyond the Hubble radius, `2m/R >= 1` with `U > 0`, the chart may be folding there or a stage may have overshot its
-    margin, which the accepted state cannot tell apart; and with `2m/R < 1` only a stage overshot.
+    beyond the Hubble radius, `2m/R >= 1` with `U > 0`, most likely a stage overshot its margin, since a fold of the
+    chart there needs the continuation criterion of Section 4.1 to fail; and with `2m/R < 1` only a stage overshot.
     """
     d = accepted.derived
     g2 = float(d.Gammabar2[j])
@@ -166,7 +166,7 @@ def chart_case(j: int, accepted: DerivsResult, U: float, X: float, frw2: float) 
     if trapped:
         return f"a trapped region the excision has not caught ({where})"
     if two_m_over_R >= 1.0 and U > 0.0:
-        return f"the areal chart folding beyond the Hubble radius, or a stage overshooting its margin there ({where})"
+        return f"beyond the Hubble radius, most likely a stage overshooting its margin, a fold needing more ({where})"
     return f"a stage overshooting a thin Gammabar^2 margin: check the step cap ({where})"
 
 

@@ -18,6 +18,7 @@ from pbh.monitors import (
     StepInputs,
     alternating,
     boundary_energy,
+    emptying_rates,
     grid_scale_fraction,
     limiter_clipped,
     monitor_step,
@@ -294,6 +295,26 @@ def test_on_frw_the_chord_widens_the_bounds_beyond_the_crossover_by_the_pressure
     assert row.widened_faces == int(np.sum(alpha * w * X[1:N] > 1.001 * a))
     assert row.widening_ratio == pytest.approx((alpha * w * X[N - 1] + a) / (2.0 * a), rel=1e-12)
     assert row.q_over_rho_max == 0.0
+
+
+def test_on_frw_beyond_the_crossover_a_cells_emptying_rate_is_the_pressure_work_through_its_outer_face():
+    # There Lambda+ is the chord alpha w X and B = 0 (eq:num:hllsign): the cell loses X^2 alpha w X rho through its
+    # outer face and nothing through its inner one, K_c = alpha w X_(c+1)^3 / dV_c, less the source 2 - 3 alpha.
+    sch = Scheme(RAD, IdentityMap(24.0), Layout(N), OutgoingWave(), PRODUCTION_KERNELS)
+    f = sch.frame(0.0)
+    state = frw_state(f.geo)
+    result = sch.evaluate(0.0, sch.layout.pack(state))
+    rates = emptying_rates(result, state, f.geo, RAD, sch.layout)
+    alpha, w = float(RAD.alpha), float(RAD.w)
+    X, dV = f.geo.X, f.geo.dV
+    c = np.arange(N // 2, N - 1)  # well beyond X_c = 1.73
+    assert rates[c] == pytest.approx(alpha * w * X[c + 1] ** 3 / dV[c] - RAD.energy_source_rate, rel=1e-12)
+    row = monitor_step(inputs_for(sch, 0.0, state), RAD, sch.layout, full=False)
+    assert row.emptying_ratio == pytest.approx(row.dxi * float(np.max(rates)), rel=1e-12)
+    centred = Scheme(RAD, IdentityMap(24.0), Layout(N), OutgoingWave(), CENTRED_SCHEME)
+    assert np.all(
+        np.isnan(emptying_rates(centred.evaluate(0.0, centred.layout.pack(state)), state, f.geo, RAD, centred.layout))
+    )
 
 
 # --- the pieces ---

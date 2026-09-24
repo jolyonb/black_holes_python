@@ -106,6 +106,10 @@ class MonitoredStep(StepRow):
     companion: float
     """RK4's third-order companion estimate, `dxi / 6` times the largest change of the rate across the step, relative
     to the state's scale; logged, never used for control."""
+    emptying_ratio: float
+    """`dxi max_c (K_c - 2 + 3 alpha)` at the state arrived at (`emptying_ratio`): above one, a forward-Euler step of
+    this length could empty a cell. It predicts the checks' positivity rejections, and it is SSPRK3's sufficient
+    condition for a positive step; NaN with the kernels off."""
     # --- at snapshots, or every step with monitor_every_step ---
     rho_min_cell: int
     Gammabar2_min_face: int
@@ -213,6 +217,7 @@ def monitor_step(inputs: StepInputs, eos: EquationOfState, layout: Layout, full:
         "W": state.W,
         "penalty": u_minus - state.W,
         "companion": i.dxi / 6.0 * i.rate_change,
+        "emptying_ratio": i.dxi * float(np.max(emptying_rates(i.result, state, geo, eos, layout)[cells])),
     }
     if not full:
         return MonitoredStep(i.step, i.xi, i.dxi, i.limit, i.halvings, **every_step, **UNSET_COLUMNS)
@@ -419,6 +424,35 @@ UNSET = Diagnostics(
 )
 """The second-tier columns on a step they are not evaluated: NaN, and `-1` for indices and counts."""
 UNSET_COLUMNS = dataclasses.asdict(UNSET)  # converted once: a plain step must stay cheap
+
+
+def emptying_rates(
+    result: DerivsResult, state: State, geo: Geometry, eos: EquationOfState, layout: Layout
+) -> FloatArray:
+    """Each retained cell's `K_c - 2 + 3 alpha`: its loss rate over its content, less the source (eq:num:positivity).
+
+    With the flux written `X^2 (A rho^L - B rho^R)` (eq:num:hllsign), a cell loses `X^2 A rho^+` through its outer
+    face and `X^2 B rho^-` through its inner one, each proportional to its own face value; the last cell loses
+    `max(F_N, 0)` through the outer face. NaN on every cell with the kernels off, whose centred flux has no such form.
+    """
+    N, j_e = layout.N, layout.j_e
+    rates = np.full(N, np.nan)
+    k = result.kernels
+    if k is None:
+        return rates
+    X2 = geo.X[: N + 1] ** 2
+    Lp, Lm = k.Lam_plus, k.Lam_minus
+    with np.errstate(invalid="ignore"):  # face 0 carries no flux, and the faces below j_e are not retained
+        A = Lp * (k.v_L - Lm) / (Lp - Lm)
+        B = -Lm * (Lp - k.v_R) / (Lp - Lm)
+    loss = np.zeros(N)
+    c = np.arange(j_e, N - 1)
+    loss[c] += X2[c + 1] * A[c + 1] * k.rho_L[c + 1]  # through the outer face of cell c, its own value rho^+
+    c = np.arange(max(j_e, 1), N)
+    loss[c] += X2[c] * B[c] * k.rho_R[c]  # through its inner face, rho^-; the origin carries none
+    loss[N - 1] += max(float(result.F[N]), 0.0)
+    rates[j_e:] = loss[j_e:] / state.E[j_e:] - eos.energy_source_rate
+    return rates
 
 
 # --- the pieces ---
