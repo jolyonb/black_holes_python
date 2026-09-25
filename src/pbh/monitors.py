@@ -107,9 +107,11 @@ class MonitoredStep(StepRow):
     """RK4's third-order companion estimate, `dxi / 6` times the largest change of the rate across the step, relative
     to the state's scale; logged, never used for control."""
     emptying_ratio: float
-    """`dxi max_c (K_c - 2 + 3 alpha)` at the state arrived at (`emptying_ratio`): above one, a forward-Euler step of
-    this length could empty a cell. It predicts the checks' positivity rejections, and it is SSPRK3's sufficient
-    condition for a positive step; NaN with the kernels off."""
+    """`dxi max_c (K_c - 2 + 3 alpha)` at the state arrived at: the step against the shortest emptying time. Below one,
+    a forward-Euler step of this length, and so any convex combination of them, keeps every cell positive; above one
+    nothing is guaranteed, but nothing is predicted either: RK4 at Courant 0.75 runs at about 1.5 times the Courant
+    number, above one on most steps of a bounce, with no rejection. A warning light for the checks' positivity
+    rejections, not a forecast of them; NaN with the kernels off."""
     # --- at snapshots, or every step with monitor_every_step ---
     rho_min_cell: int
     Gammabar2_min_face: int
@@ -147,11 +149,15 @@ class MonitoredStep(StepRow):
     clipped_in_core: int
     reconstruction_jump: float
     """`max |rho_R - rho_L| / <rho>` over the faces."""
-    widened_faces: int
-    """Faces where a chord speed widened the HLL bounds: `Lambda^+ - Lambda^-` more than 0.1 per cent above the acoustic
-    width `(Theta + a)^+ - (Theta - a)^-`."""
-    widening_ratio: float
-    """The largest ratio of `Lambda^+ - Lambda^-` to the acoustic width over the faces."""
+    chord_widened_faces: int
+    """Faces where a chord speed lies outside the acoustic bounds, so that `Lambda^+ - Lambda^-` is more than 0.1 per
+    cent above the acoustic width `(Theta + a)^+ - (Theta - a)^-`. Mostly the background: on FRW the chord is the
+    pressure work `alpha w X`, outside the acoustic bounds at every face beyond `X_c = e^((1 - alpha) xi) / sqrt(w)`
+    (eq:num:hll). A compression's viscous pressure widens the bounds too; `q_over_rho_max` is its monitor."""
+    chord_width_ratio: float
+    """The largest ratio of `Lambda^+ - Lambda^-` to the acoustic width over the faces. Set by the FRW chord at the
+    outermost flux face, `(alpha w X + a) / (2 a)` there, whenever the grid reaches beyond `X_c`, whatever the flow
+    inside."""
     q_over_rho_max: float
     """The largest `q / rho` over the retained cells: the strongest compression's viscous pressure, which widens the
     bounds through the chord speeds."""
@@ -338,8 +344,8 @@ def full_diagnostics(
         clipped_cells=int(np.sum(clipped)),
         clipped_in_core=int(np.sum(clipped[core])),
         reconstruction_jump=jump,
-        widened_faces=widened,
-        widening_ratio=widening,
+        chord_widened_faces=widened,
+        chord_width_ratio=widening,
         q_over_rho_max=q_max,
         q_over_rho_max_cell=q_max_cell,
     )
@@ -379,8 +385,8 @@ class Diagnostics:
     clipped_cells: int
     clipped_in_core: int
     reconstruction_jump: float
-    widened_faces: int
-    widening_ratio: float
+    chord_widened_faces: int
+    chord_width_ratio: float
     q_over_rho_max: float
     q_over_rho_max_cell: int
 

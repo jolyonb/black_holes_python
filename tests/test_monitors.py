@@ -292,8 +292,8 @@ def test_on_frw_the_chord_widens_the_bounds_beyond_the_crossover_by_the_pressure
     alpha, w = float(RAD.alpha), float(RAD.w)
     a = alpha * math.sqrt(w)  # at xi = 0
     X = f.geo.X[: N + 1]
-    assert row.widened_faces == int(np.sum(alpha * w * X[1:N] > 1.001 * a))
-    assert row.widening_ratio == pytest.approx((alpha * w * X[N - 1] + a) / (2.0 * a), rel=1e-12)
+    assert row.chord_widened_faces == int(np.sum(alpha * w * X[1:N] > 1.001 * a))
+    assert row.chord_width_ratio == pytest.approx((alpha * w * X[N - 1] + a) / (2.0 * a), rel=1e-12)
     assert row.q_over_rho_max == 0.0
 
 
