@@ -213,6 +213,8 @@ def test_a_snapshot_round_trips_as_a_restartable_state_on_the_configurations_gri
     assert record.W == pytest.approx(0.01)
     assert record.state.M_e == pytest.approx(0.2)
     assert record.M_e == pytest.approx(0.2 - geo.X[j_e] ** 3)  # the deviation from the FRW excised mass
+    by_name = RunReader(str(path))  # a string path reads the same file, snapshot provenance included
+    assert np.array_equal(by_name.snapshot(-1).delta_E[j_e:], record.delta_E[j_e:])
     assert np.array_equal(record.X, geo.X[: N + 1])  # the blended grid, rebuilt from the stored zones
     assert (record.xi, record.j_e) == (xi, j_e)
     assert record.provenance == {"source": "run.evolution.h5", "step": 40, "snapshot": 1}

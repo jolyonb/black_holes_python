@@ -294,8 +294,8 @@ class RunWriter[R: StepRow]:
 class RunReader:
     """Reads an evolution file, complete or still being written; every property re-reads the file."""
 
-    def __init__(self, path: Path) -> None:
-        self.path = path
+    def __init__(self, path: Path | str) -> None:
+        self.path = Path(path)  # a string from an interactive session as well as a Path
         with self._open() as f:
             if h5.read_text(f, "format") != FORMAT or h5.read_int(f, "version") != VERSION:
                 raise ValueError(f"{path} is not a pbh evolution file of a version this code reads")
