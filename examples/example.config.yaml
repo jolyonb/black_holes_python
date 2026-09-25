@@ -2,7 +2,7 @@
 # the outer radius and the end time, which every run must state. A file may omit any key with a
 # default. Floats must carry a digit on both sides of the point and after the exponent sign (1.0e-5, not 1e-5).
 # The initial data are not configured here: they live in the run's initial-data file, name.initial.h5, with
-# the parameters that made them. The output section arrives with the output code.
+# the parameters that made them.
 
 fluid:
   w: 1/3                      # the equation of state, P = w rho, as an exact rational; 1/3 is radiation

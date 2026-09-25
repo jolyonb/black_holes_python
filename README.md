@@ -1,105 +1,143 @@
-# Black Hole Evolution Code
+# pbh: primordial black hole formation
 
-> **2026-09-18:** the code described below is the retired collocated version, now the package `_old` (its unit tests
-> were deleted and its `pbh` console script removed). The production staggered code is being built in `src/pbh`;
-> this README is rewritten when its driver exists.
+Evolution of a spherically symmetric perturbation of a flat FRW perfect fluid, `P = w rho`, through the formation of
+a black hole and its subsequent accretion, in the Misner-Sharp (fluid-orthogonal) slicing. After a horizon forms the
+code excises the trapped region and follows the hole on a grid pinned to physical radius near it, and reads the
+hole's mass as the rate-corrected estimate `M_est = M_AH / (1 - d ln M_AH / d xi)`, with an error bar formed from the
+same record.
 
-This is the clean implementation of the black hole evolution code. Apart from being nicely structured and readable, it also links all physics equations in the code to equation numbers in the working draft of the paper (kept outside this repository). Sometimes we have two versions of an equation coded, with one commented out. The reason for this is to reuse things that have already been computed, so as to cut down on computation. The equation of state P = w rho is a parameter of the library API (`MS(..., w=...)`, `growingmode(..., w=...)`, any rational `0 < w <= 1`, default `1/3`); `alpha = 2/(3(1+w))` and the other derived constants are computed once, in exact rational arithmetic, when a handler is built. The command line parses `--w` as a rational (`1/3`, `2/6`, `0.2`) but currently refuses every value other than `1/3` before anything is built, because two pieces of theory exist only for radiation and are guarded rather than generalised: the exact outgoing-wave outer boundary condition (the library raises `NotImplementedError` from the first derivative evaluation otherwise) and the timeout heuristic (`timeouttime = inf` otherwise, and `MS(enforce_timeout=True)` refuses to run). The second-order growing-mode initial data is also `w = 1/3`-only; other `w` fall back to first order with a warning. Also note that we take the only scale in the problem R_H=1. All dimensionful quantities can be reconstructed by reinserting factors of R_H (the horizon radius at the start of evolution). A few of the cited equations towards the end of that draft have not had later redefinitions propagated; such issues are noted in the code where applicable.
+The numerical scheme is specified in the companion paper (Sections 7 and 8, kept outside this repository): every
+module's docstring names the section and the equations it implements, and the paper is the specification the code
+answers to. Units are `R_H = 1`, the Hubble radius at `xi = 0`; `xi = ln(t / t_0)`; tilde variables are scaled by
+the background (`rhotilde = rho / rho_FRW`, `Rtilde = R / (a R_H)`, `Utilde = U / (H a R_H)`), so FRW is
+`rhotilde = 1`, `Utilde = Rtilde`.
 
 ## Getting started
 
 The project is managed with [uv](https://docs.astral.sh/uv/) and requires Python 3.14.
 
 ```
-uv sync                 # create .venv with runtime + dev dependencies
-uv run pbh --help       # show all evolution options
-uv run pbh              # evolve the default Gaussian perturbation, writing output.dat
-uv run pbh -o run.dat --scheme lagrangian --gridpoints 1000 --amplitude 0.18
-uv run pbh -o run.npz   # same, but as a numpy archive (one array per quantity, snapshot axis first)
-uv run pbh run.npz --snapshot -1   # resume from the last snapshot of a previous run (.dat or .npz)
+uv sync
+uv run pbh --help
 ```
 
-The command line entry point is `pbh.cli`, which uses an old algorithm to take a linearized \delta_m and construct the growing mode from it (`pbh.initial`). (We have better tools now.) The physics lives in `pbh.ms` (Misner-Sharp equations of motion, Eulerian and Lagrangian), built on `pbh.base` (generic evolver and cached equation-of-motion handler), `pbh.derivs` (finite difference stencils) and `pbh.dopri5` (adaptive Runge-Kutta integrator).
+A run is three files in one directory, named after the run: `NAME.config.yaml`, the configuration as the run saw it;
+`NAME.initial.h5`, the initial data; and `NAME.evolution.h5`, written as the run goes and readable while it does. A
+supercritical collapse from start to mass, in about ten seconds:
+
+```
+cat > collapse.yaml <<EOF
+grid: {N: 200, Rtilde_max: 12.0, scale: 3.0}
+evolution: {xi_end: 8.0}
+EOF
+uv run pbh validate collapse.yaml                                         # the configuration with every default
+uv run pbh initial gaussian collapse --config collapse.yaml --A 0.2 --ell 2   # the growing mode of a Gaussian
+uv run pbh run collapse.yaml collapse                                      # formation, excision, the mass
+uv run pbh summary collapse                                                # what the run says about its hole
+```
+
+The run stops once the mass is read, here at `xi = 7.3`, 3.4 e-folds after formation, with `M_est = 11.14 R_H` and
+an error bar under one per cent. `pbh summary` recomputes everything from the evolution file (nothing derived is
+stored): the quoted reading, the long-run reference, when the bar crossed 5, 1 and 0.3 per cent, a fit of the
+accretion law, and the enclosed-mass cross-check on spheres of fixed physical radius. `--export FILE.json` writes it
+with its series.
+
+`pbh restart SOURCE NAME [--snapshot K] [--config OTHER.yaml]` starts a new run from any snapshot of another, with its
+configuration or a different one: every snapshot is a restart point, and a restart carries the read-out's history.
+
+## Configuration
+
+`examples/example.config.yaml` lists every key with its default. A configuration must state `grid.N`,
+`grid.Rtilde_max` and `evolution.xi_end`; everything else has the paper's production value. The sections:
+
+* `fluid`: `w` as an exact rational (`1/3` is radiation). The exact outgoing-wave outer condition exists for
+  radiation only and is refused otherwise.
+* `grid`: the static map, `sinh` (fine at the origin, coarse in the background; the production choice) or
+  `uniform`; `N` cells out to `Rtilde_max`.
+* `outer`: the outer boundary, the outgoing-wave condition as a penalty or the state held at FRW.
+* `shocks`: the shock-capturing kernels and their constants (the theta-limiter's `theta`, the limiter, `c_v`), or
+  `centred` for the base scheme.
+* `excision`: the switch-on and the pinned map (`eta`, `tau_on`, `c_t`, `c_Delta`), re-excision, and `enabled:
+  false` to continue a collapse unexcised, for comparison with the excised run.
+* `readout`: the rate window, the two-e-fold floor, the error bar and the target at which the mass is read, and
+  whether the run stops there.
+* `stepping`: RK4's Courant number and the step cap.
+* `output`: the snapshot schedule (uniform in `xi` before formation, in physical time after), the flush cadence, and
+  whether the full monitor record is written every step or only at snapshots.
+* `evolution`: `xi_end`.
+
+Floats need a digit on both sides of the point and after an exponent sign (`1.0e-5`, not `1e-5`); unknown keys are
+errors, reported with the file and every bad key.
+
+## The evolution file
+
+HDF5, in single-writer multiple-reader mode, with four tables that share nothing but the step number:
+
+| table | rows | what |
+|---|---|---|
+| `steps` | one per step | `xi`, `dxi`, what limited the step, refused attempts, and the monitors (conservation, the outer boundary, stability, positivity, resolution) |
+| `events` | one per event | a kind and a JSON payload: `formation`, `switch_on`, `re_excision`, `readout`, `rejection`, `abort`, `end`, ... |
+| `snapshots` | one per output time | the integrator's variables only (deviations from FRW), from which every derived field is recomputed |
+| `horizon` | one per step | the finder's report: `M_AH`, `X_AH`, the trapping margins, the excision face, the near-zone monitors |
+
+```python
+from pathlib import Path
+
+from pbh.output import RunReader
+
+run = RunReader(Path("collapse.evolution.h5"))
+xi, M_AH = run.horizon["xi"], run.horizon["M_AH"]
+readout = [e.payload for e in run.events if e.kind == "readout"]
+state = run.snapshot(-1)  # a StateRecord: restartable, and the input to any derived field
+config = run.config  # the configuration the run used, to rebuild its Scheme
+```
+
+What each column means, and which paper equation it comes from, is in the docstrings of `pbh.monitors`,
+`pbh.horizon` and `pbh.output`; what the code must log for every number in the paper to be regenerated is specified
+alongside the paper (`PRODUCTION_OUTPUT_SPEC.md`).
+
+A run ends in one of three ways, each recorded as the `end` event: completed (at `xi_end`, or when the mass was
+read); aborted, with a named cause (a cell below `5e-13` of the background, where the fluid-orthogonal slicing and
+the arithmetic both end; a chart failure, named by case; a switch-on transition that cannot fit, naming the
+radius it needs); or interrupted, by an exception (Ctrl-C included), after a final flush.
+
+## The code
+
+```
+src/pbh/
+  maps, geometry, layout, state      the grid map X(xi, x), exact cell geometry, the packed state, FRW
+  stencils, kernels, derived         difference quotients in X and s = X^2, the shock-capturing kernels, derived fields
+  equations                          one stage: the semi-discrete equations, in deviation form
+  outer                              the outer closure (outgoing-wave penalty, or held at FRW)
+  timestep                           RK4 with every stage checked, the Courant step and the step cap
+  horizon, excision                  the finder, the switch-on and re-excision, the pinned map's zones
+  driver, cli                        the run loop and the command line
+  config, initial, profiles          the configuration; initial data (the growing mode of a mass profile)
+  records, output, h5                initial and snapshot records; the evolution file
+  monitors, readout, summary         per-step monitors; the mass read-out; the run summary
+  michel                             the Michel accretion flow, the late-time background and a test
+src/_old/                            the retired collocated code (2015-2026), kept for reference; not run
+```
+
+The evolved variables are the cell energy contents and the face velocities on a staggered grid (density on cells,
+velocity and mass on faces), with the mass by cumulative sum, so the mass constraint holds by construction; the
+integrator advances their deviation from FRW, which keeps the far field FRW to round-off.
 
 ### Development
 
 ```
-uv run pytest           # fast test suite (well under a second)
-uv run pytest -m slow   # full evolutions, including golden regression tests for horizon formation
-uv run pytest -m ''     # everything
-uv run ruff check .     # lint
-uv run ruff format .    # format
-uv run pyright          # strict type checking
-uv run pre-commit install   # run all of the above automatically on each commit
+uv run pytest               # the fast suite (about 15 s)
+uv run pytest -m slow       # evolutions (about a minute)
+uv run pytest -m ''         # everything
+uv run ruff check . && uv run ruff format . && uv run pyright   # lint, format, strict types
+uv run pre-commit install   # all of the above on every commit
 ```
 
-I recommend using gnuplot to visualize the output (the output has been formatted according to gnuplot specifications). Some helpful plotting commands are listed in the readme file for this repository.
+Style: flat pytest functions, pyright strict, explicit ABCs, and no computer algebra in the code or its tests (exact
+`Fraction` arithmetic where exactness is needed); the symbolic checks of the paper live with the paper.
 
+## History
 
-## Output formats
-
-Two output formats are available, selected by the output file suffix. The gnuplot text format writes one block per
-snapshot, with tab-separated columns as listed below. The `.npz` format stores the same quantities as numpy arrays
-with a leading snapshot axis, which is much more convenient for analysis and comparison scripts:
-
-```python
-import numpy as np
-
-with np.load("run.npz") as data:
-    xi = data["xi"]  # shape (snapshots,)
-    rho = data["rho"]  # shape (snapshots, gridpoints)
-    index = data["index"]  # shape (gridpoints,)
-```
-
-## Plotting column numbers
-
-The column numbers are as given; the column names are in parentheses.
-
-1. Grid point number (index)
-2. \tilde{R} (r)
-3. \tilde{U} (u)
-4. \tilde{M} (m)
-5. \tilde{\rho} (rho)
-6. R (rfull)
-7. U (ufull)
-8. M (mfull)
-9. \rho (rhofull)
-10. 2M/R (horizon)
-11. Characteristic speed c_s^+ (in \tilde{R}) (cs+)
-12. Characteristic speed c_s^- (in \tilde{R}) (cs-)
-13. Fluid speed c_s^0 (in \tilde{R}) (cs0)
-14. \xi (xi)
-15. Q (Q)
-16. e^\phi (ephi)
-17. w (w), the equation of state parameter the run used; checked on restart
-
-
-## Lagrangian Evolution
-
-The Lagrangian evolution is characterized by having grid points move along with fluid elements. This means that the grid is continually changing. This is fine, except that when you have a large overdensity, the grid tends to fall towards that overdensity. This means that you tend to have a lot of grid points near the origin, then some very sparsely distributed points, then evenly distributed points once you get back into the cosmological regime. This is fine, until you want a high accuracy derivative in that sparsely distributed area. If a shock wave passes through this area, you're going to be in trouble, as the derivative quality is terrible there, and will lead to instabilities.
-
-To diagnose this, try the following plots:
-
-* Plot of grid point index as a function of radius
-```
-plot "output_lag.dat" ev :::2:: u 2:1 w p
-```
-
-* Plot of Q as a function of radius (this is where bad derivatives are really felt)
-```
-plot "output_lag.dat" ev :::2:: u 2:15 w p
-```
-
-
-## Eulerian Evolution
-
-In the Eulerian evolution, the grid points stay at fixed radius. What this tends to mean is that you need to run a non-uniform grid so that you have resolution where you need it. If you're trying to resolve shocks, you may just need a lot of grid points everywhere!
-
-Note that if you're getting integration errors from shocks, increasing resolution will usually help.
-
-### Open problem: near-critical instability
-
-I'm presently having trouble with:
-(gridpoints=500, squeeze=2, Amax=10, amplitude=0.1737, sigma=2.0)
-
-An earlier version of the code (see git history before September 2026) failed on this too, with viscosity=20 (so a lot of suppression), at 500, 1000 and 1500 gridpoints. In particular, it failed before a shock wave formed. It looked like a high frequency instability in rho was responsible (in a position without a huge amount of nonlinearity), suggesting that we had complex eigenvalues in our differentiation matrix? This needs testing carefully, and reproducing with the current code.
+The original collocated code (2015; collocated centred derivatives, adaptive Dormand-Prince) lives on as `src/_old`. Its long-standing "high-frequency instability" was diagnosed in September 2026 as the odd-even null
+mode of collocated centred first derivatives; the staggered layout of this code has no such mode, since the
+sawtooth is its stiffest direction rather than an invisible one. The rebuild began on 2026-09-18.
