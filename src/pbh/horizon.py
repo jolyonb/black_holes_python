@@ -2,16 +2,23 @@
 
 The trapping function is `h_j = U_j + Gammabar_j` at the retained faces, both quantities every stage computes: a
 face is trapped where `h_j < 0`. The paper's finder takes the outermost sign change from trapped to untrapped and
-interpolates linearly in the label,
+places the root by the cubic through the four faces around it, in the label,
 
-    j_* = max { j : h_j < 0 <= h_(j+1) },   x_AH = x_(j_*) + (1/N) (-h_(j_*)) / (h_(j_*+1) - h_(j_*)),
+    j_* = max { j : h_j < 0 <= h_(j+1) },   x_AH = x_(j_*) + t / N,   p(t) = 0,  0 <= t <= 1,
     M_AH / R_H = (1/2) e^(alpha xi) X(xi, x_AH),                                             eq:numbh:finder
 
-the radius from the analytic map at that label. Here every sign change is reported, not only the outermost: a
-collapse can form more than one trapped region, and a new one appearing outside the excision face is an event
-(the multi-scale decision), so the finder returns the whole list, each sphere marked as the outer boundary of a
-trapped region (an apparent horizon) or the inner one. The apparent horizon of the paper is the outermost outer
-boundary. An empty list is the normal state before formation, not an error; a trapped outer face is an abort.
+with `p` the cubic through `h` at faces `j_* - 1 .. j_* + 2` (`t` = -1..2), and the radius from the analytic map at
+that label. The cubic is for the read-out. A linear root errs by an amount that depends on where the root falls
+between faces, with a kink wherever the horizon crosses a face, so `M_AH(xi)` carries a sawtooth that the rate fit of
+the read-out differentiates. The cubic's interpolation error is fourth order; the root is still only as accurate as
+the face values of `h`, which carry the state's second-order error, but that error is smooth in time. Where the four
+faces are not all retained, beside the first retained face or the outer face, the root is linear.
+
+Here every sign change is reported, not only the outermost: a collapse can form more than one trapped region, and a new
+one appearing outside the excision face is an event (the multi-scale decision), so the finder returns the whole list,
+each sphere marked as the outer boundary of a trapped region (an apparent horizon) or the inner one. The apparent
+horizon of the paper is the outermost outer boundary. An empty list is the normal state before formation, not an error;
+a trapped outer face is an abort.
 
 The finder also returns the margin `1 + U / Gammabar`, which is `-h / Gammabar` shifted so that it crosses zero
 exactly where a face becomes trapped: the continuous observable of the criticality study, decreasing in the
@@ -19,8 +26,8 @@ amplitude of the perturbation and read every step. Its minimum over the whole gr
 from the centre, so the minimum over the core, the faces inside the radius where the density has fallen to half
 its central value, is reported separately.
 
-On a state whose apparent horizon is known exactly the interpolated radius is second order, below `0.09 Delta X^2`
-in the paper's measurement, though the constant depends on where the root falls between faces.
+On a state whose trapping function is exact at the faces the root is fourth order in the cell width (second order
+for the linear root); on an evolved state it is second order, the state's own accuracy.
 
 After formation the horizon table also carries two of the three monitors of Section 8.5 that say whether the
 transient is over (the third, the outflow margin at the excision face, is among the face's columns): the near zone,
@@ -35,6 +42,7 @@ and a radius off the retained grid gives NaN.
 """
 
 import dataclasses
+import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -95,6 +103,42 @@ class HorizonReport:
     outer_face_trapped: bool
 
 
+def crossing(h: FloatArray, j: int, first: int, last: int) -> float:
+    """Where `h` crosses zero between faces `j` and `j + 1`, as a fraction `t` of the cell (eq:numbh:finder).
+
+    The root in `[0, 1]` of the cubic through `h` at faces `j - 1 .. j + 2`, placed at `t = -1 .. 2`, found by
+    Newton's method from the linear root and kept inside the bracket `[0, 1]` that the sign change guarantees, a step
+    that would leave it bisecting instead. The linear root where face `j - 1` or `j + 2` lies outside the retained faces
+    `first .. last`.
+    """
+    linear = -h[j] / (h[j + 1] - h[j])
+    if j - 1 < first or j + 2 > last:
+        return float(linear)
+    hm, h0, h1, h2 = (float(v) for v in h[j - 1 : j + 3])
+    # p(t) = h0 + a1 t + a2 t^2 + a3 t^3, the cubic through (-1, hm), (0, h0), (1, h1), (2, h2)
+    a1 = -hm / 3.0 - h0 / 2.0 + h1 - h2 / 6.0
+    a2 = hm / 2.0 - h0 + h1 / 2.0
+    a3 = -hm / 6.0 + h0 / 2.0 - h1 / 2.0 + h2 / 6.0
+    lo, hi = 0.0, 1.0  # p(lo) has the sign of h0, p(hi) that of h1
+    t = float(linear)
+    for _ in range(60):
+        p = h0 + t * (a1 + t * (a2 + t * a3))
+        if p == 0.0:
+            break
+        if (p < 0.0) == (h0 < 0.0):
+            lo = t
+        else:
+            hi = t
+        slope = a1 + t * (2.0 * a2 + 3.0 * t * a3)
+        step = t - p / slope if slope != 0.0 else math.nan
+        t_new = step if lo < step < hi else 0.5 * (lo + hi)
+        if abs(t_new - t) <= 1e-15:
+            t = t_new
+            break
+        t = t_new
+    return t
+
+
 def find_horizons(
     state: State, d: Derived, geo: Geometry, bg: Background, eos: EquationOfState, map: Map, layout: Layout, xi: float
 ) -> HorizonReport:
@@ -110,8 +154,7 @@ def find_horizons(
     horizons: list[Horizon] = []
     for k in np.flatnonzero(trapped[:-1] != trapped[1:]):
         j = int(retained[k])
-        fraction = -h[j] / (h[j + 1] - h[j])  # where h crosses zero between the faces, as a fraction of the cell
-        x = (j + fraction) / N
+        x = (j + crossing(h, j, j_e, N)) / N
         X = float(map.radius_at(xi, np.array([x]))[0])
         horizons.append(Horizon(j=j, x=x, X=X, outer=bool(trapped[k])))
     outer_boundaries = [horizon for horizon in horizons if horizon.outer]

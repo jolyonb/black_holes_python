@@ -1,4 +1,4 @@
-"""Tests of pbh.horizon: every marginally trapped sphere, the apparent horizon at second order, the margins."""
+"""Tests of pbh.horizon: every marginally trapped sphere, the apparent horizon at fourth order, the margins."""
 
 import math
 from collections.abc import Callable
@@ -15,7 +15,7 @@ from pbh.derived import Derived, derive
 from pbh.driver import RunPaths, run
 from pbh.eos import RADIATION, Background, EquationOfState
 from pbh.geometry import Geometry
-from pbh.horizon import HorizonReport, HorizonRow, NearZone, find_horizons, near_zone
+from pbh.horizon import HorizonReport, HorizonRow, NearZone, crossing, find_horizons, near_zone
 from pbh.initial import cell_contents
 from pbh.kernels import PRODUCTION_KERNELS
 from pbh.layout import Layout
@@ -102,7 +102,7 @@ def test_frw_has_no_trapped_face_no_horizon_and_a_margin_of_one_at_the_origin():
 
 
 @pytest.mark.parametrize("m", [IdentityMap(4.0), SinhStretch(4.0, scale=2.0)])
-def test_a_trapped_shell_has_an_inner_and_an_outer_boundary_found_at_second_order(m: Map):
+def test_a_trapped_shell_has_an_inner_and_an_outer_boundary_found_at_fourth_order(m: Map):
     inner_exact, outer_exact = exact_roots(one_shell, [(2.5, 3.2), (3.2, 3.9)])
     errors: list[float] = []
     for N in (100, 200, 400):
@@ -114,19 +114,53 @@ def test_a_trapped_shell_has_an_inner_and_an_outer_boundary_found_at_second_orde
         assert report.apparent == outer
         assert report.trapped_faces > 0
         assert not report.outer_face_trapped
-        # second order in the local cell width; the constant depends on the curvature of h where the root falls
-        assert inner.X == pytest.approx(inner_exact, abs=1.0 * geo.dX[inner.j] ** 2)
-        assert outer.X == pytest.approx(outer_exact, abs=1.0 * geo.dX[outer.j] ** 2)
+        # the cubic root: fourth order in the local cell width (the linear root was second order, 1.0 dX^2)
+        assert inner.X == pytest.approx(inner_exact, abs=2.0 * geo.dX[inner.j] ** 4)
+        assert outer.X == pytest.approx(outer_exact, abs=2.0 * geo.dX[outer.j] ** 4)
         # the label and the radius agree through the analytic map, and the mass is the printed formula
         assert m.radius_at(XI, np.array([outer.x]))[0] == outer.X
         assert report.M_AH == pytest.approx(0.5 * math.exp(float(RAD.alpha) * XI) * outer.X)
         assert abs(report.residual) < 5e-3  # 2m/R - 1 at the interpolated horizon
         errors.append(abs(outer.X - outer_exact))
-    assert errors[2] < errors[0] / 8.0  # second order, allowing for the constant's dependence on the root's position
+    assert errors[2] < errors[0] / 64.0  # measured 235 to 270 over two doublings; fourth order would be 256
     assert abs(report.residual) < 5e-4
     row = HorizonRow.of(7, XI, report, 0.5, NearZone(*[math.nan] * 8))
     assert (row.j_star, row.x_AH, row.X_AH, row.M_AH) == (outer.j, outer.x, outer.X, report.M_AH)
     assert row.zone_ratio == pytest.approx(outer.x / 0.5)
+
+
+# --- the root inside a cell ---
+
+
+def test_the_crossing_is_the_root_of_the_cubic_through_the_four_faces_around_it():
+    # h a cubic in the label: the cubic through faces j-1..j+2 is h itself, so the root is exact to round-off.
+    for root in (0.0, 1e-9, 0.37, 0.8, 1.0 - 1e-9):
+        k = np.arange(10.0)
+        h = (k - 4.0 - root) * (1.0 + 0.3 * (k - 4.0) + 0.05 * (k - 4.0) ** 2)
+        assert crossing(h, 4, 0, 9) == pytest.approx(root, abs=1e-14)
+        assert crossing(-h, 4, 0, 9) == pytest.approx(root, abs=1e-14)  # the other sign
+
+
+def test_the_crossing_is_linear_where_the_four_faces_are_not_all_retained():
+    h = np.array([0.5, -1.0, 2.0, 4.0, 9.0])
+    assert crossing(h, 1, 1, 4) == pytest.approx(1.0 / 3.0, rel=1e-15)  # face 0 below the first retained face
+    h = np.array([9.0, 4.0, 2.0, -1.0, 0.5])
+    assert crossing(h, 3, 0, 4) == pytest.approx(2.0 / 3.0, rel=1e-15)  # the other end: face j + 2 beyond face N
+    h = np.array([2.0, 1.0, -1.0, 1.0])
+    assert crossing(h, 2, 0, 3) == pytest.approx(0.5, rel=1e-15)
+
+
+def test_the_crossing_stays_in_the_cell_when_the_cubic_is_wild():
+    # outer faces far off: the cubic swings hard, and Newton from the linear root must still end inside [0, 1] on a root
+    h = np.array([-50.0, 1.0, -1.0, 60.0])
+    t = crossing(h, 1, 0, 3)
+    a1, a2, a3 = (
+        -h[0] / 3 - h[1] / 2 + h[2] - h[3] / 6,
+        h[0] / 2 - h[1] + h[2] / 2,
+        -h[0] / 6 + h[1] / 2 - h[2] / 2 + h[3] / 6,
+    )
+    assert 0.0 <= t <= 1.0
+    assert abs(h[1] + t * (a1 + t * (a2 + t * a3))) < 1e-12
 
 
 # --- several trapped regions: the finder's logic on a prescribed trapping function ---
