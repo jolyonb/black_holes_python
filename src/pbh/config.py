@@ -28,7 +28,6 @@ assembled from all of them. The driver reads the file and never sees a raw strin
       viscous_flux: density_weighted  # density_weighted (each side its own q/rho at its face density) or averaged
       cap_tension: true         # cap the viscous tension at the fluid pressure, q >= -w rho
     stepping:
-      integrator: rk4           # rk4 or ssprk3
       courant_number: 0.75
       cap_tolerance: 1.0e-5     # the step cap of eq:num:stepcap: relative error tolerance ...
       cap_efolds: 4.0           # ... over this many super-horizon e-folds
@@ -70,7 +69,7 @@ from pbh.layout import Layout
 from pbh.maps import IdentityMap, Map, SinhStretch
 from pbh.outer import HeldAtFrw, OuterClosure, OutgoingWave, PenaltyStrengths
 from pbh.readout import ReadoutSettings
-from pbh.timestep import COURANT_NUMBER, Integrator, Scheme, step_cap
+from pbh.timestep import COURANT_NUMBER, Scheme, step_cap
 
 
 class ConfigError(ValueError):
@@ -255,9 +254,8 @@ class ReadoutConfig(Section):
 
 
 class SteppingConfig(Section):
-    """The `stepping` section: the integrator, the Courant number and the step cap (Section 7.6)."""
+    """The `stepping` section: RK4's Courant number and the step cap (Section 7.6)."""
 
-    integrator: Integrator = Field(default=Integrator.RK4, strict=False)
     courant_number: float = Field(default=COURANT_NUMBER, gt=0.0, le=1.0)
     cap_tolerance: float = 1e-5
     cap_efolds: float = 4.0

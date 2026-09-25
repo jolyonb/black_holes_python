@@ -26,7 +26,7 @@ def test_validate_prints_the_complete_configuration(tmp_path: Path, capsys: pyte
     assert main(["validate", str(write_config(tmp_path))]) == 0
     printed = yaml.safe_load(capsys.readouterr().out)
     assert printed["grid"] == {"N": 40, "Rtilde_max": 12.0, "map": "sinh", "scale": 3.0}
-    assert printed["stepping"]["integrator"] == "rk4"
+    assert printed["stepping"]["courant_number"] == 0.75
 
 
 def test_a_bad_configuration_is_an_error_message_and_a_nonzero_status(

@@ -46,7 +46,6 @@ readout:
   efficiency_tolerance: 0.2   # flag the reading if the accretion efficiency is further than this from Michel's
 
 stepping:
-  integrator: rk4             # rk4 or ssprk3
   courant_number: 0.75
   cap_tolerance: 1.0e-5       # the step cap of eq:num:stepcap: relative error tolerance ...
   cap_efolds: 4.0             # ... over this many super-horizon e-folds

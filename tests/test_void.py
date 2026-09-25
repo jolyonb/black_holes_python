@@ -58,7 +58,7 @@ from pbh.layout import Layout
 from pbh.maps import BlendMap, IdentityMap, Map, SinhStretch, Zone
 from pbh.outer import OutgoingWave
 from pbh.state import State
-from pbh.timestep import COURANT_NUMBER, Integrator, Scheme, advance, courant_step
+from pbh.timestep import COURANT_NUMBER, Scheme, advance, courant_step
 
 EOS = EquationOfState(RADIATION)
 AVERAGED_Q = KernelSettings(
@@ -81,7 +81,7 @@ def pull_apart(N: int, V: float, settings: KernelSettings, xi_end: float = 6.0) 
             res = sch.evaluate_deviation(xi, dy)
             rho_min = min(rho_min, float(np.min(res.derived.rho)))
             dxi = min(courant_step(res, geo, sch.layout, COURANT_NUMBER), xi_end - xi)
-            dy = advance(sch, Integrator.RK4, xi, dy, dxi)
+            dy = advance(sch, xi, dy, dxi)
             xi += dxi
     except NotHyperbolicError:
         return False, xi, rho_min

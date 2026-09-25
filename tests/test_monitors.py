@@ -26,7 +26,7 @@ from pbh.monitors import (
 from pbh.outer import HeldAtFrw, OutgoingWave, characteristic_pair
 from pbh.state import State, frw_state
 from pbh.stencils import StencilWeights
-from pbh.timestep import RK4, Integrator, Scheme, advance, courant_step
+from pbh.timestep import RK4, Scheme, advance, courant_step
 from pbh.types import FloatArray
 
 RAD = EquationOfState(RADIATION)
@@ -150,7 +150,7 @@ def test_the_bookkeeping_residual_of_an_rk4_step_is_round_off():
         r_i = sch.evaluate(xi_i, y_i)
         k.append(sch.layout.pack(r_i.deviation_rate))
         stages.append(StageFluxes.of(r_i, sch.layout))
-    dy_new = advance(sch, Integrator.RK4, xi, dy, dxi)
+    dy_new = advance(sch, xi, dy, dxi)
     new = sch.layout.unpack(sch.frw(xi + dxi) + dy_new)
     inputs = inputs_for(sch, xi + dxi, new, stages, delta_M_total_before=stages[0].delta_M_total)
     inputs = dataclasses.replace(inputs, dxi=dxi)

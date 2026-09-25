@@ -1,11 +1,12 @@
 """Time stepping (paper Section 7.6): RK4 in deviation form, the Courant step, and the step cap.
 
 The method of lines: `calc_derivs` of `equations.py` turns the state into its rate, and this module advances it in
-time with the classical four-stage Runge-Kutta method (RK4) at a fixed Courant number, the three-stage
-strong-stability-preserving method (SSPRK3) being kept as a switch. Section 7.6 says why not the alternatives: an
-adaptive embedded pair hunts for a stability boundary that a fixed Courant number already respects and costs more
-per Courant-limited step; SSPRK3 certifies nothing here, since forward Euler is unstable with the production
-kernels; leapfrog's stability region is the imaginary axis alone and the operator has real parts.
+time with the classical four-stage Runge-Kutta method (RK4) at a fixed Courant number. Section 7.6 says why not the
+alternatives: an adaptive embedded pair hunts for a stability boundary that a fixed Courant number already respects
+and costs more per Courant-limited step; the three-stage strong-stability-preserving method (SSPRK3) certifies no
+stability here, since forward Euler is unstable with the production kernels, and its positivity condition bought
+nothing measurable on the near-threshold ladder; leapfrog's stability region is the imaginary axis alone and the
+operator has real parts.
 
 Deviation form. The integrator does not hold the state `y` but its deviation from FRW, `delta y = y - y_FRW(xi)`,
 and its right-hand side is
@@ -26,9 +27,8 @@ accuracy. The cap is derived from the local error of RK4 on
 
 The checked step. Every stage input and the result of a step must be finite and inside the hyperbolic domain, every
 retained `rho_c > 0` and `Gammabar_j^2 > 0`; an attempt that fails is refused and the step retried from the same state
-with half the step (`advance_checked`). This is what keeps accepted states positive, for any explicit method: the
-semi-discrete scheme is positive (eq:num:positivity), but an explicit step can overshoot it. RK4 and SSPRK3 differ only
-in the tableau, so the integrator stays a switch.
+with half the step (`advance_checked`). This is what keeps accepted states positive: the semi-discrete scheme is
+positive (eq:num:positivity), but an explicit step can overshoot it.
 
 `Frame` bundles what a stage needs at one time, the geometry, the background and the stencil weights, and `Scheme`
 builds frames from the map and the layout: once for a static map, at every stage time for a moving one (Section 7.1).
@@ -54,7 +54,7 @@ from pbh.state import frw_state
 from pbh.stencils import StencilWeights
 from pbh.types import FloatArray
 
-#: The Courant number of eq:num:cfl. The stable limit is about 0.95 for RK4 on the production footprint.
+#: The Courant number of eq:num:cfl. RK4's stable limit on the production footprint is 0.865 (0.835 to x_max = 48).
 COURANT_NUMBER = 0.75
 
 
@@ -95,7 +95,7 @@ class ButcherTableau:
         return len(self.c)
 
 
-_HALF, _THIRD, _QUARTER, _SIXTH = Fraction(1, 2), Fraction(1, 3), Fraction(1, 4), Fraction(1, 6)
+_HALF, _THIRD, _SIXTH = Fraction(1, 2), Fraction(1, 3), Fraction(1, 6)
 
 #: The classical fourth-order method: the production integrator (Section 7.6).
 RK4 = ButcherTableau(
@@ -108,32 +108,6 @@ RK4 = ButcherTableau(
     ),
     b=(_SIXTH, _THIRD, _THIRD, _SIXTH),
 )
-
-#: The three-stage strong-stability-preserving method of Shu and Osher, in Butcher form: a switch (Section 7.6).
-SSPRK3 = ButcherTableau(
-    c=(Fraction(0), Fraction(1), _HALF),
-    a=(
-        (),
-        (Fraction(1),),
-        (_QUARTER, _QUARTER),
-    ),
-    b=(_SIXTH, _SIXTH, 2 * _THIRD),
-)
-
-
-class Integrator(Enum):
-    """The time integrator (Section 7.6, Table tab:num:params)."""
-
-    RK4 = "rk4"
-    """The classical four-stage method at Courant number 0.75: the production choice."""
-
-    SSPRK3 = "ssprk3"
-    """The three-stage strong-stability-preserving method, admissible at Courant numbers 0.3 to 0.5; a switch."""
-
-    @property
-    def tableau(self) -> ButcherTableau:
-        """The Butcher tableau of this integrator."""
-        return RK4 if self is Integrator.RK4 else SSPRK3
 
 
 @dataclass(frozen=True)
@@ -219,9 +193,9 @@ def explicit_rk_step(tableau: ButcherTableau, f: Rate, xi: float, y: FloatArray,
     return y + dxi * sum(float(b_i) * k_i for b_i, k_i in zip(tableau.b, k, strict=True))
 
 
-def advance(scheme: Scheme, integrator: Integrator, xi: float, dy: FloatArray, dxi: float) -> FloatArray:
-    """Advance the deviation `delta y` from `xi` to `xi + dxi` with the chosen integrator, in deviation form."""
-    return explicit_rk_step(integrator.tableau, scheme.deviation_rate, xi, dy, dxi)
+def advance(scheme: Scheme, xi: float, dy: FloatArray, dxi: float) -> FloatArray:
+    """Advance the deviation `delta y` from `xi` to `xi + dxi` by one unchecked RK4 step, in deviation form."""
+    return explicit_rk_step(RK4, scheme.deviation_rate, xi, dy, dxi)
 
 
 @dataclass(frozen=True)
@@ -290,25 +264,24 @@ class Attempt:
 
 def checked_step(
     scheme: Scheme,
-    integrator: Integrator,
     xi: float,
     dy: FloatArray,
     dxi: float,
     first: DerivsResult,
     land: float | None = None,
 ) -> Attempt:
-    """One step of the explicit Runge-Kutta method in deviation form, every stage and the result checked.
+    """One RK4 step in deviation form, every stage and the result checked.
 
     Every stage input after the first and the result must be finite, and their evaluation must find them inside the
     hyperbolic domain, every retained `rho_c > 0` and `Gammabar_j^2 > 0` (`derive` asserts both). The first stage is
     the accepted state, whose evaluation `first` the caller already holds. The result is evaluated here, so that a
     result outside the domain is caught like a stage, and its rate is handed back as the next step's first stage. A
-    `Gammabar^2` that evaluates to NaN or an infinity is a non-finite value, not a failure of the chart. The method is
-    only the tableau: the checks are the same for every explicit method, which is what keeps accepted states positive.
+    `Gammabar^2` that evaluates to NaN or an infinity is a non-finite value, not a failure of the chart. The checks,
+    not the method, keep accepted states positive.
     `land`, if given, is the time the step arrives at, an output time the driver clipped it to: the result is evaluated
     there exactly, as a restart from that output time evaluates it, rather than at the rounded `xi + dxi`.
     """
-    tableau = integrator.tableau
+    tableau = RK4
 
     def evaluate(xi_i: float, dy_i: FloatArray, stage: int) -> tuple[DerivsResult | None, StepFailure | None]:
         where = "stage" if stage else "result"
@@ -368,7 +341,6 @@ class StepAbortError(Exception):
 
 def advance_checked(
     scheme: Scheme,
-    integrator: Integrator,
     xi: float,
     dy: FloatArray,
     dxi: float,
@@ -379,14 +351,14 @@ def advance_checked(
 
     A refused attempt is retried from the same state with half the step, at most `MAX_HALVINGS` times, and at most
     `CHART_HALVINGS` times for `Gammabar^2`; beyond either the run ends (`StepAbortError`). The positivity of accepted
-    states rests on the checks, for any explicit method; that some step passes rests on the semi-discrete scheme's
+    states rests on the checks; that some step passes rests on the semi-discrete scheme's
     (eq:num:positivity) and on the stages tending to the accepted state as the step shrinks. `land` is the full step's
     arrival time (`checked_step`); a halved step lands short.
     """
     refused: list[StepFailure] = []
     chart = 0
     while True:
-        attempt = checked_step(scheme, integrator, xi, dy, dxi, first, None if refused else land)
+        attempt = checked_step(scheme, xi, dy, dxi, first, None if refused else land)
         if attempt.failure is None:
             assert attempt.dy is not None
             assert attempt.result is not None

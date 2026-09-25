@@ -64,7 +64,7 @@ from pbh.output import RunReader, RunWriter, next_snapshot_time, run_map
 from pbh.readout import Epoch, first_reading, readings, starts_new_epoch
 from pbh.records import StateRecord, shell_volumes
 from pbh.state import State
-from pbh.timestep import AcceptedStep, Frame, Scheme, StepAbortError, StepFailure, advance_checked, step_size
+from pbh.timestep import RK4, AcceptedStep, Frame, Scheme, StepAbortError, StepFailure, advance_checked, step_size
 from pbh.types import FloatArray
 
 FAR_ZONE_TOLERANCE = 1e-10
@@ -521,7 +521,7 @@ def run(config: RunConfig, initial: StateRecord, paths: RunPaths, history: Epoch
         raise ValueError(f"the initial time {xi} is not before the end {xi_end}")
     save(config, paths.config)
     cap = config.stepping.cap(sch.eos)
-    weights = tuple(float(b) for b in config.stepping.integrator.tableau.b)
+    weights = tuple(float(b) for b in RK4.b)
     scale = float(np.max(np.abs(sch.frw(xi))))  # the state's scale, for the companion estimate
 
     with RunWriter(paths.evolution, config, layout.N, row_type=MonitoredStep) as out:
@@ -555,9 +555,7 @@ def run(config: RunConfig, initial: StateRecord, paths: RunPaths, history: Epoch
                 layout = r.layout
                 before = StageFluxes.of(result, layout)
                 clipped = limit == "output_clip"
-                accepted = advance_checked(
-                    r.sch, config.stepping.integrator, r.xi, r.dy, dxi, result, landing if clipped else None
-                )
+                accepted = advance_checked(r.sch, r.xi, r.dy, dxi, result, landing if clipped else None)
                 for failure in accepted.refused:
                     r.event("rejection", rejection_payload(failure))
                 if accepted.refused:

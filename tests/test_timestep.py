@@ -21,10 +21,8 @@ from pbh.timestep import (
     COURANT_NUMBER,
     MAX_HALVINGS,
     RK4,
-    SSPRK3,
     ButcherTableau,
     FailureCause,
-    Integrator,
     Scheme,
     StepAbortError,
     StepLimit,
@@ -82,12 +80,6 @@ def test_rk4_satisfies_the_order_conditions_through_fourth_order_exactly():
     assert order_conditions(RK4) == FOURTH_ORDER
 
 
-def test_ssprk3_satisfies_the_order_conditions_through_third_order_and_not_fourth():
-    conditions = order_conditions(SSPRK3)
-    assert {k: conditions[k] for k in THIRD_ORDER} == THIRD_ORDER
-    assert conditions["b a a c"] != Fraction(1, 24)  # a three-stage method cannot meet all eight; this one it fails
-
-
 def test_an_inconsistent_tableau_is_refused():
     with pytest.raises(ValueError, match="inconsistent"):
         ButcherTableau(c=(Fraction(0), Fraction(1)), a=((), (Fraction(1, 2),)), b=(Fraction(1, 2), Fraction(1, 2)))
@@ -107,26 +99,6 @@ def test_rk4_applies_its_fourth_order_stability_polynomial(lam: float):
     assert out[0] == pytest.approx(1 + z + z**2 / 2 + z**3 / 6 + z**4 / 24, rel=1e-14)
 
 
-def test_ssprk3_applies_its_third_order_stability_polynomial():
-    lam = -0.9
-    y = np.array([1.0])
-    z = lam * 0.4
-    out = explicit_rk_step(SSPRK3, lambda _xi, y: lam * y, 0.0, y, 0.4)
-    assert out[0] == pytest.approx(1 + z + z**2 / 2 + z**3 / 6, rel=1e-14)
-
-
-def test_ssprk3_is_the_shu_osher_form():
-    # u1 = u + h f(u); u2 = 3/4 u + 1/4 (u1 + h f(u1)); u3 = 1/3 u + 2/3 (u2 + h f(u2)), on a nonlinear problem.
-    def f(_xi: float, y: FloatArray) -> FloatArray:
-        return np.sin(y)
-
-    y, h = np.array([0.7]), 0.3
-    u1 = y + h * f(0.0, y)
-    u2 = 0.75 * y + 0.25 * (u1 + h * f(0.0, u1))
-    u3 = y / 3 + 2 / 3 * (u2 + h * f(0.0, u2))
-    assert explicit_rk_step(SSPRK3, f, 0.0, y, h) == pytest.approx(u3, rel=1e-15)
-
-
 def test_the_local_error_of_one_rk4_step_is_fifth_order_on_a_nonlinear_problem():
     # y' = y^2 with y(0) = 1 has y = 1 / (1 - xi): the error of a single step falls by 2^5 when the step is halved.
     def f(_xi: float, y: FloatArray) -> FloatArray:
@@ -138,22 +110,16 @@ def test_the_local_error_of_one_rk4_step_is_fifth_order_on_a_nonlinear_problem()
     assert local_error(0.02) / local_error(0.01) == pytest.approx(32.0, rel=0.05)
 
 
-def test_the_integrator_enum_carries_its_tableau():
-    assert Integrator.RK4.tableau is RK4
-    assert Integrator.SSPRK3.tableau is SSPRK3
-
-
 # --- the deviation form: FRW through a moving map to round-off (Section 7.6; tab:num:tests row 1) ---
 
 
-@pytest.mark.parametrize("integrator", [Integrator.RK4, Integrator.SSPRK3])
 @pytest.mark.parametrize("j_e", [0, 3])
-def test_frw_stays_frw_through_the_pinned_map_in_deviation_form(integrator: Integrator, j_e: int):
+def test_frw_stays_frw_through_the_pinned_map_in_deviation_form(j_e: int):
     sch = scheme(PinnedMap(SinhStretch(6.0, scale=2.0), alpha=float(EOS.alpha), xi_on=0.3), 40, j_e)
     dy = np.zeros(sch.layout.size)
     xi, dxi = 0.3, 0.05
     for _ in range(20):  # one e-fold
-        dy = advance(sch, integrator, xi, dy, dxi)
+        dy = advance(sch, xi, dy, dxi)
         xi += dxi
     scale = np.max(np.abs(sch.frw(xi)))
     assert np.max(np.abs(dy)) < 1e-13 * scale, "FRW preserved through a moving map to round-off"
@@ -341,19 +307,18 @@ def test_the_failure_causes_and_which_of_them_are_the_charts():
     assert {c for c in FailureCause if c.is_chart} == {FailureCause.STAGE_GAMMABAR2, FailureCause.RESULT_GAMMABAR2}
 
 
-@pytest.mark.parametrize("integrator", list(Integrator))
 @pytest.mark.parametrize(("how", "cause"), [("rho", "rho"), ("gamma", "Gammabar2"), ("gamma_nan", "nonfinite")])
 def test_a_stage_or_result_outside_the_domain_is_refused_there_and_the_state_is_kept(
-    monkeypatch: pytest.MonkeyPatch, integrator: Integrator, how: str, cause: str
+    monkeypatch: pytest.MonkeyPatch, how: str, cause: str
 ):
     # Evaluation number s - 1 is stage s (the first stage is the accepted state's, already held); number S is the
     # result. A NaN Gammabar^2 is a non-finite value, not a failure of the chart.
     sch, dy, xi, first = checked_setup()
-    S = integrator.tableau.stages
+    S = RK4.stages
     for s in [*range(2, S + 1), 0]:
         ev = Evaluations(sch, {s - 1 if s else S}, how)
         ev.install(monkeypatch)
-        attempt = checked_step(sch, integrator, xi, dy.copy(), 0.01, first)
+        attempt = checked_step(sch, xi, dy.copy(), 0.01, first)
         assert attempt.failure is not None
         assert attempt.failure.cause.value == f"{'stage' if s else 'result'}_{cause}"
         assert attempt.failure.stage == s
@@ -362,39 +327,37 @@ def test_a_stage_or_result_outside_the_domain_is_refused_there_and_the_state_is_
         assert ev.calls == (s - 1 if s else S)
 
 
-@pytest.mark.parametrize("integrator", list(Integrator))
 def test_a_non_finite_stage_input_or_result_is_refused_before_it_is_evaluated(
-    monkeypatch: pytest.MonkeyPatch, integrator: Integrator
+    monkeypatch: pytest.MonkeyPatch,
 ):
     sch, dy, xi, first = checked_setup()
-    S = integrator.tableau.stages
+    S = RK4.stages
     for s in [*range(3, S + 1), 0]:  # the rate of the evaluation before makes the next input non-finite
         ev = Evaluations(sch, {s - 2 if s else S - 1}, "nan_rate")
         ev.install(monkeypatch)
-        attempt = checked_step(sch, integrator, xi, dy.copy(), 0.01, first)
+        attempt = checked_step(sch, xi, dy.copy(), 0.01, first)
         assert attempt.failure is not None
         assert attempt.failure.cause.value == f"{'stage' if s else 'result'}_nonfinite"
         assert ev.calls == (s - 2 if s else S - 1)  # refused before its own evaluation
 
 
-@pytest.mark.parametrize("integrator", list(Integrator))
-def test_an_accepted_step_hands_back_the_rate_at_the_state_it_arrived_at(integrator: Integrator):
+def test_an_accepted_step_hands_back_the_rate_at_the_state_it_arrived_at():
     sch, dy, xi, first = checked_setup()
-    attempt = checked_step(sch, integrator, xi, dy, 0.01, first)
+    attempt = checked_step(sch, xi, dy, 0.01, first)
     assert attempt.failure is None
     assert attempt.dy is not None
     assert attempt.result is not None
-    assert np.array_equal(attempt.dy, advance(sch, integrator, xi, dy, 0.01))
+    assert np.array_equal(attempt.dy, advance(sch, xi, dy, 0.01))
     again = sch.layout.pack(sch.evaluate_deviation(xi + 0.01, attempt.dy).deviation_rate)
     assert np.array_equal(sch.layout.pack(attempt.result.deviation_rate), again)
-    assert len(attempt.stages) == integrator.tableau.stages
+    assert len(attempt.stages) == RK4.stages
 
 
 def test_a_step_clipped_to_an_output_time_is_evaluated_at_that_time(monkeypatch: pytest.MonkeyPatch):
     sch, dy, xi, first = checked_setup()
     ev = Evaluations(sch, set(), "")
     ev.install(monkeypatch)
-    checked_step(sch, Integrator.RK4, xi, dy, 0.01, first, land=0.5125)
+    checked_step(sch, xi, dy, 0.01, first, land=0.5125)
     assert ev.times[-1] == 0.5125  # the result, at the landing time, not at xi + dxi
 
 
@@ -403,7 +366,7 @@ def test_a_refused_attempt_is_retried_at_half_the_step_until_the_limit(monkeypat
     ev = Evaluations(sch, set(), "every_rho")
     ev.install(monkeypatch)
     with pytest.raises(StepAbortError) as abort:
-        advance_checked(sch, Integrator.RK4, xi, dy, 0.016, first)
+        advance_checked(sch, xi, dy, 0.016, first)
     refused = abort.value.refused
     assert len(refused) == MAX_HALVINGS + 1
     assert all(f.cause is FailureCause.STAGE_RHO for f in refused)
@@ -415,10 +378,10 @@ def test_the_chart_gets_two_halvings_and_a_passing_halving_is_accepted(monkeypat
     sch, dy, xi, first = checked_setup()
     Evaluations(sch, set(), "every_gamma").install(monkeypatch)
     with pytest.raises(StepAbortError) as abort:
-        advance_checked(sch, Integrator.RK4, xi, dy, 0.016, first)
+        advance_checked(sch, xi, dy, 0.016, first)
     assert len(abort.value.refused) == CHART_HALVINGS + 1
     assert abort.value.failure.cause is FailureCause.STAGE_GAMMABAR2
     Evaluations(sch, {1}, "gamma").install(monkeypatch)  # the first attempt only
-    accepted = advance_checked(sch, Integrator.RK4, xi, dy, 0.016, first)
+    accepted = advance_checked(sch, xi, dy, 0.016, first)
     assert accepted.dxi == 0.008
     assert [f.cause for f in accepted.refused] == [FailureCause.STAGE_GAMMABAR2]

@@ -24,7 +24,7 @@ from pbh.config import (
 from pbh.kernels import PRODUCTION_KERNELS, DensityLimiter, Kernels, KernelSettings, ViscousFlux
 from pbh.maps import IdentityMap, SinhStretch
 from pbh.outer import HeldAtFrw, OutgoingWave, PenaltyStrengths
-from pbh.timestep import Integrator, step_cap
+from pbh.timestep import step_cap
 
 EXAMPLE = Path(__file__).parent.parent / "examples" / "example.config.yaml"
 EVOLUTION = "evolution: {xi_end: 1.0}\n"
@@ -52,7 +52,6 @@ def test_a_minimal_file_takes_every_default(tmp_path: Path):
     assert config.grid == GridConfig(N=40, Rtilde_max=4.0, scale=2.0)
     assert config.outer.closure is OuterChoice.OUTGOING_WAVE
     assert config.shocks.kernels is Kernels.PRODUCTION
-    assert config.stepping.integrator is Integrator.RK4
     assert config.evolution == EvolutionConfig(xi_end=1.0)
 
 
@@ -63,7 +62,7 @@ grid: {map: uniform, N: 10, Rtilde_max: 3}
 outer: {closure: held, tau_u: 1.0, tau_rho: 1.5, tau_W: 0.5}
 shocks: {kernels: centred, density_limiter: minmod, c_v: 0.5, theta: 0.3}
 excision: {eta: 0.75, tau_on: 0.4, c_t: 3.0, c_Delta: 1.0}
-stepping: {integrator: ssprk3, courant_number: 0.4, cap_tolerance: 1.0e-6, cap_efolds: 3.0}
+stepping: {courant_number: 0.4, cap_tolerance: 1.0e-6, cap_efolds: 3.0}
 output: {snapshot_spacing: 0.1, snapshot_spacing_after: 0.02, flush_every: 50, monitor_every_step: true}
 evolution: {xi_end: 2.5}
 """
@@ -73,7 +72,7 @@ evolution: {xi_end: 2.5}
     assert (c.outer.closure, c.outer.tau_u, c.outer.tau_rho, c.outer.tau_W) == (OuterChoice.HELD, 1.0, 1.5, 0.5)
     assert c.shocks.build() == KernelSettings(Kernels.CENTRED, DensityLimiter.MINMOD, 0.5, 0.3)
     assert (c.excision.eta, c.excision.tau_on, c.excision.c_t, c.excision.c_Delta) == (0.75, 0.4, 3.0, 1.0)
-    assert (c.stepping.integrator, c.stepping.courant_number) == (Integrator.SSPRK3, 0.4)
+    assert c.stepping.courant_number == 0.4
     assert (c.stepping.cap_tolerance, c.stepping.cap_efolds) == (1e-6, 3.0)
     assert (c.output.snapshot_spacing, c.output.snapshot_spacing_after) == (0.1, 0.02)
     assert (c.output.flush_every, c.output.monitor_every_step) == (50, True)
@@ -103,7 +102,7 @@ def test_a_saved_error_names_the_file_and_every_bad_key(tmp_path: Path):
             "stepping.courant_number\n  Input should be a valid number",
         ),  # a string in YAML
         ("stepping: {courant_number: 1.5}\n", "stepping.courant_number\n  Input should be less than or equal to 1"),
-        ("stepping: {integrator: euler}\n", "stepping.integrator\n  Input should be 'rk4' or 'ssprk3'"),
+        ("stepping: {integrator: rk4}\n", "stepping.integrator\n  Extra inputs are not permitted"),
         ("shocks: {kernels: 3}\n", "shocks.kernels\n  Input should be 'production' or 'centred'"),
         ("output: {flush_every: 0}\n", "output.flush_every\n  Input should be greater than or equal to 1"),
         ("excision: {eta: 1.0}\n", "excision.eta\n  Input should be less than 1"),
