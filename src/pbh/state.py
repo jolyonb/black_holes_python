@@ -47,22 +47,25 @@ class State:
             raise ValueError(f"need N + 1 face velocities for N cells, got E {self.E.shape} and U {self.U.shape}")
 
 
-def frw_state(geo: Geometry, j_e: int = 0) -> State:
-    """The FRW state on this geometry: `E_c = Delta V_c`, `U_j = X_j`, `W = 0`, `M_e = X_{j_e}^3` (Section 7.3).
+def frw_state(geo: Geometry, j_e: int = 0, hubble: float = 1.0) -> State:
+    """The background state here: `E_c = Delta V_c`, `U_j = h X_j`, `W = 0`, `M_e = X_{j_e}^3` (Section 7.3).
+
+    With `h = 1` it is FRW; with `h = 0` it is the uniform fluid at rest in flat spacetime (Section 7.7).
 
     Args:
         geo: The geometry at the time in question.
         j_e: The index of the excision face, `0` before excision (as in `Layout`); it fixes which face's `X^3` is the
             FRW value of `M_e`.
+        hubble: The background coefficient `h` of `Background`.
 
     Returns:
         The whole FRW state, excised entries included: what is retained is the layout's business.
     """
-    return State(E=geo.dV.copy(), U=geo.X.copy(), W=0.0, M_e=float(geo.X[j_e]) ** 3)
+    return State(E=geo.dV.copy(), U=hubble * geo.X, W=0.0, M_e=float(geo.X[j_e]) ** 3)
 
 
-def frw_rate(geo: Geometry, j_e: int = 0) -> State:
-    """The time derivative of the FRW state on this geometry, `d_xi y_FRW` (Section 7.6).
+def frw_rate(geo: Geometry, j_e: int = 0, hubble: float = 1.0) -> State:
+    """The time derivative of the background state on this geometry, `d_xi y_FRW` (Section 7.6).
 
     `d_xi Delta V_c` is the third line of eq:num:geom, `d_xi X_j` is the map's own velocity, `W` stays zero, and
     `d_xi X_{j_e}^3 = 3 X_{j_e}^2 (d_xi X)_{j_e}` (Section 8.1). All vanish on a static map, where the deviation form
@@ -71,21 +74,23 @@ def frw_rate(geo: Geometry, j_e: int = 0) -> State:
     Args:
         geo: The geometry at the time in question.
         j_e: The index of the excision face, `0` before excision (as in `Layout`).
+        hubble: The background coefficient `h` of `Background`; the background velocity is `h X`.
 
     Returns:
         `d_xi y_FRW` in the shape of a `State`.
     """
     X_e, X_xi_e = float(geo.X[j_e]), float(geo.X_xi[j_e])
-    return State(E=geo.dV_xi.copy(), U=geo.X_xi.copy(), W=0.0, M_e=3.0 * X_e**2 * X_xi_e)
+    return State(E=geo.dV_xi.copy(), U=hubble * geo.X_xi, W=0.0, M_e=3.0 * X_e**2 * X_xi_e)
 
 
-def deviation_from_frw(state: State, geo: Geometry, j_e: int = 0) -> State:
+def deviation_from_frw(state: State, geo: Geometry, j_e: int = 0, hubble: float = 1.0) -> State:
     """The deviation `state - y_FRW` recovered from a whole state, for callers that do not hold the integrator's.
 
     The integrator's deviation (Section 7.6) is exact where this one keeps only what survived adding the deviation to
-    `y_FRW`; the two agree to the rounding of the FRW values, and exactly on the FRW state itself.
+    `y_FRW`; the two agree to the rounding of the FRW values, and exactly on the FRW state itself. `hubble` is the
+    background coefficient `h` of `Background` (0 in flat spacetime, where the background is the fluid at rest).
     """
-    frw = frw_state(geo, j_e)
+    frw = frw_state(geo, j_e, hubble)
     return State(E=state.E - frw.E, U=state.U - frw.U, W=state.W, M_e=state.M_e - frw.M_e)
 
 

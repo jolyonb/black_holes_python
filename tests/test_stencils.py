@@ -9,7 +9,7 @@ import pytest
 from pbh.geometry import Geometry
 from pbh.layout import Layout
 from pbh.maps import IdentityMap, Map, SinhStretch
-from pbh.stencils import StencilWeights
+from pbh.stencils import StencilWeights, theta_limited_faces
 from pbh.types import FloatArray
 
 type Family = Callable[[float], Map]
@@ -145,3 +145,14 @@ def test_the_gradient_in_x_is_only_first_order_at_the_first_faces(family: Family
     e_X = [face_errors(family, N, face)[1] for N in (20, 40, 80)]
     rate_X = np.log2(e_X[0] / e_X[1]), np.log2(e_X[1] / e_X[2])
     assert max(rate_X) < 1.5, f"gradient in X at face {face}: rates {rate_X} (expected first order)"
+
+
+def test_the_theta_limiter_takes_no_ratio_of_a_subnormal_drop():
+    # A cell a subnormal amount off its mean (the far side of a front in flat spacetime decays to ~1e-300) keeps its
+    # profile without forming allowed / drop, which would overflow; a cell that drops too far is scaled to theta rho.
+    delta_rho = np.array([0.0, 0.0])
+    t, delta_in, delta_out = theta_limited_faces(delta_rho, np.array([-1e-310, -1.0]), np.array([1e-310, 0.5]), 0.2)
+    assert t[0] == 1.0
+    assert (delta_in[0], delta_out[0]) == (-1e-310, 1e-310)
+    assert t[1] == 0.8
+    assert 1.0 + delta_in[1] == pytest.approx(0.2, rel=1e-15)

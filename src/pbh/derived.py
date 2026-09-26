@@ -117,7 +117,7 @@ def derive(
     Args:
         state: The evolved unknowns at this stage.
         geo: The geometry at this stage's time.
-        bg: The background at this stage's time (for the FRW `Gammabar^2`).
+        bg: The background at this stage's time (for the FRW `Gammabar^2` and the coefficient `h`).
         eos: The equation of state (for the lapse exponent).
         w: The stencil weights, which carry the layout and average the cell fields to the faces.
         theta: The theta-limiter's fraction, which fixes the outer face's density (Section 7.5).
@@ -135,7 +135,7 @@ def derive(
     N = layout.N
 
     if deviation is None:
-        deviation = deviation_from_frw(state, geo, layout.j_e)
+        deviation = deviation_from_frw(state, geo, layout.j_e, bg.hubble)
 
     rho = np.full(N, np.nan)
     rho[cells] = state.E[cells] / geo.dV[cells]
@@ -201,11 +201,13 @@ def derive(
 
 
 def gammabar_squared(bg: Background, X: FloatArray, U: FloatArray, dU: FloatArray, dM: FloatArray) -> FloatArray:
-    """`Gammabar^2 = Gammabar_FRW^2 + delta U (U + X) - delta M / X` at faces `X > 0`, without the FRW cancellation.
+    """`Gammabar^2 = Gammabar_FRW^2 + delta U (U + h X) - h delta M / X` at faces `X > 0`, without the FRW cancellation.
 
     `U^2 - M / X` rewritten as `(U - X)(U + X) - (M - X^3) / X`, with `dU = U - X` and `dM = M - X^3` the deviations.
+    In flat spacetime (`h = 0`) there is no gravity and `dU = U`, so this is `1 + U^2` exactly.
     """
-    return bg.Gammabar2 + dU * (U + X) - dM / X
+    h = bg.hubble
+    return bg.Gammabar2 + dU * (U + h * X) - h * dM / X
 
 
 def _assert_positive(values: FloatArray, retained: slice, name: str) -> None:

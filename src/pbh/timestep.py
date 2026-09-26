@@ -43,7 +43,7 @@ from fractions import Fraction
 import numpy as np
 
 from pbh.derived import NotHyperbolicError
-from pbh.eos import Background, EquationOfState
+from pbh.eos import Background, EquationOfState, Spacetime
 from pbh.equations import DerivsResult, calc_derivs
 from pbh.geometry import Geometry
 from pbh.kernels import KernelSettings
@@ -129,6 +129,8 @@ class Scheme:
         layout: Which entries are unknowns; its `N` is the number of cells the map is evaluated for.
         outer: The outer closure.
         settings: The kernel switches.
+        spacetime: The spacetime: FRW (production), or flat, the limit without gravity of Section 7.7, whose reference
+            is the fluid at rest. Excision needs gravity, so a flat scheme has no excised cells.
     """
 
     eos: EquationOfState
@@ -136,10 +138,13 @@ class Scheme:
     layout: Layout
     outer: OuterClosure
     settings: KernelSettings
+    spacetime: Spacetime = Spacetime.FRW
     _static_frame: tuple[Geometry, StencilWeights] | None = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         """On a static map the geometry and the weights are computed once here and reused (Section 7.1)."""
+        if self.spacetime is Spacetime.FLAT and self.layout.j_e > 0:
+            raise ValueError("flat spacetime has no gravity, so no black hole to excise")
         cached = (self._geometry_and_weights(0.0)) if self.map.is_static else None
         object.__setattr__(self, "_static_frame", cached)
 
@@ -150,7 +155,7 @@ class Scheme:
     def frame(self, xi: float) -> Frame:
         """The frame at time `xi`: the cached geometry on a static map, a fresh one on a moving map."""
         geo, w = self._static_frame if self._static_frame is not None else self._geometry_and_weights(xi)
-        return Frame(geo=geo, bg=Background.at(self.eos, xi), w=w)
+        return Frame(geo=geo, bg=Background.at(self.eos, xi, self.spacetime), w=w)
 
     def evaluate(self, xi: float, y: FloatArray) -> DerivsResult:
         """The time derivatives at time `xi` for the packed state `y`, with the fields they came from."""
@@ -169,8 +174,9 @@ class Scheme:
         return calc_derivs(state, f.geo, f.bg, self.eos, f.w, self.outer, self.settings, deviation)
 
     def frw(self, xi: float) -> FloatArray:
-        """The packed FRW state at time `xi`."""
-        return self.layout.pack(frw_state(self.frame(xi).geo, self.layout.j_e))
+        """The packed background state at time `xi`: FRW, or the fluid at rest in flat spacetime."""
+        f = self.frame(xi)
+        return self.layout.pack(frw_state(f.geo, self.layout.j_e, f.bg.hubble))
 
     def deviation_rate(self, xi: float, dy: FloatArray) -> FloatArray:
         """The right-hand side in deviation form: the stage's rate of the deviation at `y_FRW + delta y`."""
@@ -421,7 +427,8 @@ def step_cap(eos: EquationOfState, tolerance: float = 1e-5, super_horizon_efolds
     RK4's local error on `y' = lambda_g y` is `(lambda_g Delta xi)^5 / 120` per step, so the relative error of the
     growing amplitude accumulated over a stretch of `T_sh` e-folds is `T_sh lambda_g (lambda_g Delta xi)^4 / 120`;
     requiring it below the tolerance gives `kappa = (120 tol / (lambda_g T_sh))^(1/4)`, `0.13` for radiation at
-    `tol = 1e-5`, `T_sh = 4`, and `0.12` at `T_sh = 6`.
+    `tol = 1e-5`, `T_sh = 4`, and `0.12` at `T_sh = 6`. Flat spacetime has no growing mode, so a flat run passes no
+    cap (`math.inf`) to `step_size`.
     """
     lambda_g = eos.growing_mode_rate
     kappa = (120.0 * tolerance / (lambda_g * super_horizon_efolds)) ** 0.25

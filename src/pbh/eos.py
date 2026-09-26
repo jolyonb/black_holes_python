@@ -20,6 +20,7 @@ test.
 import math
 import warnings
 from dataclasses import dataclass, field
+from enum import Enum
 from fractions import Fraction
 from typing import Self
 
@@ -155,12 +156,28 @@ class EquationOfState:
         return self.w == RADIATION
 
 
+class Spacetime(Enum):
+    """The spacetime a scheme evolves in: FRW (production), or flat, the limit without gravity of Section 7.7.
+
+    With `G -> 0` the expansion goes too (Friedmann ties `H^2` to `G rho`), and what is left is special-relativistic
+    hydrodynamics of `P = w rho` in spherical symmetry on fluid-orthogonal slices of Minkowski spacetime, evolved by
+    the production geometry and kernels unchanged. It is a test of the kernels against the local Taub jump conditions.
+    """
+
+    FRW = "frw"
+    FLAT = "flat"
+
+
 @dataclass(frozen=True)
 class Background:
     """The FRW background at one time `xi`: the scalars every stage of the integrator needs, evaluated once.
 
     Build it with `Background.at(eos, xi)` at the top of a stage and pass it down, so that no exponential is re-derived
     at each place it is used and every consumer sees the same values. Units are `R_H = 1`.
+
+    In flat spacetime (`Spacetime.FLAT`) the reference is the uniform fluid at rest, `rhotilde = 1`, `Utilde = 0`: the
+    scale factor is frozen at one, `H = 0`, `Gammabar^2 = 1`, and the Hubble radius and sound horizon are infinite.
+    `alpha` survives only as a clock, `t = alpha xi`, so the sound speed per unit `xi` is `alpha sqrt(w)`.
 
     Attributes:
         xi: The time `xi = ln(t / t_0)` at which the background is evaluated.
@@ -175,6 +192,9 @@ class Background:
         tau: The sound horizon `c_s / (1 - alpha)`, the distance sound has travelled since `xi = -inf` (eq:lin:tau);
             for radiation `tau = 2 c_s = e^(xi / 2) / sqrt(3)`, and the Hubble radius is the fixed multiple
             `(1 + 3w) / (2 sqrt(w))` of it.
+        hubble: The coefficient `h` of every Hubble, gravity and source term of the stage: 1 on FRW; 0 in flat
+            spacetime, where there is no expansion and no gravity. One number, because the reference state is a fixed
+            point only when gravity and expansion go together.
     """
 
     xi: float
@@ -184,11 +204,23 @@ class Background:
     Gammabar2: float
     c_s: float
     tau: float
+    hubble: float
 
     @classmethod
-    def at(cls, eos: EquationOfState, xi: float) -> Self:
-        """Evaluate the FRW background of Section 3 at time `xi` for the fluid `eos`."""
+    def at(cls, eos: EquationOfState, xi: float, spacetime: Spacetime = Spacetime.FRW) -> Self:
+        """Evaluate the FRW background of Section 3 at time `xi` for the fluid `eos`, or the flat one at rest."""
         alpha = float(eos.alpha)
+        if spacetime is Spacetime.FLAT:
+            return cls(
+                xi=xi,
+                a=1.0,
+                H=0.0,
+                hubble_radius=math.inf,
+                Gammabar2=1.0,
+                c_s=alpha * eos.sqrt_w,
+                tau=math.inf,
+                hubble=0.0,
+            )
         hubble_radius = math.exp((1.0 - alpha) * xi)
         c_s = alpha * eos.sqrt_w * hubble_radius
         return cls(
@@ -199,4 +231,5 @@ class Background:
             Gammabar2=hubble_radius**2,
             c_s=c_s,
             tau=c_s / (1.0 - alpha),
+            hubble=1.0,
         )

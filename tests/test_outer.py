@@ -100,6 +100,7 @@ def inputs_off_frw(W: float = 0.02) -> OuterInputs:
         delta_DU_N=DU_N - 1.0,
         dS_N=2.1,
         c_s=0.35,
+        hubble=1.0,
     )
 
 

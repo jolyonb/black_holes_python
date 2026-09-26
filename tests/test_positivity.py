@@ -541,6 +541,7 @@ def _velocity_row_n(d: Derived, sp: Speeds, deviation: State, case: Case, sch: S
         delta_DU_N=delta_DU_N,
         dS_N=float(geo.dS[N]),
         c_s=c_s,
+        hubble=1.0,
     )
     row = OutgoingWave(PRODUCTION_STRENGTHS).rows(inputs, eos).delta_dU_N
     _, u_minus = characteristic_pair(inputs.delta_U_N, inputs.delta_rho_N_1, X_N, c_s)
@@ -642,8 +643,8 @@ def _pair_n_holds(sch: Scheme, case: Case, res: DerivsResult, rho_hat: float, dr
         if not close(got, want, shifted) or not abs(got - want) <= abs(shifted - want) + shift:
             bad.append(_where(case, "face", N, f"{name}[N] = {got:.6g}, the pair's {want:.6g}"))
     # (b) the face-N speeds, formed by production's own speeds() from the pair
-    sp_pair = speeds(pair, deviation, geo, eos, lay.faces)
-    sp_near = speeds(near, deviation, geo, eos, lay.faces)
+    sp_pair = speeds(pair, deviation, geo, eos, lay.faces, 1.0)
+    sp_near = speeds(near, deviation, geo, eos, lay.faces, 1.0)
     for name in ("a", "Lam"):
         got, want, shifted = (float(getattr(x, name)[N]) for x in (res.speeds, sp_pair, sp_near))
         if not close(got, want, shifted):

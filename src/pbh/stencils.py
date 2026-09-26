@@ -222,6 +222,7 @@ def theta_limited_faces(
     rho = 1.0 + delta_rho
     drop = -np.minimum(np.minimum(off_in, off_out), 0.0)  # the larger drop below the mean, >= 0
     allowed = (1.0 - theta) * rho
-    with np.errstate(divide="ignore", invalid="ignore"):  # where drop is 0 the ratio is not taken
-        t = np.where(drop > allowed, allowed / np.where(drop > 0.0, drop, 1.0), 1.0)
+    # Where no face drops that far t = 1; the ratio is only ever taken of a drop above `allowed`, so it is never a
+    # division by zero, nor by the subnormal drop of a cell barely off the reference, which would overflow.
+    t = np.where(drop > allowed, allowed / np.maximum(drop, allowed), 1.0)
     return t, delta_rho + t * off_in, delta_rho + t * off_out

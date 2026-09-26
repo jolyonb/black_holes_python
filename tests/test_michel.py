@@ -236,6 +236,7 @@ def test_the_held_exterior_holds_its_face_values_and_scales_the_velocity():
         delta_DU_N=0.0,
         dS_N=1e-16,
         c_s=0.3,
+        hubble=1.0,
     )
     rows = held.rows(inputs, RAD)
     # the rows are returned as deviations from the FRW rows, d_xi X and (alpha w X - d_xi X) X^2

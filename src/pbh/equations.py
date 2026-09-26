@@ -54,6 +54,13 @@ static map, and `delta D = D_U delta U`, the velocity gradient less its FRW valu
 exactly on `U = X`. The fluxes are formed as deviations in `kernels.hll_flux` and `outer.base_flux_deviation`.
 Every term is then of the size of the deviation; the stage returns this deviation rate, which the integrator
 advances, and the whole rate, the FRW rate plus it, which the monitors read.
+
+Flat spacetime (Section 7.7's limit without gravity). Every Hubble, gravity and source part above carries the
+background coefficient `h` of `Background`: the Hubble flow `X` in the drift, `cE` and `F_FRW`, the background
+velocity `h X`, the expansion `(1 - alpha) U`, the gravitational term and the source `2 - 3 alpha`. With `h = 1` they
+are as printed; with `h = 0` the reference is the fluid at rest in flat spacetime, `Gammabar^2 = 1 + U^2`, and the rows
+are special-relativistic hydrodynamics of `P = w rho` in spherical symmetry, with the geometry and the kernels
+unchanged. One coefficient, not several: the reference is a fixed point only when gravity and expansion go together.
 """
 
 from dataclasses import dataclass
@@ -83,9 +90,10 @@ class Speeds:
     """The four speeds of eq:num:facefields, at the retained faces (NaN elsewhere).
 
     Attributes:
-        drift: `alpha (<ephi>_j U_j - X_j)`, the fluid's velocity relative to the Hubble flow in the scaled coordinate:
-            zero on FRW, and `Theta_j` on a static map. Formed from the deviation, it gives the other two without
-            cancellation, `Theta = drift - d_xi X` and `cE = alpha w X + (1 + w) drift`.
+        drift: `alpha (<ephi>_j U_j - h X_j)`, the fluid's velocity relative to the Hubble flow in the scaled
+            coordinate (relative to rest in flat spacetime, `h = 0`): zero on the background, and `Theta_j` on a static
+            map. Formed from the deviation, it gives the other two without cancellation, `Theta = drift - d_xi X` and
+            `cE = alpha w h X + (1 + w) drift`.
         Theta: The grid velocity `Theta_j`, the fluid's velocity relative to the moving face.
         cE: The energy-flux velocity `cE_j`, at which energy crosses the face: `(1 + w)` times the transport
             because the energy flux carries the pressure work, minus the Hubble flow.
@@ -125,17 +133,21 @@ class DerivsResult:
     kernels: KernelResult | None
 
 
-def speeds(d: Derived, deviation: State, geo: Geometry, eos: EquationOfState, faces: slice) -> Speeds:
-    """The four speeds of eq:num:facefields from the derived fields and the deviation, by way of the drift."""
+def speeds(d: Derived, deviation: State, geo: Geometry, eos: EquationOfState, faces: slice, hubble: float) -> Speeds:
+    """The four speeds of eq:num:facefields from the derived fields and the deviation, by way of the drift.
+
+    `hubble` is the background coefficient `h` of `Background`, which multiplies the Hubble flow `X`.
+    """
     alpha, w = float(eos.alpha), float(eos.w)
     N = geo.N
     X, ephi_f = geo.X[faces], d.ephi_f[faces]
     drift = np.full(N + 1, np.nan)  # NaN below the retained faces, and so are Theta and cE
-    drift[faces] = alpha * (X * d.delta_ephi_f[faces] + ephi_f * deviation.U[faces])  # <ephi> U - X
+    drift[faces] = alpha * (hubble * X * d.delta_ephi_f[faces] + ephi_f * deviation.U[faces])  # <ephi> U - h X
     a = np.full(N + 1, np.nan)
     a[faces] = alpha * eos.sqrt_w * ephi_f * np.sqrt(d.Gammabar2[faces])
     Theta = drift - geo.X_xi
-    return Speeds(drift=drift, Theta=Theta, cE=alpha * w * geo.X + (1.0 + w) * drift, a=a, Lam=np.abs(Theta) + a)
+    cE = alpha * w * hubble * geo.X + (1.0 + w) * drift
+    return Speeds(drift=drift, Theta=Theta, cE=cE, a=a, Lam=np.abs(Theta) + a)
 
 
 def calc_derivs(
@@ -169,20 +181,21 @@ def calc_derivs(
     layout = w.layout
     N, j_e = layout.N, layout.j_e
     alpha, w_eos = float(eos.alpha), float(eos.w)
+    h = bg.hubble  # 1 on FRW, 0 in flat spacetime: the coefficient of every Hubble, gravity and source term
     cells, faces = layout.cells, layout.faces
 
     if deviation is None:
-        deviation = deviation_from_frw(state, geo, j_e)
+        deviation = deviation_from_frw(state, geo, j_e, h)
     d = derive(state, geo, bg, eos, w, settings.theta, deviation)
-    sp = speeds(d, deviation, geo, eos, faces)
+    sp = speeds(d, deviation, geo, eos, faces, h)
     D_s_rho = w.gradient_s(d.delta_rho)  # the same difference as of rho, without its rounding to the FRW size
-    delta_D = w.velocity_gradient(deviation.U)  # (D_U U)_j - 1: every row of D_U gives exactly 1 on U = X
+    delta_D = w.velocity_gradient(deviation.U)  # (D_U U)_j - h: every row of D_U gives exactly h on U = h X
 
     # The energy flux through the retained faces and the artificial pressure force, as the flux's deviation from the
     # FRW flux: from the kernels of Section 7.7, or, with the kernels off, the centred base flux of eq:num:energy, the
     # physical energy flux relative to the moving face, (cE_j - (d_xi X)_j) X_j^2 <rho>_j, and no force.
     X, X_xi = geo.X, geo.X_xi
-    F_frw = (alpha * w_eos * X - X_xi) * X**2  # the FRW flux, to which the deviation is added for the whole flux
+    F_frw = (alpha * w_eos * h * X - X_xi) * X**2  # the FRW flux, to which the deviation is added for the whole flux
     kernels = None
     if settings.kernels is Kernels.PRODUCTION:
         rho_L, rho_R, delta_rho_L, delta_rho_R, theta_scale = reconstruct_density(
@@ -191,7 +204,7 @@ def calc_derivs(
         J, q, q_f, Q = viscous_pressure(state, geo, d, sp.Lam, eos, w, settings.c_v, settings.cap_tension)
         q_L, q_R = viscous_sides(q, q_f, d.rho, rho_L, rho_R, w.layout, settings.viscous_flux)
         delta_F, Lam_plus, Lam_minus, v_L, v_R = hll_flux(
-            rho_L, rho_R, delta_rho_L, delta_rho_R, q_L, q_R, deviation, geo, sp.Theta, sp.a, eos, w
+            rho_L, rho_R, delta_rho_L, delta_rho_R, q_L, q_R, deviation, geo, sp.Theta, sp.a, eos, w, h
         )
         kernels = KernelResult(
             rho_L=rho_L,
@@ -213,7 +226,7 @@ def calc_derivs(
         delta_F = np.full(N + 1, np.nan)
         f = faces
         delta_F[f] = X[f] ** 2 * (
-            (alpha * w_eos * X[f] - X_xi[f]) * d.delta_rho_f[f] + (1.0 + w_eos) * sp.drift[f] * d.rho_f[f]
+            (alpha * w_eos * h * X[f] - X_xi[f]) * d.delta_rho_f[f] + (1.0 + w_eos) * sp.drift[f] * d.rho_f[f]
         )  # outer.base_flux_deviation, on the arrays
         if j_e == 0:
             delta_F[0] = 0.0
@@ -239,6 +252,7 @@ def calc_derivs(
             delta_DU_N=float(delta_D[N]),
             dS_N=float(geo.dS[N]),
             c_s=bg.c_s,
+            hubble=h,
         ),
         eos,
     )
@@ -249,12 +263,12 @@ def calc_derivs(
     dU = np.full(N + 1, np.nan)
     j = slice(max(j_e, 1), N)
     Xj, ephi_f, rho_f = X[j], d.ephi_f[j], d.rho_f[j]
-    expansion = (1.0 - alpha) * deviation.U[j]  # (1 - alpha) U_j, less the FRW part
+    expansion = (1.0 - alpha) * h * deviation.U[j]  # (1 - alpha) U_j, less the FRW part
     inertia = alpha / (1.0 + w_eos) * ephi_f * d.Gammabar2[j] / rho_f  # alpha / (1 + w) <ephi> Gammabar^2 / <rho>
     pressure = -inertia * (w_eos * D_s_rho[j] + Q[j])  # ... times [w (D_s rho)_j + Q_j], the pressure force
     lapse_mass = d.delta_ephi_f[j] * (d.mt[j] + 3.0 * w_eos * rho_f) + d.delta_m[j] + 3.0 * w_eos * d.delta_rho_f[j]
-    gravity = -0.5 * alpha * Xj * lapse_mass  # alpha / 2 <ephi> X (mt + 3 w <rho>), less its FRW value
-    advection = -sp.drift[j] * (1.0 + delta_D[j]) + X_xi[j] * delta_D[j]  # Theta (D_U U), less its FRW value
+    gravity = -0.5 * alpha * h * Xj * lapse_mass  # alpha / 2 <ephi> X (mt + 3 w <rho>), less its FRW value
+    advection = -sp.drift[j] * (h + delta_D[j]) + X_xi[j] * delta_D[j]  # Theta (D_U U), less its FRW value
     dU[j] = expansion + pressure + gravity + advection
     dU[N] = rows.delta_dU_N
     if j_e == 0:
@@ -265,11 +279,11 @@ def calc_derivs(
     # FRW parts cancel exactly in the algebra, -(F_FRW,c+1 - F_FRW,c) + (2 - 3 alpha) Delta V_c = d_xi Delta V_c.
     dE = np.full(N, np.nan)
     flux_out, flux_in = delta_F[j_e + 1 : N + 1], delta_F[j_e:N]
-    dE[cells] = -(flux_out - flux_in) + eos.energy_source_rate * deviation.E[cells]
-    dM_e = eos.energy_source_rate * deviation.M_e - 3.0 * float(delta_F[j_e]) if j_e > 0 else 0.0
+    dE[cells] = -(flux_out - flux_in) + h * eos.energy_source_rate * deviation.E[cells]
+    dM_e = h * eos.energy_source_rate * deviation.M_e - 3.0 * float(delta_F[j_e]) if j_e > 0 else 0.0
 
     deviation_rate = State(E=dE, U=dU, W=rows.dW, M_e=dM_e)
-    frw = frw_rate(geo, j_e)
+    frw = frw_rate(geo, j_e, h)
     rate = State(E=frw.E + dE, U=frw.U + dU, W=rows.dW, M_e=frw.M_e + dM_e)
     return DerivsResult(
         rate=rate,

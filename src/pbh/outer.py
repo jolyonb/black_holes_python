@@ -56,6 +56,7 @@ class OuterInputs:
         delta_DU_N: The one-sided velocity gradient at the outer face less its FRW value one, `(D_U delta U)_N`.
         dS_N: The difference of mean-square radii across the outer face.
         c_s: The background sound speed at this time.
+        hubble: The background coefficient `h` of `Background`: 1 on FRW, 0 in flat spacetime.
     """
 
     xi: float
@@ -75,6 +76,7 @@ class OuterInputs:
     delta_DU_N: float
     dS_N: float
     c_s: float
+    hubble: float
 
 
 @dataclass(frozen=True)
@@ -93,15 +95,16 @@ class OuterRows:
 
 
 def base_flux_deviation(
-    X: float, X_xi: float, drift: float, rho_f: float, delta_rho_f: float, eos: EquationOfState
+    X: float, X_xi: float, drift: float, rho_f: float, delta_rho_f: float, eos: EquationOfState, hubble: float
 ) -> float:
     """The base flux of eq:num:energy at a face less the FRW flux, `(cE - d_xi X) X^2 <rho> - (alpha w X - d_xi X) X^2`.
 
     With `cE = alpha w X + (1 + w) drift` it is `X^2 [(alpha w X - d_xi X) (<rho> - 1) + (1 + w) drift <rho>]`, every
-    term of the size of the deviation. `equations.py` applies the same formula to arrays.
+    term of the size of the deviation. `equations.py` applies the same formula to arrays. In flat spacetime the Hubble
+    flow `X` carries the background coefficient `hubble = 0`.
     """
     alpha, w = float(eos.alpha), float(eos.w)
-    return X * X * ((alpha * w * X - X_xi) * delta_rho_f + (1.0 + w) * drift * rho_f)
+    return X * X * ((alpha * w * hubble * X - X_xi) * delta_rho_f + (1.0 + w) * drift * rho_f)
 
 
 class OuterClosure(ABC):
@@ -114,17 +117,19 @@ class OuterClosure(ABC):
 
 @dataclass(frozen=True)
 class HeldAtFrw(OuterClosure):
-    """The outer face held at its FRW value, `U_N = X_N` (Section 7.8; a test closure).
+    """The outer face held at the background, `U_N = h X_N` (Section 7.8; a test closure).
 
-    The velocity follows the face, `d_xi U_N = (d_xi X)_N`, which is zero on a static map; the flux through the face
-    is the base flux of eq:num:energy with the face-`N` density; `W` is not used. A held face reflects, so
-    this closure serves only tests whose signals never reach the boundary or are meant to reflect from it.
+    On FRW the face is held at the Hubble flow, `d_xi U_N = (d_xi X)_N`; in flat spacetime it is held at rest,
+    `d_xi U_N = 0`. The flux through the face is the base flux of eq:num:energy with the face-`N` density, relative
+    to the face, so on a static map in flat spacetime the face is a rigid wall with no flux through it; `W` is not
+    used. A held face reflects, so this closure serves only tests whose signals never reach the boundary or are meant
+    to reflect from it.
     """
 
     def rows(self, inputs: OuterInputs, eos: EquationOfState) -> OuterRows:
-        """`d_xi U_N = (d_xi X)_N`, `F_N = (cE_N - (d_xi X)_N) X_N^2 <rho>_N`, `d_xi W = 0`, as deviations."""
+        """`d_xi U_N = h (d_xi X)_N`, `F_N = (cE_N - (d_xi X)_N) X_N^2 <rho>_N`, `d_xi W = 0`, as deviations."""
         i = inputs
-        delta_F_N = base_flux_deviation(i.X_N, i.X_xi_N, i.drift_N, i.rho_f_N, i.delta_rho_f_N, eos)
+        delta_F_N = base_flux_deviation(i.X_N, i.X_xi_N, i.drift_N, i.rho_f_N, i.delta_rho_f_N, eos, i.hubble)
         return OuterRows(delta_dU_N=0.0, delta_F_N=delta_F_N, dW=0.0)
 
 
@@ -230,7 +235,8 @@ class OutgoingWave(OuterClosure):
     absorbing and energy statements of Section 7.5 do not apply.
 
     The outer face must be static, `(d_xi X)_N = 0`: the extra term of eq:lin:bcnonlinear on a moving face is derived
-    but not implemented, and every admissible map keeps its outer face fixed (Section 8.1).
+    but not implemented, and every admissible map keeps its outer face fixed (Section 8.1). The condition is derived
+    about FRW, so the closure refuses flat spacetime.
     """
 
     strengths: PenaltyStrengths = PRODUCTION_STRENGTHS
@@ -239,6 +245,8 @@ class OutgoingWave(OuterClosure):
         """The three rows of eq:num:sat."""
         if inputs.X_xi_N != 0.0:
             raise ValueError("the outgoing-wave closure needs a static outer face, (d_xi X)_N = 0")
+        if inputs.hubble != 1.0:
+            raise ValueError("the outgoing-wave closure is derived about FRW; it has no flat-spacetime form")
         alpha, w = float(eos.alpha), float(eos.w)
         tau = self.strengths
         X_N, c_s = inputs.X_N, inputs.c_s
@@ -255,7 +263,7 @@ class OutgoingWave(OuterClosure):
         delta_dU_N = expansion + gravity + advection + penalty
 
         drift_star = i.drift_N - alpha * i.ephi_f_N * 0.5 * tau.tau_rho * X_N * pen  # the drift of U*_N
-        delta_F_N = base_flux_deviation(X_N, 0.0, drift_star, i.rho_f_N, i.delta_rho_f_N, eos)
+        delta_F_N = base_flux_deviation(X_N, 0.0, drift_star, i.rho_f_N, i.delta_rho_f_N, eos, i.hubble)
 
         if eos.is_radiation:
             gamma_minus, gamma_plus, gamma_0 = boundary_ode_coefficients(c_s, X_N)
@@ -272,7 +280,8 @@ class HeldExterior(OuterClosure):
     The face's density and lapse are the exact steady values, the velocity follows the scaling of the tilde
     variables at a fixed physical radius, `d_xi U_N = (1 - alpha) U_N` (eq:exc:growth), and the flux is the base
     flux with those face values; `W` is not used. The face may move with the pinned map, since the flux is written
-    relative to it. A test closure: it presumes the exterior is known.
+    relative to it. A test closure: it presumes the exterior is known. The exterior is a gravitating flow, so the
+    closure refuses flat spacetime.
 
     Attributes:
         rho_N: The steady density `rho / rho_inf` at the outer face.
@@ -287,6 +296,8 @@ class HeldExterior(OuterClosure):
 
         Near the hole the deviation from FRW is the state itself, so the FRW values are simply subtracted.
         """
+        if inputs.hubble != 1.0:
+            raise ValueError("the held exterior is a steady flow about a hole; it has no flat-spacetime form")
         alpha, w = float(eos.alpha), float(eos.w)
         X_N, X_xi_N = inputs.X_N, inputs.X_xi_N
         cE_N = alpha * ((1.0 + w) * self.ephi_N * inputs.U_N - X_N)

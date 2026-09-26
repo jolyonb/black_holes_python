@@ -18,7 +18,7 @@ beyond `c_v = 1`, none is switched on by a detector, and all reduce to the base 
     No donor velocity has to be chosen, and on FRW it is the centred flux of eq:num:energy. It is returned as its
     deviation from the FRW flux, which the energy rows need (`equations.py`), and the reconstruction works in the
     density's deviation for the same reason.
-(c) The peculiar velocity `upsilon = U - X` is reconstructed to the cell midpoints from both faces with the minmod
+(c) The peculiar velocity `upsilon = U - h X` is reconstructed to the cell midpoints from both faces with the minmod
     limiter, and the limited jump across each cell (eq:num:jump), the full jump at a shock and `O(Delta X^2)` where the
     flow is smooth, is fed back as a viscous pressure on the cells (eq:num:qvisc), normalised like a Rusanov term
     with the signal speed. It enters the velocity equation as the areal force `Q_j = X_j^-2 (D_s (sbar q))_j` and the
@@ -263,7 +263,7 @@ def viscous_pressure(
     cells = layout.cells
     # (c) The peculiar velocity, its slope in each cell, and the minmod-limited slope at each face: the single
     # adjacent difference at the innermost retained face and at the outer face.
-    upsilon = X * d.delta_U  # U - X, from the deviation rather than by subtracting (see `derive`)
+    upsilon = X * d.delta_U  # U - h X, the velocity relative to the background flow, from the deviation (`derive`)
     if j_e == 0:
         upsilon[0] = 0.0  # U_0 = X_0 = 0
     g = np.full(N, np.nan)
@@ -347,6 +347,7 @@ def hll_flux(
     a: FloatArray,
     eos: EquationOfState,
     w: StencilWeights,
+    hubble: float,
 ) -> tuple[FloatArray, FloatArray, FloatArray, FloatArray, FloatArray]:
     """The HLL energy flux through the retained faces `j < N` (eq:num:hll) as its deviation from the FRW flux.
 
@@ -375,7 +376,9 @@ def hll_flux(
         F_j(rho) - F_FRW = X^2 [(alpha w X - d_xi X) (rho - 1) + (1 + w) alpha (e^phi U - X) rho]
                            + alpha (e^phi U - X) X^2 q,          e^phi U - X = X (e^phi - 1) + e^phi delta U,
 
-    in which every term is of the size of the deviation (`equations.py` says why the energy rows need it).
+    in which every term is of the size of the deviation (`equations.py` says why the energy rows need it). In flat
+    spacetime every Hubble flow `X` above carries the coefficient `h = 0`, and the reference flux is the map's
+    transport of the fluid at rest, `-d_xi X X^2`.
 
     Args:
         rho_L: The reconstructed density inside each face.
@@ -390,6 +393,7 @@ def hll_flux(
         a: The sound speed `a_j` at the faces.
         eos: The equation of state.
         w: The stencil weights, for the layout.
+        hubble: The background coefficient `h` of `Background`: 1 on FRW, 0 in flat spacetime.
 
     Returns:
         `(F_j - F_FRW,j, Lambda^+_j, Lambda^-_j, v^L_j, v^R_j)` at the retained faces `j < N`: the flux deviation,
@@ -400,13 +404,13 @@ def hll_flux(
     faces = slice(j_e, N)  # the interior faces and the innermost one; face N belongs to the outer closure
     X, X_xi, dU = geo.X[faces], geo.X_xi[faces], deviation.U[faces]
     alpha, w_eos = float(eos.alpha), float(eos.w)
-    frw_speed = alpha * w_eos * X - X_xi  # the FRW flux is frw_speed X^2
+    frw_speed = alpha * w_eos * hubble * X - X_xi  # the FRW flux is frw_speed X^2
     X2 = X * X
 
     def one_sided(rho: FloatArray, delta_rho: FloatArray, q: FloatArray) -> tuple[FloatArray, FloatArray]:
         """The one-sided flux less the FRW flux, and the chord speed `F_j(rho, q) / (X^2 rho)`."""
         ephi, delta_ephi = eos.lapse_and_deviation(rho, delta_rho)
-        drift = alpha * (X * delta_ephi + ephi * dU)  # alpha (e^phi U - X)
+        drift = alpha * (hubble * X * delta_ephi + ephi * dU)  # alpha (e^phi U - h X)
         chord = frw_speed + (1.0 + w_eos) * drift + drift * q / rho
         return X2 * (frw_speed * delta_rho + (1.0 + w_eos) * drift * rho + drift * q), chord
 

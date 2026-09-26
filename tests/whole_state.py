@@ -8,6 +8,9 @@ show at order one. It shares with the stage only the derived fields and the sten
 written again here, cell by cell in the whole state: the density reconstruction with its theta-limiter, the
 limited jump and the viscous pressure with its tension cap, its face value and its force, and the viscous pressure each
 side of a face carries, so that a slip in any of them shows as a disagreement.
+
+Every Hubble, gravity and source term carries the background coefficient `h = bg.hubble` as the flat limit of Section
+7.7 strikes it: 1 on FRW, where the rows are as printed, and 0 in flat spacetime.
 """
 
 from dataclasses import dataclass
@@ -104,16 +107,17 @@ def viscous(
     j_e: int,
     c_v: float,
     cap: bool,
+    h: float,
 ) -> tuple[FloatArray, FloatArray, FloatArray]:
     """eq:num:jump and eq:num:qvisc cell by cell, with the tension cap: `(q, q_f, Q)`.
 
-    The peculiar velocity `U - X` has a slope in each cell; each face takes the minmod of its two neighbours' (the
+    The peculiar velocity `U - h X` has a slope in each cell; each face takes the minmod of its two neighbours' (the
     single adjacent one at the end faces), and the jump across a cell is the difference of its two faces' profiles at
     the midpoint. `q = -c_v/2 max(Lam) (1 + w) rho / (alpha ephi <Gammabar^2>) J`, then `q >= -w rho` if capped, and
     zero in the last cell. The force is `X^-2 D_s(sbar q)`, and at an excision face the end row over the half cell.
     """
     X, Xm, dX, sbar, dS = geo.X, geo.Xm, geo.dX, geo.sbar, geo.dS
-    ups = U - X
+    ups = U - h * X
     if j_e == 0:
         ups[0] = 0.0
     g = {c: (ups[c + 1] - ups[c]) / dX[c] for c in range(j_e, N)}
@@ -162,12 +166,13 @@ def whole_state_rate(
     N, j_e = layout.N, layout.j_e
     cells, faces = layout.cells, layout.faces
     alpha, w_eos = float(eos.alpha), float(eos.w)
+    h = bg.hubble
     d = derive(state, geo, bg, eos, w, settings.theta)
     X, X_xi, U = geo.X, geo.X_xi, state.U
 
     # eq:num:facefields
-    Theta = alpha * (U * d.ephi_f - X) - X_xi
-    cE = alpha * ((1.0 + w_eos) * d.ephi_f * U - X)
+    Theta = alpha * (U * d.ephi_f - h * X) - X_xi
+    cE = alpha * ((1.0 + w_eos) * d.ephi_f * U - h * X)
     a = alpha * eos.sqrt_w * d.ephi_f * np.sqrt(d.Gammabar2)
     Lam = np.abs(Theta) + a
     D_s_rho = w.gradient_s(d.rho)
@@ -177,15 +182,15 @@ def whole_state_rate(
     F = np.full(N + 1, np.nan)
     if settings.kernels is Kernels.PRODUCTION:
         rho_L, rho_R = reconstruct(d.rho, geo, N, j_e, settings.density_limiter, settings.theta)
-        args = (geo, d.rho, d.ephi, d.Gammabar2, Lam, alpha, w_eos, N, j_e, settings.c_v, settings.cap_tension)
+        args = (geo, d.rho, d.ephi, d.Gammabar2, Lam, alpha, w_eos, N, j_e, settings.c_v, settings.cap_tension, h)
         q, q_f, Q = viscous(U.copy(), *args)
         q_L, q_R = face_pressures(q, q_f, d.rho, rho_L, rho_R, N, j_e, settings.viscous_flux)
         f = slice(j_e, N)
 
         def one_sided(rho: FloatArray, q_side: FloatArray) -> FloatArray:
             ephi = rho**eos.lapse_exponent
-            transport = (alpha * ((1.0 + w_eos) * ephi * U[f] - X[f]) - X_xi[f]) * X[f] ** 2 * rho
-            return transport + alpha * (ephi * U[f] - X[f]) * X[f] ** 2 * q_side[f]
+            transport = (alpha * ((1.0 + w_eos) * ephi * U[f] - h * X[f]) - X_xi[f]) * X[f] ** 2 * rho
+            return transport + alpha * (ephi * U[f] - h * X[f]) * X[f] ** 2 * q_side[f]
 
         F_L, F_R = one_sided(rho_L[f], q_L), one_sided(rho_R[f], q_R)
         with np.errstate(invalid="ignore"):  # 0 / 0 at the origin, whose flux is zero whatever the bounds
@@ -202,7 +207,7 @@ def whole_state_rate(
 
     # the outer face
     if strengths is None:
-        dU_N = float(X_xi[N])
+        dU_N = h * float(X_xi[N])
         F[N] = (cE[N] - X_xi[N]) * X[N] ** 2 * d.rho_f[N]
         dW = 0.0
     else:
@@ -226,9 +231,9 @@ def whole_state_rate(
     j = slice(max(j_e, 1), N)
     inertia = alpha / (1.0 + w_eos) * d.ephi_f[j] * d.Gammabar2[j] / d.rho_f[j]
     dU[j] = (
-        (1.0 - alpha) * U[j]
+        (1.0 - alpha) * h * U[j]
         - inertia * (w_eos * D_s_rho[j] + Q[j])
-        - 0.5 * alpha * d.ephi_f[j] * X[j] * (d.mt[j] + 3.0 * w_eos * d.rho_f[j])
+        - h * 0.5 * alpha * d.ephi_f[j] * X[j] * (d.mt[j] + 3.0 * w_eos * d.rho_f[j])
         - Theta[j] * D_U[j]
     )
     dU[N] = dU_N
@@ -237,6 +242,6 @@ def whole_state_rate(
 
     # eq:num:energy and eq:numbh:mass
     dE = np.full(N, np.nan)
-    dE[cells] = -(F[j_e + 1 : N + 1] - F[j_e:N]) + eos.energy_source_rate * state.E[cells]
-    dM_e = eos.energy_source_rate * state.M_e - 3.0 * float(F[j_e]) if j_e > 0 else 0.0
+    dE[cells] = -(F[j_e + 1 : N + 1] - F[j_e:N]) + h * eos.energy_source_rate * state.E[cells]
+    dM_e = h * eos.energy_source_rate * state.M_e - 3.0 * float(F[j_e]) if j_e > 0 else 0.0
     return WholeRate(E=dE, U=dU, W=dW, M_e=dM_e, F=F)
