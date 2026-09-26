@@ -287,6 +287,8 @@ class EvolutionConfig(Section):
     """The `evolution` section: when the run ends; it starts at the time its initial data carry."""
 
     xi_end: float
+    stop_on_bounce: bool = False
+    """End the run once the core's bounce is established (`collapse.py`), as a threshold study wants."""
 
 
 class RunConfig(Section):

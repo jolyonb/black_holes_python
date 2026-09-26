@@ -38,7 +38,8 @@ uv run pbh summary collapse                                                # wha
 
 The run stops once the mass is read, here at `xi = 7.3`, 3.4 e-folds after formation, with `M_est = 11.14 R_H` and
 an error bar under one per cent. `pbh summary` recomputes everything from the evolution file (nothing derived is
-stored): the quoted reading, the long-run reference, when the bar crossed 5, 1 and 0.3 per cent, a fit of the
+stored): the core before any horizon (formed, bounced or undecided; the peak of the physical central density and the
+resolution there), the quoted reading, the long-run reference, when the bar crossed 5, 1 and 0.3 per cent, a fit of the
 accretion law, and the enclosed-mass cross-check on spheres of fixed physical radius. `--export FILE.json` writes it
 with its series.
 
@@ -64,7 +65,8 @@ configuration or a different one: every snapshot is a restart point, and a resta
 * `stepping`: RK4's Courant number and the step cap.
 * `output`: the snapshot schedule (uniform in `xi` before formation, in physical time after), the flush cadence, and
   whether the full monitor record is written every step or only at snapshots.
-* `evolution`: `xi_end`.
+* `evolution`: `xi_end`, and `stop_on_bounce` to end a sub-threshold run once its core has bounced (the central
+  density halved from its peak and held there for 0.5 in `xi`), as a threshold study wants.
 
 Floats need a digit on both sides of the point and after an exponent sign (`1.0e-5`, not `1e-5`); unknown keys are
 errors, reported with the file and every bad key.
@@ -76,7 +78,7 @@ HDF5, in single-writer multiple-reader mode, with four tables that share nothing
 | table | rows | what |
 |---|---|---|
 | `steps` | one per step | `xi`, `dxi`, what limited the step, refused attempts, and the monitors (conservation, the outer boundary, stability, positivity, resolution) |
-| `events` | one per event | a kind and a JSON payload: `formation`, `switch_on`, `re_excision`, `readout`, `rejection`, `abort`, `end`, ... |
+| `events` | one per event | a kind and a JSON payload: `formation`, `switch_on`, `re_excision`, `readout`, `bounce`, `rejection`, `abort`, `end`, ... |
 | `snapshots` | one per output time | the integrator's variables only (deviations from FRW), from which every derived field is recomputed |
 | `horizon` | one per step | the finder's report: `M_AH`, `X_AH`, the trapping margins, the excision face, the near-zone monitors |
 
@@ -96,8 +98,8 @@ What each column means, and which paper equation it comes from, is in the docstr
 `pbh.horizon` and `pbh.output`; what the code must log for every number in the paper to be regenerated is specified
 alongside the paper (`PRODUCTION_OUTPUT_SPEC.md`).
 
-A run ends in one of three ways, each recorded as the `end` event: completed (at `xi_end`, or when the mass was
-read); aborted, with a named cause (a cell below `5e-13` of the background, where the fluid-orthogonal slicing and
+A run ends in one of three ways, each recorded as the `end` event: completed (at `xi_end`, when the mass was read,
+or when the core bounced); aborted, with a named cause (a cell below `5e-13` of the background, where the fluid-orthogonal slicing and
 the arithmetic both end; a chart failure, named by case; a switch-on transition that cannot fit, naming the
 radius it needs); or interrupted, by an exception (Ctrl-C included), after a final flush.
 
@@ -111,6 +113,7 @@ src/pbh/
   outer                              the outer closure (outgoing-wave penalty, or held at FRW)
   timestep                           RK4 with every stage checked, the Courant step and the step cap
   horizon, excision                  the finder, the switch-on and re-excision, the pinned map's zones
+  collapse                           the core before formation: the peak central density and the bounce
   driver, cli                        the run loop and the command line
   config, initial, profiles          the configuration; initial data (the growing mode of a mass profile)
   records, output, h5                initial and snapshot records; the evolution file

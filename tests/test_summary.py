@@ -16,7 +16,7 @@ from pbh.michel import hole_mass_tilde
 from pbh.monitors import MonitoredStep
 from pbh.output import RunReader, RunWriter
 from pbh.state import State
-from pbh.summary import describe, slope, spheres, summarise
+from pbh.summary import RunSummary, describe, slope, spheres, summarise
 
 N = 40
 CONFIG = RunConfig(grid=GridConfig(N=N, Rtilde_max=8.0, map=MapFamily.UNIFORM), evolution=EvolutionConfig(xi_end=8.0))
@@ -65,7 +65,9 @@ def synthetic_run(directory: Path, flagged: bool) -> Path:
 
 def test_the_summary_recovers_the_hole_the_file_was_made_from(tmp_path: Path):
     reader = RunReader(synthetic_run(tmp_path, flagged=False))
-    first, second = summarise(reader)
+    summary = summarise(reader)
+    assert summary.core is None  # the synthetic file has no steps before formation
+    first, second = summary.epochs
     assert first.xi_start == XI_FORM
     assert first.quoted is not None
     assert first.quoted["M_est"] == 3.0
@@ -107,10 +109,12 @@ def test_the_summary_prints_exports_and_says_when_nothing_formed(tmp_path: Path,
     assert "no reading quoted" in printed  # the second epoch
     assert "extrapolated" in printed
     data = json.loads(export.read_text())
-    assert data[0]["fit"]["efficiency"] == pytest.approx(EFFICIENCY, rel=1e-4)
-    assert len(data[0]["series"]["M_est"]) == len(data[0]["series"]["xi"])
-    assert data[1]["reference"] is None
-    assert describe([]) == "no horizon formed"
+    epochs = data["epochs"]
+    assert epochs[0]["fit"]["efficiency"] == pytest.approx(EFFICIENCY, rel=1e-4)
+    assert len(epochs[0]["series"]["M_est"]) == len(epochs[0]["series"]["xi"])
+    assert epochs[1]["reference"] is None
+    assert data["core"] is None
+    assert describe(RunSummary(None, [])) == "core: no steps before formation\nno horizon formed"
 
 
 def test_a_ladder_off_the_grid_or_without_snapshots_gives_no_spheres(tmp_path: Path):

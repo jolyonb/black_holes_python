@@ -21,10 +21,13 @@ horizon of the paper is the outermost outer boundary. An empty list is the norma
 a trapped outer face is an abort.
 
 The finder also returns the margin `1 + U / Gammabar`, which is `-h / Gammabar` shifted so that it crosses zero
-exactly where a face becomes trapped: the continuous observable of the criticality study, decreasing in the
-amplitude of the perturbation and read every step. Its minimum over the whole grid can sit in an outgoing wave far
-from the centre, so the minimum over the core, the faces inside the radius where the density has fallen to half
-its central value, is reported separately.
+exactly where a face becomes trapped, read every step: the flag of formation. It is not a continuous observable of
+the threshold, since near threshold the core approaches the critical solution, whose compactness stays well below
+one (`collapse.py`). Its minimum over the whole grid can sit in an infalling shell far from the centre, so the
+minimum over the core is reported separately: the core is the central infall region, the faces from the first
+retained one outward while `U <= 0`, which follows the collapsing core down to any scale and contains a trapped
+shell that forms around it. Where the centre expands the core is the first retained face alone. (A core bounded
+by the half-central-density radius shrank to the innermost cells in the central runaway and missed the shell.)
 
 On a state whose trapping function is exact at the faces the root is fourth order in the cell width (second order
 for the linear root); on an evolved state it is second order, the state's own accuracy.
@@ -86,7 +89,8 @@ class HorizonReport:
         M_AH: The apparent-horizon mass in units of `R_H`, eq:numbh:finder; NaN if none.
         residual: `2m/R - 1` at the apparent horizon, with the cumulative mass interpolated there; NaN if none.
         margin: The smallest `1 + U / Gammabar` over the retained faces, and `margin_face` where.
-        core_margin: The same over the core, the faces inside the half-central-density radius, and where.
+        core_margin: The same over the core, the central infall region (`U <= 0` from the first retained face), and
+            where.
         outer_face_trapped: Whether face `N` is trapped, which aborts the run.
     """
 
@@ -170,9 +174,9 @@ def find_horizons(
     margin = np.full(N + 1, np.nan)
     margin[faces] = 1.0 + state.U[faces] / Gammabar
     k = int(np.nanargmin(margin))
-    half = np.flatnonzero(d.rho[layout.cells] <= 0.5 * d.rho[j_e])
-    core_faces = slice(j_e, j_e + int(half[0]) + 1) if half.size else faces  # the faces of the core's cells
-    k_core = int(np.nanargmin(margin[core_faces])) + j_e
+    expanding = np.flatnonzero(state.U[faces] > 0.0)
+    core_end = max(int(expanding[0]), 1) if expanding.size else N + 1 - j_e  # the central infall region, at least one
+    k_core = int(np.nanargmin(margin[j_e : j_e + core_end])) + j_e
 
     return HorizonReport(
         h=h,

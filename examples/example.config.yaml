@@ -58,3 +58,4 @@ output:
 
 evolution:
   xi_end: 6.0                   # the run starts at the time its initial data carry
+  stop_on_bounce: false         # end the run once the core has bounced (central density halved and held 0.5 in xi)

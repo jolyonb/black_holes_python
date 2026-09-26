@@ -86,7 +86,7 @@ def test_frw_has_no_trapped_face_no_horizon_and_a_margin_of_one_at_the_origin():
     assert np.isnan(report.M_AH)
     assert np.isnan(report.residual)
     assert (report.margin, report.margin_face) == (1.0, 0)  # face 0: U = 0
-    assert report.core_margin == 1.0  # the density never falls to half: the core is the whole grid
+    assert report.core_margin == 1.0  # FRW expands everywhere: the core is the origin alone
     assert not report.outer_face_trapped
     assert np.all(report.h[1:] > 0.0)
     near = near_zone(state, d, geo, report, RAD, layout, 0.5)
@@ -208,7 +208,7 @@ def test_a_trapped_outer_face_is_reported():
     assert report.apparent is None  # ... so there is no apparent horizon on it
 
 
-def test_the_core_margin_is_over_the_faces_inside_the_half_density_radius():
+def test_the_core_margin_is_over_the_central_infall_region():
     def core(X: FloatArray) -> FloatArray:
         return 1.0 + 3.0 * np.exp(-(X**2) / 0.25)  # central density 4
 
@@ -217,20 +217,28 @@ def test_the_core_margin_is_over_the_faces_inside_the_half_density_radius():
     geo = Geometry.of(*m.radii(XI, N))
     X = geo.X[: N + 1]
     E = cell_contents(lambda Xq: core(Xq) - 1.0, geo)
-    U = X * (0.2 - 0.6 * np.exp(-((X - 1.5) ** 2)))  # slow infall, strongest at X = 1.5, well outside the core
-    state = State(E=E, U=U, W=0.0)
     bg = Background.at(RAD, XI)
     layout = Layout(N)
-    d = derive(state, geo, bg, RAD, StencilWeights.of(geo, layout), THETA)
-    report = find_horizons(state, d, geo, bg, RAD, m, layout, XI)
-    margin = 1.0 + state.U / np.sqrt(d.Gammabar2)
-    assert report.margin == pytest.approx(np.min(margin[1:]))
-    assert 1.2 < X[report.margin_face] < 1.9  # the global minimum sits in the infalling shell
-    first_half = int(np.flatnonzero(d.rho <= 0.5 * d.rho[0])[0])  # the finder's core: cells up to the half density
-    assert 0.4 < X[first_half] < 0.7
-    assert report.core_margin == pytest.approx(np.min(margin[: first_half + 1]))
-    assert report.core_margin_face <= first_half
-    assert report.core_margin > report.margin
+
+    def report_with(U: FloatArray) -> tuple[HorizonReport, FloatArray]:
+        state = State(E=E, U=U, W=0.0)
+        d = derive(state, geo, bg, RAD, StencilWeights.of(geo, layout), THETA)
+        return find_horizons(state, d, geo, bg, RAD, m, layout, XI), 1.0 + state.U / np.sqrt(d.Gammabar2)
+
+    # infall at the centre, expansion beyond X ~ 0.9, and a faster infalling shell at X = 2.5
+    U = X * (0.2 - 0.5 * np.exp(-(X**2) / 0.5) - 0.6 * np.exp(-((X - 2.5) ** 2) / 0.1))
+    report, margin = report_with(U)
+    end = int(np.flatnonzero(U > 0.0)[0])  # the first expanding face: the core is the faces before it
+    assert 0.6 < X[end] < 1.1
+    assert report.margin == pytest.approx(np.min(margin))
+    assert 2.2 < X[report.margin_face] < 2.8  # the global minimum sits in the outer shell ...
+    assert report.core_margin == pytest.approx(np.min(margin[:end]))  # ... the core's in the central infall
+    assert report.core_margin_face < end
+    assert report.margin < report.core_margin < 1.0
+    # an expanding centre: the core is the first face alone, the origin, whose margin is one
+    report, _ = report_with(X * (0.2 - 0.6 * np.exp(-((X - 2.5) ** 2) / 0.1)))
+    assert (report.core_margin, report.core_margin_face) == (1.0, 0)
+    assert report.margin < 1.0
 
 
 # --- a real collapse: formation is an event, the horizon table fills, the margin history is recorded ---
@@ -291,8 +299,8 @@ def test_a_collapse_records_its_formation_and_its_horizon_history(tmp_path: Path
     core_margin = np.asarray(table["core_margin"], dtype=np.float64)
     assert core_margin[0] > 0.9  # far from trapped at the start ...
     assert core_margin[first - 1] < 0.6  # ... falling toward formation
-    assert margin[first - 1] > 0.0 > margin[first]  # the global margin crosses zero at formation: the trapped
-    assert core_margin[first] > 0.0  # region first appears as a thin shell outside the half-density core
+    assert margin[first - 1] > 0.0 > margin[first]  # the global margin crosses zero at formation, and the core's
+    assert core_margin[first] == margin[first]  # with it: the trapped shell lies in the central infall region
     # the snapshots carry the formation time from then on, and the schedule switched to its post-formation branch
     infos = reader.snapshots
     after = [s for s in infos if s.xi > formation.xi]

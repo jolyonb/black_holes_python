@@ -1,9 +1,14 @@
-"""What a finished run says about its black hole, computed from its evolution file (paper Section 8.5).
+"""What a finished run says about its black hole, or about its core, computed from its evolution file (Section 8.5).
 
 Nothing here is stored. The run records its raw series, the apparent-horizon mass in the horizon table every step and
 the fields in its snapshots, and the one decision it made, the `readout` event; everything below is recomputed from
-those with the tools the run used, so it can be recomputed with other settings too. For each epoch of the run (the
-stretch after a formation, or after a larger trapped region engulfed the hole):
+those with the tools the run used, so it can be recomputed with other settings too.
+
+First, for every run, the core before any horizon (`collapse.py`): the outcome (formed, bounced, or undecided when
+the run ended before either), the peak of the physical central density and when, the smallest core margin, and the
+resolution of the core at the peak, from the step row nearest it that carries the second-tier monitors.
+
+Then, for each epoch of the run (the stretch after a formation, or after a larger trapped region engulfed the hole):
 
 * the read-out series of `readout.py`, and the reading the run quoted if it quoted one;
 * the reference of a long run: the mean of `M_est` over the last half e-fold and its spread there, the
@@ -29,6 +34,7 @@ from typing import Any
 
 import numpy as np
 
+from pbh.collapse import CollapseHistory, collapse_history
 from pbh.eos import EquationOfState
 from pbh.output import RunReader
 from pbh.readout import Readings, ReadoutSettings, first_reading, readings, resample
@@ -251,7 +257,74 @@ def spheres(
     return tuple(out), extrapolated
 
 
-def summarise(reader: RunReader) -> list[EpochSummary]:
+@dataclass(frozen=True)
+class CoreResolution:
+    """The resolution of the core near the peak of the central density, from one step row's second-tier monitors.
+
+    Attributes:
+        xi: The time of that row, the nearest to the peak that carries them.
+        core_cells: The cells inside the half-central-density radius (under about ten, distrust the peak).
+        viscous_over_pressure: The largest artificial over physical pressure in the core.
+        clipped_in_core: The cells in the core whose density slope the limiter clipped.
+    """
+
+    xi: float
+    core_cells: int
+    viscous_over_pressure: float
+    clipped_in_core: int
+
+
+@dataclass(frozen=True)
+class CoreSummary:
+    """The core before any horizon: the outcome, its history and the resolution at the peak."""
+
+    outcome: str
+    history: CollapseHistory
+    resolution: CoreResolution | None
+
+
+@dataclass(frozen=True)
+class RunSummary:
+    """The whole run: the core before formation (`None` if no step preceded it) and every epoch after."""
+
+    core: CoreSummary | None
+    epochs: list[EpochSummary]
+
+
+def core_summary(reader: RunReader) -> CoreSummary | None:
+    """The core before the first formation, from the step record and the horizon table joined on the step."""
+    steps, horizon = reader.steps, reader.horizon
+    step = np.asarray(steps["step"], dtype=np.int64)
+    xi = np.asarray(steps["xi"], dtype=float)
+    formed = [e.xi for e in reader.events if e.kind == "formation"]
+    before = xi < formed[0] if formed else np.ones(xi.size, dtype=bool)
+    if not np.any(before):  # no steps at all, or none before formation (a run restarted after it)
+        return None
+    h_step = np.asarray(horizon["step"], dtype=np.int64)
+    margin = np.asarray(horizon["core_margin"], dtype=float)[np.searchsorted(h_step, step[before])]
+    rho_0 = np.asarray(steps["rho_0"], dtype=float)[before]
+    history = collapse_history(xi[before], rho_0, margin)
+    outcome = "formed" if formed else "bounced" if history.bounce_xi is not None else "undecided"
+    resolution = None
+    cells = np.asarray(steps["core_cells"], dtype=np.int64)
+    carried = np.flatnonzero(before & (cells >= 0))
+    if carried.size and math.isfinite(history.peak_xi):
+        k = int(carried[np.argmin(np.abs(xi[carried] - history.peak_xi))])
+        resolution = CoreResolution(
+            xi=float(xi[k]),
+            core_cells=int(cells[k]),
+            viscous_over_pressure=float(steps["viscous_over_pressure_core"][k]),
+            clipped_in_core=int(steps["clipped_in_core"][k]),
+        )
+    return CoreSummary(outcome, history, resolution)
+
+
+def summarise(reader: RunReader) -> RunSummary:
+    """The core before formation and every epoch of the run, summarised."""
+    return RunSummary(core_summary(reader), epoch_summaries(reader))
+
+
+def epoch_summaries(reader: RunReader) -> list[EpochSummary]:
     """Every epoch of the run, summarised; an empty list if no horizon formed."""
     config = reader.config
     eos = config.fluid.build()
@@ -270,10 +343,15 @@ def summarise(reader: RunReader) -> list[EpochSummary]:
     return out
 
 
-def as_json(summaries: list[EpochSummary]) -> list[dict[str, Any]]:
-    """The summaries as plain data, the series included, for export and plotting."""
+def as_json(summary: RunSummary) -> dict[str, Any]:
+    """The summary as plain data, the series included, for export and plotting."""
+    core = summary.core
+    core_json = None
+    if core is not None:
+        resolution = None if core.resolution is None else core.resolution.__dict__
+        core_json = {"outcome": core.outcome, "history": core.history.__dict__, "resolution": resolution}
     result: list[dict[str, Any]] = []
-    for s in summaries:
+    for s in summary.epochs:
         r = s.readings
         series = {name: getattr(r, name).tolist() for name in r.__dataclass_fields__}
         result.append(
@@ -287,7 +365,7 @@ def as_json(summaries: list[EpochSummary]) -> list[dict[str, Any]]:
                 "series": series,
             }
         )
-    return result
+    return {"core": core_json, "epochs": result}
 
 
 def reference_json(ref: Reference) -> dict[str, Any]:
@@ -295,12 +373,35 @@ def reference_json(ref: Reference) -> dict[str, Any]:
     return {**ref.__dict__, "bar_below": {str(level): v for level, v in ref.bar_below.items()}}
 
 
-def describe(summaries: list[EpochSummary]) -> str:
-    """A readable account of the summaries."""
-    if not summaries:
-        return "no horizon formed"
-    lines: list[str] = []
-    for n, s in enumerate(summaries):
+def describe_core(core: CoreSummary | None) -> list[str]:
+    """A readable account of the core before formation."""
+    if core is None:
+        return ["core: no steps before formation"]
+    h = core.history
+    lines = [f"core: {core.outcome}" + (f" (established at xi = {h.bounce_xi:.4f})" if h.bounce_xi is not None else "")]
+    if math.isfinite(h.peak_xi):
+        lines.append(
+            f"  central density peaked at xi = {h.peak_xi:.4f}: rhotilde_0 = {h.peak_rho_tilde:.4g}, physical "
+            f"{h.peak_rho_phys:.4g} of the background at xi = 0"
+        )
+    else:
+        lines.append("  central density never rose against the background")
+    lines.append(f"  smallest core margin {h.margin_min:.4f} at xi = {h.margin_min_xi:.4f}")
+    r = core.resolution
+    if r is not None:
+        lines.append(
+            f"  resolution at xi = {r.xi:.4f}: {r.core_cells} cells to half the central density, viscous/pressure "
+            f"{r.viscous_over_pressure:.2g}, {r.clipped_in_core} clipped in the core"
+        )
+    return lines
+
+
+def describe(summary: RunSummary) -> str:
+    """A readable account of the summary."""
+    lines = describe_core(summary.core)
+    if not summary.epochs:
+        return "\n".join([*lines, "no horizon formed"])
+    for n, s in enumerate(summary.epochs):
         lines.append(f"epoch {n}: formed at xi = {s.xi_start:.4f}")
         if s.quoted is not None:
             q = s.quoted

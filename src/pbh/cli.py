@@ -150,10 +150,10 @@ def summary(
     dir: Directory = Path(),
 ) -> None:
     """What the run says about its black hole, recomputed from its evolution file (`summary.py`); nothing is stored."""
-    summaries = summarise(RunReader(RunPaths.of(dir, name).evolution))
-    print(describe(summaries))
+    summary = summarise(RunReader(RunPaths.of(dir, name).evolution))
+    print(describe(summary))
     if export is not None:
-        export.write_text(json.dumps(as_json(summaries), indent=1))
+        export.write_text(json.dumps(as_json(summary), indent=1))
 
 
 def report(result: RunResult) -> None:

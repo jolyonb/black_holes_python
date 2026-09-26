@@ -20,7 +20,11 @@ sits on the grid that gives, saves the configuration with its provenance, and th
    `READOUT_CHECK` in `xi` from the floor on the read-out is tried on the epoch's series; the first reading with its
    bar below the target is recorded as a `readout` event, with the near-zone monitors beside the Michel values, the
    outflow margin, the minimum lapse and a flag if the efficiency is not yet near Michel's, and the run ends there
-   if the configuration says so.
+   if the configuration says so;
+6. watch the core before formation (`collapse.py`): the central density and the core margin of every step are
+   collected, and every `READOUT_CHECK` in `xi` tested for a bounce; one established is recorded as a `bounce` event
+   with the peak of the physical central density and the smallest core margin, and the run ends there if the
+   configuration says so. The watch starts afresh on a restart.
 
 The initial state is examined the same way before the first step, so that a run restarted from a snapshot makes
 the decisions the uninterrupted run made at that state; a restart hands the run its epoch's history of `M_AH` from
@@ -35,6 +39,7 @@ event naming what failed, writes a snapshot of the last good state, and ends the
 far-zone radius of the monitors is read off the initial data.
 """
 
+import dataclasses
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -42,6 +47,7 @@ from typing import Any, Literal
 
 import numpy as np
 
+from pbh.collapse import CoreWatch
 from pbh.config import RunConfig, save
 from pbh.derived import NotHyperbolicError
 from pbh.equations import DerivsResult
@@ -228,6 +234,7 @@ class Run:
     F_N_integral: float = 0.0
     last_refusal: list[str] = field(default_factory=lambda: list[str]())
     epoch: Epoch | None = None
+    core: CoreWatch = field(default_factory=CoreWatch)
 
     @property
     def layout(self) -> Layout:
@@ -322,6 +329,22 @@ class Run:
                 self.epoch = Epoch(xi_start=self.xi_form if self.xi_form is not None else self.xi)
             self.epoch.add(self.xi, report.M_AH, a.X)
         return row
+
+    def watch_core(self, rho_0: float, row: HorizonRow) -> bool:
+        """Before formation, add the step to the core's series and test it for a bounce when due; whether to stop."""
+        core = self.core
+        if self.xi_form is not None or core.bounced:
+            return False
+        core.add(self.xi, rho_0, row.core_margin)
+        if self.xi < core.checked + READOUT_CHECK:
+            return False
+        core.checked = self.xi
+        history = core.history()
+        if history.bounce_xi is None:
+            return False
+        core.bounced = True
+        self.event("bounce", dataclasses.asdict(history))
+        return self.config.evolution.stop_on_bounce
 
     def read_mass(self, row: HorizonRow) -> bool:
         """Try the read-out on the epoch's series when due, and record it once read; whether the run should stop."""
@@ -544,7 +567,8 @@ def run(config: RunConfig, initial: StateRecord, paths: RunPaths, history: Epoch
             read = r.read_mass(r.record_horizon(report, result, face))
             next_snapshot = next_snapshot_time(r.xi, r.xi_form, output)
             at_snapshot = True
-            while r.xi < xi_end and not read:
+            bounced = False
+            while r.xi < xi_end and not read and not bounced:
                 # 1. the step: Courant or cap, clipped to land exactly on the next snapshot time or the end
                 choice = step_size(result, r.sch.frame(r.xi).geo, r.layout, config.stepping.courant_number, cap)
                 dxi, limit = choice.dxi, choice.limit.value
@@ -599,7 +623,9 @@ def run(config: RunConfig, initial: StateRecord, paths: RunPaths, history: Epoch
                 # 4. examine the state arrived at; the horizon row, the snapshot, the flush
                 formed_before = r.xi_form is not None
                 result, report, face = r.examine(state_new, result)
-                read = r.read_mass(r.record_horizon(report, result, face))
+                horizon_row = r.record_horizon(report, result, face)
+                read = r.read_mass(horizon_row)
+                bounced = r.watch_core(row.rho_0, horizon_row)
                 if at_snapshot:
                     r.snapshot()
                 if at_snapshot or (r.xi_form is not None and not formed_before):
@@ -608,7 +634,8 @@ def run(config: RunConfig, initial: StateRecord, paths: RunPaths, history: Epoch
                     out.flush()
             if not at_snapshot:
                 r.snapshot()  # the end is always a snapshot, to continue from
-            out.close(r.step, r.xi, "completed", **({"reason": "the mass was read"} if read else {}))
+            reason = {"reason": "the mass was read"} if read else {"reason": "the core bounced"} if bounced else {}
+            out.close(r.step, r.xi, "completed", **reason)
             return RunResult(status="completed", steps=r.step, xi=r.xi, paths=paths)
         except NotHyperbolicError as failure:
             abort = AbortError(failure.field, failure.index, failure.value, str(failure))
