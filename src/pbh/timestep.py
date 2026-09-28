@@ -200,6 +200,9 @@ class Scheme:
     _rust: RustStage | None = field(init=False, repr=False, compare=False)
     _static_frame: Frame | None = field(init=False, repr=False, compare=False)
     _frames: dict[float, Frame] = field(init=False, default_factory=dict[float, Frame], repr=False, compare=False)
+    _stage_frames: dict[float, tuple[StageFrame, Background]] = field(
+        init=False, default_factory=dict[float, tuple["StageFrame", Background]], repr=False, compare=False
+    )
 
     def __post_init__(self) -> None:
         """On a static map the frame is built once here, and every later frame shares all of it but `bg`.
@@ -306,6 +309,48 @@ class Scheme:
             state, f.geo, f.bg, self.eos, f.w, self.outer, self.settings, deviation=deviation, reference=f.reference
         )
 
+    def rust_attempt(
+        self,
+        stages: list[Stage],
+        times: list[float],
+        arrive: float,
+        dy: FloatArray,
+        dxi: float,
+        a: tuple[tuple[float, ...], ...],
+        b: tuple[float, ...],
+    ) -> Attempt:
+        """`checked_step`'s attempt on the Rust engine, from the first stage `stages[0]` (`pbh.rust_engine`).
+
+        The stages at `times` and the result at `arrive` are formed and checked in Rust, with the tableau `a`, `b`.
+        """
+        assert self._rust is not None
+        arrival = self.frame(arrive)  # held whole: the driver reads the state arrived at through it
+        assert arrival.rust is not None
+        at = [(arrival.rust, arrival.bg) if t == arrive else self._stage_time(t) for t in times]
+        return self._rust.attempt(stages, times, at, (arrival.rust, arrival.bg), dy, dxi, a, b)
+
+    def _stage_time(self, xi: float) -> tuple[StageFrame, Background]:
+        """The Rust engine's frame and the background at `xi`, for a stage inside a step and nothing else.
+
+        A frame held for this time, or the static map's, is used as it is. Otherwise only the Rust frame is built, not
+        the Python's `Geometry`, `StencilWeights` and `FrwReference`, which nothing reads at a time inside a step; it is
+        kept, as frames are, for the last `FRAMES_KEPT` such times (a refused step retries at other times).
+        """
+        assert self._rust is not None
+        if xi in self._frames or self._static_frame is not None:
+            frame = self.frame(xi)
+            assert frame.rust is not None
+            return frame.rust, frame.bg
+        kept = self._stage_frames.get(xi)
+        if kept is None:
+            X, X_xi = self.map.radii(xi, self.layout.N)
+            bg = Background.at(self.eos, xi, self.spacetime)
+            kept = (self._rust.stage_frame(X, X_xi, bg.hubble), bg)
+            if len(self._stage_frames) >= FRAMES_KEPT:
+                del self._stage_frames[next(iter(self._stage_frames))]
+            self._stage_frames[xi] = kept
+        return kept
+
     def whole_state(self, xi: float, deviation: State) -> State:
         """The state `y_FRW + delta y` at time `xi`, from the unpacked deviation: the one recipe for it.
 
@@ -347,12 +392,52 @@ def advance(scheme: Scheme, xi: float, dy: FloatArray, dxi: float) -> FloatArray
 
 
 @dataclass(frozen=True)
+class StageFluxes:
+    """The scalars of a stage that the step's bookkeeping needs; free to collect.
+
+    The total mass obeys `d_xi M_total = (2 - 3 alpha) M_total - 3 F_N` exactly. The outer face is static, so the FRW
+    parts of both sides cancel identically, `(2 - 3 alpha) X_N^3 = 3 alpha w X_N^3`, and the bookkeeping is checked in
+    the deviations, `d_xi delta M_total = (2 - 3 alpha) delta M_total - 3 delta F_N`, where it is limited by the
+    rounding of the deviation rather than of `M_total` itself.
+
+    Attributes:
+        F_N: The outer flux; `F_je` the flux through the excision face (`0` unexcised).
+        M_total: The total mass in the domain, `M_N = M_e + 3 sum E_c`.
+        delta_F_N: The outer flux less its FRW value.
+        delta_M_total: The total mass less its FRW value `X_N^3`, the cumulative sum of the deviations.
+    """
+
+    F_N: float
+    F_je: float
+    M_total: float
+    delta_F_N: float
+    delta_M_total: float
+
+    @classmethod
+    def of(cls, result: DerivsResult, layout: Layout) -> StageFluxes:
+        """Collect the stage's fluxes and total mass."""
+        N, j_e = layout.N, layout.j_e
+        d = result.derived
+        return cls(
+            F_N=float(result.F[N]),
+            F_je=float(result.F[j_e]) if j_e > 0 else 0.0,
+            M_total=float(d.M[N]),
+            delta_F_N=float(result.delta_F[N]),
+            delta_M_total=float(d.delta_M[N]),
+        )
+
+
+@dataclass(frozen=True)
 class Stage:
-    """One stage of a step: its time, the packed state it was evaluated on, and the result."""
+    """One stage of a step as the step's record reads it: its time, its fluxes, and its packed deviation rate `k`.
+
+    The stage's whole result is not kept: the record needs only these (`StageFluxes`, and the last stage's rate for
+    RK4's companion estimate), and on the Rust engine the stages after the first never become Python objects.
+    """
 
     xi: float
-    y: FloatArray
-    result: DerivsResult
+    fluxes: StageFluxes
+    k: FloatArray
 
 
 # --- the checked step: every stage and the result inside the hyperbolic domain, or a smaller step (Section 7.6) ---
@@ -430,6 +515,11 @@ def checked_step(
     there exactly, as a restart from that output time evaluates it, rather than at the rounded `xi + dxi`.
     """
     c, a, b = RK4.floats
+    layout = scheme.layout
+    stages = [Stage(xi=xi, fluxes=StageFluxes.of(first, layout), k=layout.pack(first.deviation_rate))]
+    arrive = xi + dxi if land is None else land
+    if scheme.engine is Engine.RUST:
+        return scheme.rust_attempt(stages, [xi + c_i * dxi for c_i in c[1:]], arrive, dy, dxi, a, b)
 
     def evaluate(xi_i: float, dy_i: FloatArray, stage: int) -> tuple[DerivsResult | None, StepFailure | None]:
         where = "stage" if stage else "result"
@@ -441,21 +531,20 @@ def checked_step(
             what = e.field if math.isfinite(e.value) else "nonfinite"
             return None, StepFailure(FailureCause(f"{where}_{what}"), stage, e.index, e.value)
 
-    stages: list[Stage] = []
-    k: list[FloatArray] = []
     for n, (c_i, a_i) in enumerate(zip(c, a, strict=True)):
+        if n == 0:
+            continue  # the accepted state's, held by the caller
         dy_i = dy.copy()
-        for a_ij, k_j in zip(a_i, k, strict=True):
+        for a_ij, stage in zip(a_i, stages, strict=True):
             if a_ij:
-                dy_i += dxi * a_ij * k_j
+                dy_i += dxi * a_ij * stage.k
         xi_i = xi + c_i * dxi
-        result, failure = (first, None) if n == 0 else evaluate(xi_i, dy_i, n + 1)
+        result, failure = evaluate(xi_i, dy_i, n + 1)
         if result is None:
             return Attempt(None, stages, None, failure)
-        stages.append(Stage(xi=xi_i, y=scheme.frw(xi_i) + dy_i, result=result))
-        k.append(scheme.layout.pack(result.deviation_rate))
-    dy_new = dy + dxi * sum(b_i * k_i for b_i, k_i in zip(b, k, strict=True))
-    result, failure = evaluate(xi + dxi if land is None else land, dy_new, 0)
+        stages.append(Stage(xi=xi_i, fluxes=StageFluxes.of(result, layout), k=layout.pack(result.deviation_rate)))
+    dy_new = dy + dxi * sum(b_i * stage.k for b_i, stage in zip(b, stages, strict=True))
+    result, failure = evaluate(arrive, dy_new, 0)
     return Attempt(dy_new if result is not None else None, stages, result, failure)
 
 

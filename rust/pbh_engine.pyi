@@ -330,6 +330,48 @@ def stage_state(
     """One stage at the packed whole state `y` (`Scheme.evaluate`); raises as `stage_deviation` does."""
 
 @final
+class AttemptOutput:
+    """One checked attempt's outcome (`pbh.timestep.Attempt`)."""
+
+    @property
+    def stages(self) -> list[tuple[float, float, float, float, float, FloatArray]]:
+        """Every stage after the first that completed: `(F_N, F_je, M_total, delta_F_N, delta_M_total, k)`."""
+
+    @property
+    def dy(self) -> FloatArray | None:
+        """The deviation arrived at, or `None` if the attempt was refused."""
+
+    @property
+    def result(self) -> StageOutput | None:
+        """The stage at the deviation arrived at, or `None` if the attempt was refused."""
+
+    @property
+    def failure(self) -> tuple[str, int, int, float] | None:
+        """The refusal `(cause, stage, index, value)`, `cause` a `FailureCause` value, or `None`."""
+
+def checked_step(
+    settings: StageSettings,
+    frames: list[StageFrame],
+    backgrounds: list[tuple[float, float, float]],
+    arrive: StageFrame,
+    arrive_background: tuple[float, float, float],
+    dy: FloatArray,
+    dxi: float,
+    k1: FloatArray,
+    a: list[list[float]],
+    b: list[float],
+) -> AttemptOutput:
+    """One checked attempt (`timestep.checked_step`) from `dy` and the first stage's packed rate `k1`.
+
+    The stages after the first are evaluated on `frames`, each with its background `(Gammabar2, c_s, hubble)`, and the
+    result on `arrive`.
+
+    Raises:
+        ValueError: As the outer closure raises it, or if the frames, backgrounds, tableau or vectors do not match.
+        TypeError: If a vector is not a one-dimensional native float64 array.
+    """
+
+@final
 class TrappingOutput:
     """The horizon finder's numbers on one slice (`pbh.horizon.Trapping`)."""
 

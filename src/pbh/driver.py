@@ -66,7 +66,7 @@ from pbh.horizon import HORIZON, FaceValues, HorizonReport, HorizonRow, find_hor
 from pbh.layout import Layout
 from pbh.maps import Zone
 from pbh.michel import michel_flow
-from pbh.monitors import MonitoredStep, StageFluxes, StepInputs, monitor_step
+from pbh.monitors import MonitoredStep, StepInputs, monitor_step
 from pbh.output import RunReader, RunWriter, next_snapshot_time, run_map
 from pbh.readout import Epoch, first_reading, readings, starts_new_epoch
 from pbh.records import StateRecord, shell_volumes
@@ -77,6 +77,7 @@ from pbh.timestep import (
     Engine,
     Frame,
     Scheme,
+    StageFluxes,
     StepAbortError,
     StepFailure,
     advance_checked,
@@ -646,7 +647,7 @@ def run(
                 state_new = r.sch.whole_state(xi_new, layout.unpack(dy_new))
                 # 3. the record of the step
                 r.step += 1
-                change = layout.pack(result.deviation_rate) - layout.pack(stages[-1].result.deviation_rate)
+                change = layout.pack(result.deviation_rate) - stages[-1].k
                 rate_change = float(np.max(np.abs(change)))
                 r.xi, r.dy = xi_new, dy_new
                 at_snapshot = r.xi >= next_snapshot  # exactly on it when clipped, the first step past it when not
@@ -662,7 +663,7 @@ def run(
                         geo=frame.geo,
                         bg=frame.bg,
                         result=result,
-                        stages=[StageFluxes.of(s.result, layout) for s in stages],
+                        stages=[s.fluxes for s in stages],
                         weights=weights,
                         delta_M_total_before=before.delta_M_total,
                         F_N_integral_before=r.F_N_integral,

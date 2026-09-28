@@ -20,6 +20,7 @@ mod numpy_like;
 mod outer;
 mod state;
 mod stencils;
+mod timestep;
 
 use numpy::{PyArray1, PyReadonlyArray1, PyUntypedArrayMethods};
 use pyo3::exceptions::PyValueError;
@@ -596,6 +597,147 @@ fn stage_state(
     run_stage(py, frame, settings, &bg, &state, &deviation)
 }
 
+/// A completed stage as the Python reads it: `(F_N, F_je, M_total, delta_F_N, delta_M_total, k)`.
+type StageRecord = (f64, f64, f64, f64, f64, Py<PyArray1<f64>>);
+
+/// One checked attempt's outcome (`pbh.timestep.Attempt`), read by the Python through the getters.
+#[pyclass(frozen, module = "pbh_engine")]
+pub struct AttemptOutput {
+    stages: Vec<timestep::Stage>,
+    dy: Option<Vec<f64>>,
+    #[pyo3(get)]
+    result: Option<Py<StageOutput>>,
+    failure: Option<timestep::Failure>,
+}
+
+#[pymethods]
+impl AttemptOutput {
+    /// Every stage after the first that the attempt completed: `(F_N, F_je, M_total, delta_F_N, delta_M_total, k)`.
+    #[getter]
+    fn stages(&self, py: Python<'_>) -> Vec<StageRecord> {
+        self.stages
+            .iter()
+            .map(|s| {
+                let f = &s.fluxes;
+                (
+                    f.F_N,
+                    f.F_je,
+                    f.M_total,
+                    f.delta_F_N,
+                    f.delta_M_total,
+                    to_numpy(py, s.k.clone()),
+                )
+            })
+            .collect()
+    }
+
+    /// The deviation arrived at, or `None` if the attempt was refused.
+    #[getter]
+    fn dy(&self, py: Python<'_>) -> Option<Py<PyArray1<f64>>> {
+        self.dy.as_ref().map(|dy| to_numpy(py, dy.clone()))
+    }
+
+    /// The refusal `(cause, stage, index, value)`, or `None`.
+    #[getter]
+    fn failure(&self) -> Option<(String, usize, i64, f64)> {
+        self.failure
+            .as_ref()
+            .map(|f| (f.cause.clone(), f.stage, f.index, f.value))
+    }
+}
+
+/// A frame and its background as a stage evaluates against them.
+fn stage_time<'a>(frame: &'a StageFrame, bg: (f64, f64, f64)) -> timestep::StageTime<'a> {
+    timestep::StageTime {
+        geo: &frame.geo,
+        w: &frame.w,
+        reference: &frame.reference,
+        X_N_squared: frame.X_N_squared,
+        X_je_squared: frame.X_je_squared,
+        bg: Background {
+            Gammabar2: bg.0,
+            c_s: bg.1,
+            hubble: bg.2,
+        },
+    }
+}
+
+/// One checked Runge-Kutta attempt in deviation form (`timestep.checked_step`): the stages after the first on
+/// `frames` with their backgrounds `(Gammabar2, c_s, hubble)`, and the result on `arrive`, from the deviation `dy`
+/// and the first stage's packed rate `k1`, with the tableau's rows `a` and weights `b` as floats.
+#[pyfunction]
+#[pyo3(signature = (settings, frames, backgrounds, arrive, arrive_background, dy, dxi, k1, a, b))]
+#[allow(clippy::too_many_arguments)]
+fn checked_step(
+    py: Python<'_>,
+    settings: &StageSettings,
+    frames: Vec<PyRef<'_, StageFrame>>,
+    backgrounds: Vec<(f64, f64, f64)>,
+    arrive: &StageFrame,
+    arrive_background: (f64, f64, f64),
+    dy: PyReadonlyArray1<'_, f64>,
+    dxi: f64,
+    k1: PyReadonlyArray1<'_, f64>,
+    a: Vec<Vec<f64>>,
+    b: Vec<f64>,
+) -> PyResult<AttemptOutput> {
+    let layout = &arrive.w.layout;
+    let size = layout.size();
+    let same_layout = frames
+        .iter()
+        .all(|f| f.w.layout.N == layout.N && f.w.layout.j_e == layout.j_e);
+    let stages = frames.len() + 1;
+    if !same_layout
+        || backgrounds.len() != frames.len()
+        || a.len() != stages
+        || b.len() != stages
+        || a.iter().enumerate().any(|(n, row)| row.len() != n)
+    {
+        return Err(PyValueError::new_err(
+            "an attempt needs one frame and background per stage after the first, all on one layout, and a tableau \
+             of as many stages",
+        ));
+    }
+    if dy.len() != size || k1.len() != size {
+        return Err(PyValueError::new_err(format!(
+            "expected packed vectors of length {size}, got {} and {}",
+            dy.len(),
+            k1.len()
+        )));
+    }
+    let s = timestep::Settings {
+        eos: &settings.eos,
+        outer: &settings.outer,
+        kernels: &settings.kernels,
+    };
+    let times: Vec<timestep::StageTime> = frames
+        .iter()
+        .zip(&backgrounds)
+        .map(|(f, bg)| stage_time(f, *bg))
+        .collect();
+    let attempt = timestep::checked_step(
+        &s,
+        &times,
+        &stage_time(arrive, arrive_background),
+        &to_vec(&dy),
+        dxi,
+        &to_vec(&k1),
+        &a,
+        &b,
+    )
+    .map_err(PyValueError::new_err)?;
+    let result = match attempt.result {
+        Some(r) => Some(Py::new(py, StageOutput::from_result(py, r)?)?),
+        None => None,
+    };
+    Ok(AttemptOutput {
+        stages: attempt.stages,
+        dy: attempt.dy,
+        result,
+        failure: attempt.failure,
+    })
+}
+
 /// The horizon finder's numbers on one slice (`pbh.horizon.Trapping`), read by the Python through the getters.
 #[pyclass(frozen, module = "pbh_engine")]
 pub struct TrappingOutput {
@@ -680,6 +822,8 @@ fn pbh_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(stage_deviation, m)?)?;
     m.add_function(wrap_pyfunction!(stage_state, m)?)?;
     m.add_class::<TrappingOutput>()?;
+    m.add_class::<AttemptOutput>()?;
+    m.add_function(wrap_pyfunction!(checked_step, m)?)?;
     m.add_function(wrap_pyfunction!(trapping, m)?)?;
     Ok(())
 }

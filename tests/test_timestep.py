@@ -30,6 +30,7 @@ from pbh.timestep import (
     Engine,
     FailureCause,
     Scheme,
+    StageFluxes,
     StepAbortError,
     StepLimit,
     advance,
@@ -358,9 +359,8 @@ def test_the_stages_of_a_step_on_a_moving_map_keep_their_own_values_though_the_f
     attempt = checked_step(sch, xi, dy, dxi, sch.evaluate_deviation(xi, dy))
     assert attempt.result is not None
     assert attempt.dy is not None
-    kept = [(stage.y, stage.result) for stage in attempt.stages] + [(attempt.dy, attempt.result)]
-    owned = [arrays_in(y) + arrays_in(result) for y, result in kept]  # what each stage and the result hold
-    assert all(len(arrays) > 30 for arrays in owned)
+    owned = [[stage.k] for stage in attempt.stages] + [[attempt.dy, *arrays_in(attempt.result)]]  # what each holds
+    assert len(owned[-1]) > 30
     frames = {xi_i: sch.frame(xi_i) for xi_i in (xi, xi + dxi / 2, xi + dxi)}  # the times of the stages, all kept
     shared = [a for f in frames.values() for a in arrays_in(f)]
     for i, mine in enumerate(owned):
@@ -368,13 +368,14 @@ def test_the_stages_of_a_step_on_a_moving_map_keep_their_own_values_though_the_f
         for a in mine:
             assert not any(np.shares_memory(a, b) for b in others + shared)
     fresh = moving()
-    k = [sch.layout.pack(stage.result.deviation_rate) for stage in attempt.stages]
-    for stage, a_i in zip(attempt.stages, RK4.a, strict=True):
+    for n, (stage, a_i) in enumerate(zip(attempt.stages, RK4.a, strict=True)):
         dy_i = dy.copy()  # the stage input, formed as checked_step forms it
-        for a_ij, k_j in zip(a_i, k, strict=False):
+        for a_ij, earlier in zip(a_i, attempt.stages[:n], strict=True):
             if a_ij:
-                dy_i += dxi * float(a_ij) * k_j
-        assert entries_in(fresh.evaluate_deviation(stage.xi, dy_i)) == entries_in(stage.result)
+                dy_i += dxi * float(a_ij) * earlier.k
+        again = fresh.evaluate_deviation(stage.xi, dy_i)
+        assert np.array_equal(stage.k, fresh.layout.pack(again.deviation_rate))
+        assert stage.fluxes == StageFluxes.of(again, fresh.layout)
     assert entries_in(fresh.evaluate_deviation(xi + dxi, attempt.dy)) == entries_in(attempt.result)
 
 

@@ -56,6 +56,7 @@ from pbh.layout import Layout
 from pbh.outer import HeldAtFrw, HeldExterior, OuterClosure, OutgoingWave
 from pbh.state import FrwReference, State
 from pbh.stencils import StencilWeights
+from pbh.timestep import Attempt, FailureCause, Stage, StageFluxes, StepFailure
 from pbh.types import FloatArray, read_only
 
 
@@ -102,6 +103,15 @@ class RustStage:
             ephi_N=ephi_N,
         )
 
+    def stage_frame(self, X: FloatArray, X_xi: FloatArray, hubble: float) -> StageFrame:
+        """The Rust frame alone from the map at the `N + 2` faces, the radii checked as `Geometry.of` checks them.
+
+        Raises:
+            ValueError: As `Geometry.of` raises it, with the same message.
+        """
+        check_radii(X)
+        return StageFrame(self._settings, j_e=self._layout.j_e, X=X, X_xi=X_xi, hubble=hubble)
+
     def frame(
         self, X: FloatArray, X_xi: FloatArray, hubble: float
     ) -> tuple[Geometry, StencilWeights, FrwReference, StageFrame]:
@@ -115,8 +125,7 @@ class RustStage:
         Raises:
             ValueError: As `Geometry.of` raises it, with the same message.
         """
-        check_radii(X)
-        f = StageFrame(self._settings, j_e=self._layout.j_e, X=X, X_xi=X_xi, hubble=hubble)
+        f = self.stage_frame(X, X_xi, hubble)
         geo = Geometry(
             X=f.X,
             X_xi=f.X_xi,
@@ -173,6 +182,47 @@ class RustStage:
         """
         self._layout.check_packed(y)
         return np.asarray(y, dtype=np.float64)
+
+    def attempt(
+        self,
+        stages: list[Stage],
+        times: list[float],
+        frames: list[tuple[StageFrame, Background]],
+        arrive: tuple[StageFrame, Background],
+        dy: FloatArray,
+        dxi: float,
+        a: tuple[tuple[float, ...], ...],
+        b: tuple[float, ...],
+    ) -> Attempt:
+        """`checked_step` on the Rust engine, as the numpy engine's `Attempt`, from the first stage `stages[0]`.
+
+        The stages after the first are evaluated on `frames`, each a Rust frame and its background (at `times`), and
+        the result on `arrive`. Rust forms the
+        stage inputs, evaluates and checks each, and forms the deviation arrived at and its rate, with the same
+        operations in the same order; a refusal comes back as the numpy engine's `StepFailure`. The stages after the
+        first are appended to `stages`, as the numpy engine appends them.
+        """
+        out = pbh_engine.checked_step(
+            self._settings,
+            [f for f, _ in frames],
+            [(bg.Gammabar2, bg.c_s, bg.hubble) for _, bg in frames],
+            arrive[0],
+            (arrive[1].Gammabar2, arrive[1].c_s, arrive[1].hubble),
+            self.packed(dy),
+            dxi,
+            stages[0].k,
+            [list(row) for row in a],
+            list(b),
+        )
+        # a refused attempt completed fewer stages than there are times
+        for xi_i, (F_N, F_je, M_total, delta_F_N, delta_M_total, k) in zip(times, out.stages, strict=False):
+            stages.append(Stage(xi=xi_i, fluxes=StageFluxes(F_N, F_je, M_total, delta_F_N, delta_M_total), k=k))
+        failure = None
+        if out.failure is not None:
+            cause, stage, index, value = out.failure
+            failure = StepFailure(FailureCause(cause), stage, index, value)
+        result = None if out.result is None else to_result(out.result)
+        return Attempt(out.dy, stages, result, failure)
 
     def evaluate_deviation(self, frame: StageFrame, bg: Background, dy: FloatArray) -> DerivsResult:
         """`Scheme.evaluate_deviation` on the Rust engine: the stage at `y_FRW + delta y` from the packed deviation."""

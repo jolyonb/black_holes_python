@@ -9,7 +9,7 @@ theta-limiter's bind count, the far zone, the boundary energy, the grid scale, t
 under-resolution monitors of the criticality study, about a fifth of a step. On the other steps those columns hold NaN,
 or `-1` for counts.
 
-`StageFluxes` is what each stage of a step contributes, three scalars; `MonitoredStep` is the row of the step table,
+`timestep.StageFluxes` is what each stage of a step contributes; `MonitoredStep` is the row of the step table,
 `StepRow` extended with both tiers; `monitor_step` fills it.
 
 The under-resolution monitors are the ones the criticality design asks for on a single run, since a threshold
@@ -36,46 +36,8 @@ from pbh.layout import Layout
 from pbh.outer import characteristic_pair
 from pbh.output import StepRow
 from pbh.state import State
+from pbh.timestep import StageFluxes
 from pbh.types import FloatArray, nan_array
-
-# --- what one stage contributes ---
-
-
-@dataclass(frozen=True)
-class StageFluxes:
-    """The scalars of a stage that the step's bookkeeping needs; free to collect.
-
-    The total mass obeys `d_xi M_total = (2 - 3 alpha) M_total - 3 F_N` exactly. The outer face is static, so the FRW
-    parts of both sides cancel identically, `(2 - 3 alpha) X_N^3 = 3 alpha w X_N^3`, and the bookkeeping is checked in
-    the deviations, `d_xi delta M_total = (2 - 3 alpha) delta M_total - 3 delta F_N`, where it is limited by the
-    rounding of the deviation rather than of `M_total` itself.
-
-    Attributes:
-        F_N: The outer flux; `F_je` the flux through the excision face (`0` unexcised).
-        M_total: The total mass in the domain, `M_N = M_e + 3 sum E_c`.
-        delta_F_N: The outer flux less its FRW value.
-        delta_M_total: The total mass less its FRW value `X_N^3`, the cumulative sum of the deviations.
-    """
-
-    F_N: float
-    F_je: float
-    M_total: float
-    delta_F_N: float
-    delta_M_total: float
-
-    @classmethod
-    def of(cls, result: DerivsResult, layout: Layout) -> StageFluxes:
-        """Collect the stage's fluxes and total mass."""
-        N, j_e = layout.N, layout.j_e
-        d = result.derived
-        return cls(
-            F_N=float(result.F[N]),
-            F_je=float(result.F[j_e]) if j_e > 0 else 0.0,
-            M_total=float(d.M[N]),
-            delta_F_N=float(result.delta_F[N]),
-            delta_M_total=float(d.delta_M[N]),
-        )
-
 
 # --- the row of the step table ---
 

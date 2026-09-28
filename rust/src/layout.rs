@@ -39,6 +39,18 @@ impl Layout {
         n_cells + n_faces + usize::from(self.excised()) + 1
     }
 
+    /// The state as one flat vector (`Layout.pack`): `[E (retained) | U (evolved) | M_e if excised | W]`.
+    pub fn pack(&self, state: &State) -> Vec<f64> {
+        let mut y = Vec::with_capacity(self.size());
+        y.extend_from_slice(&state.E[self.cells()]);
+        y.extend_from_slice(&state.U[self.faces_evolved()]);
+        if self.excised() {
+            y.push(state.M_e);
+        }
+        y.push(state.W);
+        y
+    }
+
     /// The state from a packed vector (`Layout.unpack`): full-length arrays, NaN below `j_e`, and `U_0 = 0`.
     ///
     /// Refuses a vector of the wrong length with the Python's message.

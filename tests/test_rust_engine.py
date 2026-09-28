@@ -75,7 +75,18 @@ from pbh.outer import (
 from pbh.output import RunReader
 from pbh.rust_engine import RustStage
 from pbh.state import State
-from pbh.timestep import AcceptedStep, Engine, Frame, Scheme, advance_checked, step_cap, step_size
+from pbh.timestep import (
+    FRAMES_KEPT,
+    RK4,
+    AcceptedStep,
+    Engine,
+    Frame,
+    Scheme,
+    advance_checked,
+    checked_step,
+    step_cap,
+    step_size,
+)
 from pbh.types import FloatArray
 
 RAD = EquationOfState(RADIATION)
@@ -499,10 +510,70 @@ def assert_same_step(a: AcceptedStep, b: AcceptedStep, label: str) -> None:
     assert_same_result(a.result, b.result, f"{label} result")
     assert len(a.stages) == len(b.stages), label
     for n, (sa, sb) in enumerate(zip(a.stages, b.stages, strict=True)):
-        assert sa.xi == sb.xi, label
-        assert np.array_equal(sa.y, sb.y, equal_nan=True), label
-        assert_same_result(sa.result, sb.result, f"{label} stage {n}")
+        assert (sa.xi, sa.fluxes) == (sb.xi, sb.fluxes), f"{label} stage {n}"
+        assert np.array_equal(sa.k, sb.k, equal_nan=True), f"{label} stage {n}"
     assert a.refused == b.refused, label
+
+
+def test_a_step_on_the_rust_engine_builds_no_python_frame_inside_the_step():
+    # the stages at xi + dxi / 2 read only the Rust frame; the step's arrival is a whole frame, which the driver reads
+    zone = Zone(xi_on=0.4, tau_on=0.3, x_t=0.3, Delta_t=0.1)
+    m = BlendMap(SinhStretch(6.0, scale=2.0), 0.5, (zone,))
+    sch = Scheme(RAD, m, Layout(40), OutgoingWave(), PRODUCTION_KERNELS, engine=Engine.RUST)
+    xi, dxi = 0.5, 0.02
+    dy = blob(sch, xi)
+    accepted = advance_checked(sch, xi, dy, dxi, sch.evaluate_deviation(xi, dy))
+    assert accepted.refused == []
+    held = sch._frames  # pyright: ignore[reportPrivateUsage]
+    inside = sch._stage_frames  # pyright: ignore[reportPrivateUsage]
+    assert set(held) == {xi, xi + dxi}
+    assert set(inside) == {xi + 0.5 * dxi}
+    for n in range(8):  # more step times than are kept: the oldest go
+        t = xi + dxi + 0.01 * n
+        advance_checked(sch, t, accepted.dy, 0.005, sch.evaluate_deviation(t, accepted.dy))
+    assert len(inside) == FRAMES_KEPT
+
+
+def test_a_checked_attempt_refuses_alike_on_both_engines():
+    # steps far too long for the violent states, so that the attempts are refused at a stage input or at the result,
+    # for density, Gammabar^2 or a non-finite value: the same refusal (cause, stage, index, and the value bit for bit
+    # or both NaN), after the same stages; and where an attempt passes, the same arrival
+    causes: set[str] = set()
+    for family in FAMILIES:
+        for seed in SEEDS[:6]:
+            case = violent_case(family, seed)
+            pair = case_pair(case, PRODUCTION_KERNELS)
+            y = pair.numpy.layout.pack(case.state)
+            dy = y - pair.numpy.frw(case.xi)
+            try:
+                firsts = [sch.evaluate_deviation(case.xi, dy) for sch in (pair.numpy, pair.rust)]
+            except NotHyperbolicError, ValueError:
+                continue
+            base = step_size(firsts[0], pair.numpy.frame(case.xi).geo, case.layout, 0.75, 1.0).dxi
+            for factor in (1.0, 8.0, 64.0, 512.0):
+                label = f"{family} {seed} x{factor}"
+                a, b = (
+                    checked_step(sch, case.xi, dy, factor * base, f)
+                    for sch, f in zip((pair.numpy, pair.rust), firsts, strict=True)
+                )
+                assert (a.failure is None) == (b.failure is None), label
+                if a.failure is not None and b.failure is not None:
+                    fa, fb = a.failure, b.failure
+                    assert (fa.cause, fa.stage, fa.index) == (fb.cause, fb.stage, fb.index), label
+                    assert np.array_equal([fa.value], [fb.value], equal_nan=True), label
+                    causes.add(fa.cause.value)
+                else:
+                    assert a.dy is not None, label
+                    assert b.dy is not None, label
+                    assert np.array_equal(a.dy, b.dy, equal_nan=True), label
+                    assert a.result is not None, label
+                    assert b.result is not None, label
+                    assert_same_result(a.result, b.result, label)
+                assert len(a.stages) == len(b.stages), label
+                for sa, sb in zip(a.stages, b.stages, strict=True):
+                    assert (sa.xi, sa.fluxes) == (sb.xi, sb.fluxes), label
+                    assert np.array_equal(sa.k, sb.k, equal_nan=True), label
+    assert len(causes) >= 3, causes  # refusals of more than one kind were compared
 
 
 def march(pair: Pair, xi: float, dy: FloatArray, steps: int, cap: float, label: str) -> None:
@@ -882,6 +953,20 @@ def stub_value_matches(value: object, annotation: str, classes: dict[str, ast.Cl
         return entries is not None and all(
             stub_value_matches(entry, "tuple[int, float, bool]", classes) for entry in entries
         )
+    if annotation == "str":
+        return type(value) is str
+    if annotation.startswith("list[tuple[") or annotation.startswith("tuple["):
+        inner = annotation.removeprefix("list[")[: -1 if annotation.startswith("list[") else None]
+        parts_types = [part.strip() for part in inner.removeprefix("tuple[").removesuffix("]").split(",")]
+        if annotation.startswith("list["):
+            entries = cast(list[object], value) if isinstance(value, list) else None
+            return entries is not None and all(stub_value_matches(entry, inner, classes) for entry in entries)
+        if not isinstance(value, tuple):
+            return False
+        parts = cast(tuple[object, ...], value)
+        return len(parts) == len(parts_types) and all(
+            stub_value_matches(v, a, classes) for v, a in zip(parts, parts_types, strict=True)
+        )
     if annotation == "tuple[int, float, bool]":
         if not isinstance(value, tuple):
             return False
@@ -936,5 +1021,22 @@ def test_what_the_extension_returns_has_the_types_its_stubs_declare(monkeypatch:
     out = pbh_engine.trapping(U, np.ones(9), 0)
     assert len(out.crossings) == 4
     assert stub_value_matches(out, ast.unparse(annotation), classes)
+    annotation = returns.pop("checked_step")  # an attempt that arrives, and one refused at its second stage
+    assert annotation is not None
+    sch = Scheme(RAD, SinhStretch(6.0, scale=2.0), Layout(20), HeldAtFrw(), PRODUCTION_KERNELS, engine=Engine.RUST)
+    dy = np.zeros(sch.layout.size)
+    first = sch.evaluate_deviation(0.3, dy)
+    k1 = sch.layout.pack(first.deviation_rate)
+    a = [list(row) for row in RK4.floats[1]]
+    b = list(RK4.floats[2])
+    frames = [sch.frame(t) for t in (0.305, 0.305, 0.31)]
+    bgs = [(f.bg.Gammabar2, f.bg.c_s, f.bg.hubble) for f in frames]
+    rust_frames = [cast(pbh_engine.StageFrame, f.rust) for f in frames]
+    settings = cast(RustStage, sch._rust)._settings  # pyright: ignore[reportPrivateUsage]
+    for bad in (False, True):
+        k = k1 + (1e300 if bad else 0.0)  # a stage input far outside the domain, refused
+        out = pbh_engine.checked_step(settings, rust_frames, bgs, rust_frames[-1], bgs[-1], dy, 0.01, k, a, b)
+        assert (out.failure is None) != bad
+        assert stub_value_matches(out, ast.unparse(annotation), classes)
     assert not returns  # every function is covered
     assert {out.kernels is None for out in captured} == {True, False}
