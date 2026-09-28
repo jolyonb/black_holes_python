@@ -118,7 +118,7 @@ def test_the_map_keeps_what_does_not_depend_on_time_and_gives_the_same_radii_at_
         fresh = BlendMap(SinhStretch(8.0, scale=2.0), ALPHA, (ZONE,))
         for a, b in zip(kept.radii(xi, 50), fresh.radii(xi, 50), strict=True):
             assert np.array_equal(a, b)
-    B, weights = kept._static_part(50)  # pyright: ignore[reportPrivateUsage]
+    B, weights = kept.static_part(50)
     for a in (B, weights):
         with pytest.raises(ValueError, match="read-only"):
             a[..., 0] = 1.0

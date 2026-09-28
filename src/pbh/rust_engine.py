@@ -53,6 +53,7 @@ from pbh.geometry import Geometry, check_radii
 from pbh.horizon import Trapping
 from pbh.kernels import KernelResult, KernelSettings
 from pbh.layout import Layout
+from pbh.maps import BlendMap, MapValues
 from pbh.outer import HeldAtFrw, HeldExterior, OuterClosure, OutgoingWave
 from pbh.state import FrwReference, State
 from pbh.stencils import StencilWeights
@@ -102,6 +103,15 @@ class RustStage:
             rho_N=rho_N,
             ephi_N=ephi_N,
         )
+
+    def blend_radii(self, m: BlendMap, xi: float) -> MapValues:
+        """`BlendMap.radii` at `xi`, formed in Rust from the map's static part and its ramps.
+
+        The operations are numpy's in numpy's order (tests/test_rust_engine.py asserts the radii equal).
+        """
+        B, weights = m.static_part(self._layout.N)
+        pinned, rates = m.ramps(xi)
+        return pbh_engine.blend_radii(B, weights, pinned, rates, m.alpha)
 
     def stage_frame(self, X: FloatArray, X_xi: FloatArray, hubble: float) -> StageFrame:
         """The Rust frame alone from the map at the `N + 2` faces, the radii checked as `Geometry.of` checks them.

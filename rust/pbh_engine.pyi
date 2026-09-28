@@ -371,6 +371,15 @@ def checked_step(
         TypeError: If a vector is not a one-dimensional native float64 array.
     """
 
+def blend_radii(
+    B: FloatArray, weights: FloatArray, pinned: list[float], rates: list[float], alpha: float
+) -> tuple[FloatArray, FloatArray]:
+    """`BlendMap.radii` from the map's static part (`B` and the rows of `weights`) and each zone's ramp scalars.
+
+    Raises:
+        ValueError: If the rows, their lengths or the rates do not match.
+    """
+
 @final
 class TrappingOutput:
     """The horizon finder's numbers on one slice (`pbh.horizon.Trapping`)."""

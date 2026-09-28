@@ -895,6 +895,25 @@ def test_the_rust_engine_builds_the_same_frames_as_the_numpy_engine():
                                 assert x == y, (label, name, x, y)
 
 
+def test_the_rust_engine_forms_a_blend_maps_radii_as_the_map_does():
+    # one to three zones, before, inside and after each ramp, on grids from the smallest to the production size
+    zones = (
+        Zone(xi_on=1.0, tau_on=0.3, x_t=0.2, Delta_t=0.05),
+        Zone(xi_on=1.4, tau_on=0.25, x_t=0.4, Delta_t=0.1),
+        Zone(xi_on=2.0, tau_on=0.5, x_t=0.7, Delta_t=0.15),
+    )
+    for base in (IdentityMap(8.0), SinhStretch(30.0, 3.0)):
+        for n in (1, 2, 3):
+            m = BlendMap(base, 0.5, zones[:n])
+            for N in (2, 40, 1600):
+                stage = RustStage(RAD, PRODUCTION_KERNELS, HeldAtFrw(), Layout(N))
+                for xi in (0.0, 1.0, 1.1, 1.5, 2.3, 7.0):
+                    for x, y in zip(m.radii(xi, N), stage.blend_radii(m, xi), strict=True):
+                        assert np.array_equal(x, y), (base, n, N, xi)
+    with pytest.raises(ValueError, match="one weight row per zone"):
+        pbh_engine.blend_radii(np.ones(5), np.ones((3, 5)), [1.0], [0.0], 0.5)
+
+
 def test_an_inconsistent_frame_is_refused_with_value_error_and_never_panics():
     stage = RustStage(RAD, PRODUCTION_KERNELS, HeldAtFrw(), Layout(20, 4))
     X, X_xi = SinhStretch(6.0, scale=2.0).radii(0.3, 20)
@@ -1038,5 +1057,10 @@ def test_what_the_extension_returns_has_the_types_its_stubs_declare(monkeypatch:
         out = pbh_engine.checked_step(settings, rust_frames, bgs, rust_frames[-1], bgs[-1], dy, 0.01, k, a, b)
         assert (out.failure is None) != bad
         assert stub_value_matches(out, ast.unparse(annotation), classes)
+    annotation = returns.pop("blend_radii")
+    assert annotation is not None
+    blend = BlendMap(SinhStretch(6.0, scale=2.0), 0.5, (Zone(xi_on=0.4, tau_on=0.3, x_t=0.3, Delta_t=0.1),))
+    radii = pbh_engine.blend_radii(*blend.static_part(20), *blend.ramps(0.6), blend.alpha)
+    assert stub_value_matches(radii, ast.unparse(annotation), classes)
     assert not returns  # every function is covered
     assert {out.kernels is None for out in captured} == {True, False}

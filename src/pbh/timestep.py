@@ -52,7 +52,7 @@ from pbh.equations import DerivsResult, calc_derivs
 from pbh.geometry import Geometry
 from pbh.kernels import KernelSettings
 from pbh.layout import Layout
-from pbh.maps import Map
+from pbh.maps import BlendMap, Map, MapValues
 from pbh.outer import OuterClosure
 from pbh.state import FrwReference, State
 from pbh.stencils import StencilWeights
@@ -241,7 +241,7 @@ class Scheme:
 
     def _new_frame(self, xi: float) -> Frame:
         """The frame at time `xi` built from the map: every stage time on a moving map, once on a static one."""
-        X, X_xi = self.map.radii(xi, self.layout.N)
+        X, X_xi = self._radii(xi)
         bg = Background.at(self.eos, xi, self.spacetime)
         rust = None
         if self._rust is None:
@@ -255,6 +255,12 @@ class Scheme:
         read_only(geo.X, geo.X_xi, geo.dV, geo.dV_xi, geo.sbar, geo.dS, geo.dX, geo.Xm, geo.X2, geo.X3)
         read_only(geo.s_in, geo.s_out, w.grad_s, w.centred_U, w.r_L, w.r_R, y_frw)
         return Frame(geo=geo, bg=bg, w=w, reference=reference, y_frw=y_frw, rust=rust)
+
+    def _radii(self, xi: float) -> MapValues:
+        """The map at the faces at `xi`: on the Rust engine a blend map's are formed in Rust, the same numbers."""
+        if self._rust is not None and isinstance(self.map, BlendMap):
+            return self._rust.blend_radii(self.map, xi)
+        return self.map.radii(xi, self.layout.N)
 
     def frame(self, xi: float) -> Frame:
         """The frame at time `xi`, kept for the last `FRAMES_KEPT` distinct times.
@@ -343,7 +349,7 @@ class Scheme:
             return frame.rust, frame.bg
         kept = self._stage_frames.get(xi)
         if kept is None:
-            X, X_xi = self.map.radii(xi, self.layout.N)
+            X, X_xi = self._radii(xi)
             bg = Background.at(self.eos, xi, self.spacetime)
             kept = (self._rust.stage_frame(X, X_xi, bg.hubble), bg)
             if len(self._stage_frames) >= FRAMES_KEPT:

@@ -22,7 +22,7 @@ mod state;
 mod stencils;
 mod timestep;
 
-use numpy::{PyArray1, PyReadonlyArray1, PyUntypedArrayMethods};
+use numpy::{PyArray1, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
@@ -738,6 +738,56 @@ fn checked_step(
     })
 }
 
+/// A map's radii and their velocities at the faces (`maps.MapValues`), as numpy arrays.
+type MapValues = (Py<PyArray1<f64>>, Py<PyArray1<f64>>);
+
+/// The blend map's radii at one time (`BlendMap.radii`) from its static part, the base radii `B` and the partition of
+/// unity `weights` (one row per zone, then the static exterior's), and each zone's `e^(-alpha T_k)` and `dT_k/dxi`:
+///
+/// ```text
+///     X = B (sum_k w_k e^(-alpha T_k) + w_K),   d_xi X = -alpha B sum_k w_k dT_k/dxi e^(-alpha T_k)
+/// ```
+///
+/// summed from zero zone by zone, each term `(w_k dT_k) e^(-alpha T_k)` and the velocity `(-alpha B) rate`, as numpy
+/// forms them in `BlendMap._factors` and `radii`.
+#[pyfunction]
+#[pyo3(signature = (B, weights, pinned, rates, alpha))]
+fn blend_radii(
+    py: Python<'_>,
+    B: PyReadonlyArray1<'_, f64>,
+    weights: PyReadonlyArray2<'_, f64>,
+    pinned: Vec<f64>,
+    rates: Vec<f64>,
+    alpha: f64,
+) -> PyResult<MapValues> {
+    let B = B.as_array();
+    let weights = weights.as_array();
+    let zones = pinned.len();
+    if rates.len() != zones || weights.nrows() != zones + 1 || weights.ncols() != B.len() {
+        return Err(PyValueError::new_err(format!(
+            "the blend map needs one weight row per zone and one more, each as long as B, and a rate per zone: got \
+             {} rows of {} for {zones} zones, {} rates and {} radii",
+            weights.nrows(),
+            weights.ncols(),
+            rates.len(),
+            B.len()
+        )));
+    }
+    let mut X = vec![0.0; B.len()];
+    let mut X_xi = vec![0.0; B.len()];
+    for j in 0..B.len() {
+        let mut factor = 0.0;
+        let mut rate = 0.0;
+        for k in 0..zones {
+            factor += weights[[k, j]] * pinned[k];
+            rate += weights[[k, j]] * rates[k] * pinned[k];
+        }
+        X[j] = B[j] * (factor + weights[[zones, j]]);
+        X_xi[j] = -alpha * B[j] * rate;
+    }
+    Ok((to_numpy(py, X), to_numpy(py, X_xi)))
+}
+
 /// The horizon finder's numbers on one slice (`pbh.horizon.Trapping`), read by the Python through the getters.
 #[pyclass(frozen, module = "pbh_engine")]
 pub struct TrappingOutput {
@@ -824,6 +874,7 @@ fn pbh_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<TrappingOutput>()?;
     m.add_class::<AttemptOutput>()?;
     m.add_function(wrap_pyfunction!(checked_step, m)?)?;
+    m.add_function(wrap_pyfunction!(blend_radii, m)?)?;
     m.add_function(wrap_pyfunction!(trapping, m)?)?;
     Ok(())
 }

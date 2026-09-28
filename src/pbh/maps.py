@@ -358,20 +358,31 @@ class BlendMap(Map):
         """
         factor = np.zeros_like(weights[0])  # one entry per label
         rate = np.zeros_like(weights[0])
-        for k, zone in enumerate(self.zones):
-            T, dT = ramp(xi, zone.xi_on, zone.tau_on)
-            pinned = math.exp(-self.alpha * T)
+        for k, (pinned, dT) in enumerate(zip(*self.ramps(xi), strict=True)):
             factor += weights[k] * pinned
             rate += weights[k] * dT * pinned
         return factor + weights[-1], rate  # the static exterior has T = 0
 
+    def ramps(self, xi: float) -> tuple[list[float], list[float]]:
+        """Each zone's `e^(-alpha T_k)` and `dT_k/dxi` at `xi`: all of the map that depends on the time.
+
+        With `static_part` it is the whole map; the Rust engine forms the radii from the two (`pbh.rust_engine`).
+        """
+        pinned: list[float] = []
+        rates: list[float] = []
+        for zone in self.zones:
+            T, dT = ramp(xi, zone.xi_on, zone.tau_on)
+            pinned.append(math.exp(-self.alpha * T))
+            rates.append(dT)
+        return pinned, rates
+
     def radii(self, xi: float, N: int) -> MapValues:
         """`X = B sum_k w_k e^(-alpha T_k)` and `d_xi X = -alpha B sum_k w_k dT_k/dxi e^(-alpha T_k)`."""
-        B, weights = self._static_part(N)
+        B, weights = self.static_part(N)
         factor, rate = self._factors(xi, weights)
         return B * factor, -self.alpha * B * rate
 
-    def _static_part(self, N: int) -> tuple[FloatArray, FloatArray]:
+    def static_part(self, N: int) -> tuple[FloatArray, FloatArray]:
         """`(B, weights)` at the faces of an `N`-cell grid: the base radii and the partition of unity, free of `xi`.
 
         Computed at the first call for each `N` and kept (read-only), since a moving map is evaluated at every new
