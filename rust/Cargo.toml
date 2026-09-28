@@ -1,0 +1,41 @@
+[package]
+name = "pbh-engine"
+version = "0.1.0"
+edition = "2024"
+# The oldest toolchain edition 2024 allows, so no lower minimum is possible; pyo3 and numpy 0.29 ask for 1.83. NOT YET
+# BUILT WITH 1.85: no such toolchain is installed where this was written, and CI's `cargo +1.85.0 check --locked` has
+# not run yet. What supports it meanwhile: clippy's incompatible_msrv lint checks the standard-library calls against
+# it, and the crate uses no language feature newer than 1.85 (no let chains, `use<..>` bounds or inline `const`
+# blocks; the version-4 Cargo.lock needs 1.78).
+rust-version = "1.85"
+description = "The Rust engine of pbh: one stage of the semi-discrete equations (paper Section 7.3), called through PyO3"
+publish = false
+
+[lib]
+name = "_engine"
+crate-type = ["cdylib"]
+
+[dependencies]
+# No "extension-module" feature: maturin sets PYO3_BUILD_EXTENSION_MODULE itself, and without the feature
+# `cargo clippy` and `cargo build` also work outside maturin.
+pyo3 = "0.29"
+numpy = "0.29"
+
+[profile.release]
+# Rust has no fast-math, never contracts a * b + c into a fused multiply-add unless `mul_add` is written, and LLVM does
+# not reassociate floating point without fast-math flags: the same expression gives numpy's bits. These are the
+# defaults, stated so that a reader need not look them up. Never add `-C target-cpu`.
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+
+[lints.rust]
+# The paper's and the Python's names: X, X_xi, Gammabar2, Theta, Lam_plus, M_e, delta_F (ruff's N802/N803/N806/N815).
+non_snake_case = "allow"
+
+[lints.clippy]
+# The loops run over the paper's cell and face indices, `for c in j_e..N`, as the Python and the paper write them;
+# clippy would have them rewritten as iterator chains over zipped slices.
+needless_range_loop = "allow"
+# The functions take what the Python functions take, one argument per argument.
+too_many_arguments = "allow"

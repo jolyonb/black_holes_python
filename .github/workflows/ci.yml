@@ -13,7 +13,16 @@ jobs:
       - uses: astral-sh/setup-uv@v10.2.0  # astral publishes no floating major tag
         with:
           enable-cache: true
+      # The Rust engine: `uv sync` builds it, and the hooks run cargo fmt and clippy on it. The toolchain is pinned, so
+      # that a new stable release's clippy lints cannot fail `-D warnings` with no change here: move the pin by hand.
+      # The crate's declared minimum (rust-version in rust/Cargo.toml) is installed first and checked below; the
+      # action makes the last toolchain it installs the default.
+      - uses: dtolnay/rust-toolchain@1.85.0
+      - uses: dtolnay/rust-toolchain@1.94.1
+        with:
+          components: rustfmt, clippy
       - run: uv sync --frozen
+      - run: cargo +1.85.0 check --locked --manifest-path rust/Cargo.toml  # the declared minimum still builds
       - uses: actions/cache@v6
         with:
           path: ~/.cache/pre-commit

@@ -20,5 +20,10 @@ htmlcov/
 .vscode/
 .DS_Store
 
+# The Rust engine: cargo's build tree, and the extension the editable build puts beside the package
+rust/target/
+src/pbh/_engine*.so
+src/pbh/_engine*.pyd
+
 # Simulation output
 *.dat

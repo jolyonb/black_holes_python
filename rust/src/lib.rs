@@ -1,0 +1,527 @@
+//! The Rust engine of `pbh`: one stage of the semi-discrete equations (paper Section 7.3), called from
+//! `pbh.rust_engine`, which is the only Python that imports this module (`pbh._engine`).
+//!
+//! This file is the boundary with Python and nothing else: the frame and the settings come in once and are kept here,
+//! a stage takes the packed deviation (or state) and the background scalars, and hands back every field the Python
+//! `DerivsResult` carries, as fresh numpy arrays. The arithmetic lives in the modules below, one per Python module and
+//! one function per Python function, so that the two can be read side by side. A stage outside the hyperbolic domain
+//! raises the Python's own `pbh.derived.NotHyperbolicError`; a closure's refusal raises `ValueError` with the Python's
+//! message, at the point where the Python raises it.
+
+mod derived;
+mod eos;
+mod equations;
+mod geometry;
+mod kernels;
+mod layout;
+mod numpy_like;
+mod outer;
+mod state;
+mod stencils;
+
+use numpy::{PyArray1, PyReadonlyArray1, PyUntypedArrayMethods};
+use pyo3::exceptions::PyValueError;
+use pyo3::prelude::*;
+use pyo3::sync::PyOnceLock;
+use pyo3::types::PyType;
+
+use crate::eos::{Background, EquationOfState};
+use crate::equations::{DerivsResult, StageError, calc_derivs};
+use crate::geometry::Geometry;
+use crate::kernels::{DensityLimiter, KernelSettings, Kernels, ViscousFlux};
+use crate::layout::Layout;
+use crate::outer::OuterClosure;
+use crate::state::{FrwReference, State, deviation_from_frw, whole_state};
+use crate::stencils::StencilWeights;
+
+/// `pbh.derived.NotHyperbolicError`, looked up once.
+static NOT_HYPERBOLIC_ERROR: PyOnceLock<Py<PyType>> = PyOnceLock::new();
+
+/// A numpy array's entries, copied (any strides).
+fn to_vec(a: &PyReadonlyArray1<'_, f64>) -> Vec<f64> {
+    a.as_array().to_vec()
+}
+
+/// A frame array's entries, copied, refused with `ValueError` unless it has the `length` its name says: `N` for a cell
+/// field, `N + 1` for a face field (and for `sbar`, whose entry `N` is the virtual outer cell).
+fn frame_array(name: &str, a: &PyReadonlyArray1<'_, f64>, length: usize) -> PyResult<Vec<f64>> {
+    if a.len() != length {
+        return Err(PyValueError::new_err(format!(
+            "the frame's {name} must have length {length}, got {}",
+            a.len()
+        )));
+    }
+    Ok(to_vec(a))
+}
+
+/// A fresh numpy array handed the vector without a copy.
+fn to_numpy(py: Python<'_>, v: Vec<f64>) -> Py<PyArray1<f64>> {
+    PyArray1::from_vec(py, v).unbind()
+}
+
+/// What a stage needs at one time that does not depend on the state: the geometry, the stencil weights and the FRW
+/// reference of one Python `Frame`, copied once, and the two scalar squares the Python forms by `pow`.
+///
+/// The constructor refuses, with `ValueError`, a layout the Python's `Layout` would refuse and any array whose length
+/// is not the one its name says; after that no index a stage takes can fall outside an array.
+#[pyclass(frozen, module = "pbh._engine")]
+pub struct StageFrame {
+    geo: Geometry,
+    w: StencilWeights,
+    reference: FrwReference,
+    X_N_squared: f64,
+    X_je_squared: f64,
+}
+
+#[pymethods]
+impl StageFrame {
+    #[new]
+    #[pyo3(signature = (
+        *, j_e, X, X_xi, dV, sbar, dS, dX, Xm, X2, X3, s_in, s_out,
+        grad_s, centred_U, r_L, r_R, outer_U, excision_U, outer_rho,
+        state_E, state_U, state_M_e, rate_E, rate_U, rate_M_e, frw_speed, F_frw,
+        X_N_squared, X_je_squared,
+    ))]
+    fn new(
+        j_e: usize,
+        X: PyReadonlyArray1<'_, f64>,
+        X_xi: PyReadonlyArray1<'_, f64>,
+        dV: PyReadonlyArray1<'_, f64>,
+        sbar: PyReadonlyArray1<'_, f64>,
+        dS: PyReadonlyArray1<'_, f64>,
+        dX: PyReadonlyArray1<'_, f64>,
+        Xm: PyReadonlyArray1<'_, f64>,
+        X2: PyReadonlyArray1<'_, f64>,
+        X3: PyReadonlyArray1<'_, f64>,
+        s_in: PyReadonlyArray1<'_, f64>,
+        s_out: PyReadonlyArray1<'_, f64>,
+        grad_s: PyReadonlyArray1<'_, f64>,
+        centred_U: PyReadonlyArray1<'_, f64>,
+        r_L: PyReadonlyArray1<'_, f64>,
+        r_R: PyReadonlyArray1<'_, f64>,
+        outer_U: (f64, f64, f64),
+        excision_U: f64,
+        outer_rho: (f64, f64, f64),
+        state_E: PyReadonlyArray1<'_, f64>,
+        state_U: PyReadonlyArray1<'_, f64>,
+        state_M_e: f64,
+        rate_E: PyReadonlyArray1<'_, f64>,
+        rate_U: PyReadonlyArray1<'_, f64>,
+        rate_M_e: f64,
+        frw_speed: PyReadonlyArray1<'_, f64>,
+        F_frw: PyReadonlyArray1<'_, f64>,
+        X_N_squared: f64,
+        X_je_squared: f64,
+    ) -> PyResult<Self> {
+        // The Python's Layout refuses anything else, and every loop below trusts it: check once, here, so that an
+        // inconsistent frame is a ValueError and never an index out of bounds (which pyo3 raises as a PanicException,
+        // a BaseException) or a wrapped subtraction.
+        let N = dV.len();
+        if N < 2 || j_e >= N {
+            return Err(PyValueError::new_err(format!(
+                "a frame needs N >= 2 cells and 0 <= j_e < N, got N = {N} and j_e = {j_e}"
+            )));
+        }
+        let cells = N;
+        let faces = N + 1;
+        let layout = Layout { N, j_e };
+        let geo = Geometry {
+            X: frame_array("X", &X, faces)?,
+            X_xi: frame_array("X_xi", &X_xi, faces)?,
+            dV: frame_array("dV", &dV, cells)?,
+            sbar: frame_array("sbar", &sbar, faces)?,
+            dS: frame_array("dS", &dS, faces)?,
+            dX: frame_array("dX", &dX, cells)?,
+            Xm: frame_array("Xm", &Xm, cells)?,
+            X2: frame_array("X2", &X2, faces)?,
+            X3: frame_array("X3", &X3, faces)?,
+            s_in: frame_array("s_in", &s_in, cells)?,
+            s_out: frame_array("s_out", &s_out, cells)?,
+        };
+        let w = StencilWeights {
+            layout,
+            grad_s: frame_array("grad_s", &grad_s, faces)?,
+            centred_U: frame_array("centred_U", &centred_U, faces)?,
+            outer_U: [outer_U.0, outer_U.1, outer_U.2],
+            excision_U,
+            outer_rho: [outer_rho.0, outer_rho.1, outer_rho.2],
+            r_L: frame_array("r_L", &r_L, cells)?,
+            r_R: frame_array("r_R", &r_R, cells)?,
+        };
+        let reference = FrwReference {
+            state: State {
+                E: frame_array("state_E", &state_E, cells)?,
+                U: frame_array("state_U", &state_U, faces)?,
+                W: 0.0,
+                M_e: state_M_e,
+            },
+            rate: State {
+                E: frame_array("rate_E", &rate_E, cells)?,
+                U: frame_array("rate_U", &rate_U, faces)?,
+                W: 0.0,
+                M_e: rate_M_e,
+            },
+            frw_speed: frame_array("frw_speed", &frw_speed, faces)?,
+            F_frw: frame_array("F_frw", &F_frw, faces)?,
+        };
+        Ok(StageFrame {
+            geo,
+            w,
+            reference,
+            X_N_squared,
+            X_je_squared,
+        })
+    }
+}
+
+/// The Scheme's settings as a stage uses them: the equation of state's floats, the kernel switches and the closure.
+#[pyclass(frozen, module = "pbh._engine")]
+pub struct StageSettings {
+    eos: EquationOfState,
+    kernels: KernelSettings,
+    outer: OuterClosure,
+}
+
+#[pymethods]
+impl StageSettings {
+    #[new]
+    #[pyo3(signature = (
+        *, w_float, alpha_float, sqrt_w, lapse_exponent, energy_source_rate, is_radiation,
+        kernels, density_limiter, c_v, theta, viscous_flux, cap_tension,
+        closure, tau_u=None, tau_rho=None, tau_W=None, rho_N=None, ephi_N=None,
+    ))]
+    fn new(
+        w_float: f64,
+        alpha_float: f64,
+        sqrt_w: f64,
+        lapse_exponent: f64,
+        energy_source_rate: f64,
+        is_radiation: bool,
+        kernels: &str,
+        density_limiter: &str,
+        c_v: f64,
+        theta: f64,
+        viscous_flux: &str,
+        cap_tension: bool,
+        closure: &str,
+        tau_u: Option<f64>,
+        tau_rho: Option<f64>,
+        tau_W: Option<f64>,
+        rho_N: Option<f64>,
+        ephi_N: Option<f64>,
+    ) -> PyResult<Self> {
+        let eos = EquationOfState {
+            w_float,
+            alpha_float,
+            sqrt_w,
+            lapse_exponent,
+            energy_source_rate,
+            is_radiation,
+        };
+        let kernels = KernelSettings {
+            kernels: match kernels {
+                "production" => Kernels::Production,
+                "centred" => Kernels::Centred,
+                _ => {
+                    return Err(PyValueError::new_err(format!("unknown kernels {kernels:?}")));
+                }
+            },
+            density_limiter: match density_limiter {
+                "mc" => DensityLimiter::Mc,
+                "minmod" => DensityLimiter::Minmod,
+                _ => {
+                    return Err(PyValueError::new_err(format!(
+                        "unknown density limiter {density_limiter:?}"
+                    )));
+                }
+            },
+            c_v,
+            theta,
+            viscous_flux: match viscous_flux {
+                "averaged" => ViscousFlux::Averaged,
+                "density_weighted" => ViscousFlux::DensityWeighted,
+                _ => {
+                    return Err(PyValueError::new_err(format!("unknown viscous flux {viscous_flux:?}")));
+                }
+            },
+            cap_tension,
+        };
+        let outer = match (closure, tau_u, tau_rho, tau_W, rho_N, ephi_N) {
+            ("held_at_frw", None, None, None, None, None) => OuterClosure::HeldAtFrw,
+            ("outgoing_wave", Some(tau_u), Some(tau_rho), Some(tau_W), None, None) => {
+                OuterClosure::OutgoingWave { tau_u, tau_rho, tau_W }
+            }
+            ("held_exterior", None, None, None, Some(rho_N), Some(ephi_N)) => {
+                OuterClosure::HeldExterior { rho_N, ephi_N }
+            }
+            _ => {
+                return Err(PyValueError::new_err(format!(
+                    "the closure {closure:?} and its parameters do not match"
+                )));
+            }
+        };
+        Ok(StageSettings { eos, kernels, outer })
+    }
+}
+
+/// The derived fields of one stage (`pbh.derived.Derived`), as numpy arrays.
+#[pyclass(frozen, module = "pbh._engine")]
+pub struct DerivedOutput {
+    #[pyo3(get)]
+    rho: Py<PyArray1<f64>>,
+    #[pyo3(get)]
+    ephi: Py<PyArray1<f64>>,
+    #[pyo3(get)]
+    delta_ephi: Py<PyArray1<f64>>,
+    #[pyo3(get)]
+    M: Py<PyArray1<f64>>,
+    #[pyo3(get)]
+    delta_M: Py<PyArray1<f64>>,
+    #[pyo3(get)]
+    mt: Py<PyArray1<f64>>,
+    #[pyo3(get)]
+    delta_rho: Py<PyArray1<f64>>,
+    #[pyo3(get)]
+    delta_U: Py<PyArray1<f64>>,
+    #[pyo3(get)]
+    delta_m: Py<PyArray1<f64>>,
+    #[pyo3(get)]
+    Gammabar2: Py<PyArray1<f64>>,
+    #[pyo3(get)]
+    rho_f: Py<PyArray1<f64>>,
+    #[pyo3(get)]
+    ephi_f: Py<PyArray1<f64>>,
+    #[pyo3(get)]
+    delta_rho_f: Py<PyArray1<f64>>,
+    #[pyo3(get)]
+    delta_ephi_f: Py<PyArray1<f64>>,
+}
+
+/// The speeds of one stage (`pbh.equations.Speeds`), as numpy arrays.
+#[pyclass(frozen, module = "pbh._engine")]
+pub struct SpeedsOutput {
+    #[pyo3(get)]
+    drift: Py<PyArray1<f64>>,
+    #[pyo3(get)]
+    Theta: Py<PyArray1<f64>>,
+    #[pyo3(get)]
+    cE: Py<PyArray1<f64>>,
+    #[pyo3(get)]
+    a: Py<PyArray1<f64>>,
+    #[pyo3(get)]
+    Lam: Py<PyArray1<f64>>,
+}
+
+/// What the kernels produced at one stage (`pbh.kernels.KernelResult`), as numpy arrays.
+#[pyclass(frozen, module = "pbh._engine")]
+pub struct KernelOutput {
+    #[pyo3(get)]
+    rho_L: Py<PyArray1<f64>>,
+    #[pyo3(get)]
+    rho_R: Py<PyArray1<f64>>,
+    #[pyo3(get)]
+    delta_rho_L: Py<PyArray1<f64>>,
+    #[pyo3(get)]
+    delta_rho_R: Py<PyArray1<f64>>,
+    #[pyo3(get)]
+    J: Py<PyArray1<f64>>,
+    #[pyo3(get)]
+    q: Py<PyArray1<f64>>,
+    #[pyo3(get)]
+    q_f: Py<PyArray1<f64>>,
+    #[pyo3(get)]
+    Q: Py<PyArray1<f64>>,
+    #[pyo3(get)]
+    F: Py<PyArray1<f64>>,
+    #[pyo3(get)]
+    theta_scale: Py<PyArray1<f64>>,
+    #[pyo3(get)]
+    Lam_plus: Py<PyArray1<f64>>,
+    #[pyo3(get)]
+    Lam_minus: Py<PyArray1<f64>>,
+    #[pyo3(get)]
+    v_L: Py<PyArray1<f64>>,
+    #[pyo3(get)]
+    v_R: Py<PyArray1<f64>>,
+}
+
+/// Everything one stage computed (`pbh.equations.DerivsResult`), as numpy arrays and floats.
+#[pyclass(frozen, module = "pbh._engine")]
+pub struct StageOutput {
+    #[pyo3(get)]
+    rate_E: Py<PyArray1<f64>>,
+    #[pyo3(get)]
+    rate_U: Py<PyArray1<f64>>,
+    #[pyo3(get)]
+    rate_W: f64,
+    #[pyo3(get)]
+    rate_M_e: f64,
+    #[pyo3(get)]
+    deviation_rate_E: Py<PyArray1<f64>>,
+    #[pyo3(get)]
+    deviation_rate_U: Py<PyArray1<f64>>,
+    #[pyo3(get)]
+    deviation_rate_W: f64,
+    #[pyo3(get)]
+    deviation_rate_M_e: f64,
+    #[pyo3(get)]
+    derived: Py<DerivedOutput>,
+    #[pyo3(get)]
+    speeds: Py<SpeedsOutput>,
+    #[pyo3(get)]
+    F: Py<PyArray1<f64>>,
+    #[pyo3(get)]
+    delta_F: Py<PyArray1<f64>>,
+    #[pyo3(get)]
+    kernels: Option<Py<KernelOutput>>,
+}
+
+impl StageOutput {
+    /// Hand every field of a stage's result to numpy.
+    fn from_result(py: Python<'_>, r: DerivsResult) -> PyResult<Self> {
+        let d = r.derived;
+        let derived = DerivedOutput {
+            rho: to_numpy(py, d.rho),
+            ephi: to_numpy(py, d.ephi),
+            delta_ephi: to_numpy(py, d.delta_ephi),
+            M: to_numpy(py, d.M),
+            delta_M: to_numpy(py, d.delta_M),
+            mt: to_numpy(py, d.mt),
+            delta_rho: to_numpy(py, d.delta_rho),
+            delta_U: to_numpy(py, d.delta_U),
+            delta_m: to_numpy(py, d.delta_m),
+            Gammabar2: to_numpy(py, d.Gammabar2),
+            rho_f: to_numpy(py, d.rho_f),
+            ephi_f: to_numpy(py, d.ephi_f),
+            delta_rho_f: to_numpy(py, d.delta_rho_f),
+            delta_ephi_f: to_numpy(py, d.delta_ephi_f),
+        };
+        let sp = r.speeds;
+        let speeds = SpeedsOutput {
+            drift: to_numpy(py, sp.drift),
+            Theta: to_numpy(py, sp.Theta),
+            cE: to_numpy(py, sp.cE),
+            a: to_numpy(py, sp.a),
+            Lam: to_numpy(py, sp.Lam),
+        };
+        let kernels = match r.kernels {
+            None => None,
+            Some(k) => {
+                let output = KernelOutput {
+                    rho_L: to_numpy(py, k.rho_L),
+                    rho_R: to_numpy(py, k.rho_R),
+                    delta_rho_L: to_numpy(py, k.delta_rho_L),
+                    delta_rho_R: to_numpy(py, k.delta_rho_R),
+                    J: to_numpy(py, k.J),
+                    q: to_numpy(py, k.q),
+                    q_f: to_numpy(py, k.q_f),
+                    Q: to_numpy(py, k.Q),
+                    F: to_numpy(py, k.F),
+                    theta_scale: to_numpy(py, k.theta_scale),
+                    Lam_plus: to_numpy(py, k.Lam_plus),
+                    Lam_minus: to_numpy(py, k.Lam_minus),
+                    v_L: to_numpy(py, k.v_L),
+                    v_R: to_numpy(py, k.v_R),
+                };
+                Some(Py::new(py, output)?)
+            }
+        };
+        Ok(StageOutput {
+            rate_E: to_numpy(py, r.rate.E),
+            rate_U: to_numpy(py, r.rate.U),
+            rate_W: r.rate.W,
+            rate_M_e: r.rate.M_e,
+            deviation_rate_E: to_numpy(py, r.deviation_rate.E),
+            deviation_rate_U: to_numpy(py, r.deviation_rate.U),
+            deviation_rate_W: r.deviation_rate.W,
+            deviation_rate_M_e: r.deviation_rate.M_e,
+            derived: Py::new(py, derived)?,
+            speeds: Py::new(py, speeds)?,
+            F: to_numpy(py, r.F),
+            delta_F: to_numpy(py, r.delta_F),
+            kernels,
+        })
+    }
+}
+
+/// Run one stage on a whole state and its deviation, and turn a failure into the Python's exception.
+fn run_stage(
+    py: Python<'_>,
+    frame: &StageFrame,
+    settings: &StageSettings,
+    bg: &Background,
+    state: &State,
+    deviation: &State,
+) -> PyResult<StageOutput> {
+    let result = calc_derivs(
+        state,
+        &frame.geo,
+        bg,
+        &settings.eos,
+        &frame.w,
+        &settings.outer,
+        &settings.kernels,
+        deviation,
+        &frame.reference,
+        frame.X_N_squared,
+        frame.X_je_squared,
+    );
+    match result {
+        Ok(r) => StageOutput::from_result(py, r),
+        Err(StageError::NotHyperbolic(e)) => {
+            let class = NOT_HYPERBOLIC_ERROR.import(py, "pbh.derived", "NotHyperbolicError")?;
+            Err(PyErr::from_value(class.call1((e.field, e.index, e.value))?))
+        }
+        Err(StageError::Closure(message)) => Err(PyValueError::new_err(message)),
+    }
+}
+
+/// One stage at the state `y_FRW + delta y` (`Scheme.evaluate_deviation`), from the packed deviation `dy`.
+#[pyfunction]
+#[pyo3(signature = (frame, settings, Gammabar2, c_s, hubble, dy))]
+fn stage_deviation(
+    py: Python<'_>,
+    frame: &StageFrame,
+    settings: &StageSettings,
+    Gammabar2: f64,
+    c_s: f64,
+    hubble: f64,
+    dy: PyReadonlyArray1<'_, f64>,
+) -> PyResult<StageOutput> {
+    let bg = Background { Gammabar2, c_s, hubble };
+    let deviation = frame.w.layout.unpack(&to_vec(&dy)).map_err(PyValueError::new_err)?;
+    let state = whole_state(&frame.reference, &deviation);
+    run_stage(py, frame, settings, &bg, &state, &deviation)
+}
+
+/// One stage at the packed whole state `y` (`Scheme.evaluate`), its deviation recovered as `deviation_from_frw` does.
+#[pyfunction]
+#[pyo3(signature = (frame, settings, Gammabar2, c_s, hubble, y))]
+fn stage_state(
+    py: Python<'_>,
+    frame: &StageFrame,
+    settings: &StageSettings,
+    Gammabar2: f64,
+    c_s: f64,
+    hubble: f64,
+    y: PyReadonlyArray1<'_, f64>,
+) -> PyResult<StageOutput> {
+    let bg = Background { Gammabar2, c_s, hubble };
+    let state = frame.w.layout.unpack(&to_vec(&y)).map_err(PyValueError::new_err)?;
+    let deviation = deviation_from_frw(&state, &frame.reference);
+    run_stage(py, frame, settings, &bg, &state, &deviation)
+}
+
+/// The module `pbh._engine`.
+#[pymodule]
+fn _engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<StageFrame>()?;
+    m.add_class::<StageSettings>()?;
+    m.add_class::<StageOutput>()?;
+    m.add_class::<DerivedOutput>()?;
+    m.add_class::<SpeedsOutput>()?;
+    m.add_class::<KernelOutput>()?;
+    m.add_function(wrap_pyfunction!(stage_deviation, m)?)?;
+    m.add_function(wrap_pyfunction!(stage_state, m)?)?;
+    Ok(())
+}

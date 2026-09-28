@@ -1,0 +1,2 @@
+# The Python is formatted at 120 columns (ruff); the Rust matches it.
+max_width = 120

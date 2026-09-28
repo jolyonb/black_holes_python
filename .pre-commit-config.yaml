@@ -28,16 +28,37 @@ repos:
 
   - repo: local
     hooks:
+      # .gitignore keeps rust/target out of `git add .`, but not out of the index once a file there has been staged
+      - id: no-rust-build-tree
+        name: no Rust build products
+        entry: rust/target is the Rust build tree and must not be committed; unstage it (git rm -r --cached rust/target)
+        language: fail
+        files: ^rust/target/
+
       - id: pyright
         name: pyright
         entry: uv run --frozen pyright
         language: system
-        types: [python]
+        types_or: [python, pyi]
         pass_filenames: false
 
-      - id: pytest
+      - id: pytest  # also on a Rust-only change: `uv run` rebuilds the engine first, so the suite tests the current one
         name: pytest
         entry: uv run --frozen pytest -q --cov --cov-report=term-missing
         language: system
-        types: [python]
+        types_or: [python, pyi, rust, toml]
+        pass_filenames: false
+
+      - id: cargo-fmt
+        name: cargo fmt
+        entry: cargo fmt --manifest-path rust/Cargo.toml --check
+        language: system
+        files: ^rust/
+        pass_filenames: false
+
+      - id: cargo-clippy
+        name: cargo clippy
+        entry: cargo clippy --manifest-path rust/Cargo.toml -- -D warnings
+        language: system
+        files: ^rust/
         pass_filenames: false

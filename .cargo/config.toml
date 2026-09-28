@@ -1,0 +1,6 @@
+# `cargo clippy` and `cargo build` run by hand in rust/ link against the project's Python (3.14), as maturin's build
+# does: PyO3 takes the interpreter of the virtual environment VIRTUAL_ENV names, `bin/python` on macOS and Linux and
+# `Scripts\python.exe` on Windows. [env] never overrides a variable that is already set, so an activated environment
+# (or an explicit PYO3_PYTHON) wins; maturin sets PYO3_PYTHON itself.
+[env]
+VIRTUAL_ENV = { value = ".venv", relative = true }

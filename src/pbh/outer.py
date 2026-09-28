@@ -52,8 +52,9 @@ class OuterInputs:
         delta_ephi_f_N: Its deviation, `<ephi>_N - 1`.
         mt_N: The tilde mass at the outer face.
         delta_m_N: Its relative deviation, `mt_N - 1`.
-        drift_N: `alpha (<ephi>_N U_N - X_N)`, the fluid's velocity relative to the Hubble flow (`equations.Speeds`).
-        delta_DU_N: The one-sided velocity gradient at the outer face less its FRW value one, `(D_U delta U)_N`.
+        drift_N: `alpha (<ephi>_N U_N - h X_N)`, the fluid's velocity relative to the Hubble flow
+            (`equations.Speeds`); `alpha <ephi>_N U_N` in flat spacetime.
+        delta_DU_N: The one-sided velocity gradient at the outer face less its FRW value `h`, `(D_U U)_N - h`.
         dS_N: The difference of mean-square radii across the outer face.
         c_s: The background sound speed at this time.
         hubble: The background coefficient `h` of `Background`: 1 on FRW, 0 in flat spacetime.

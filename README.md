@@ -14,7 +14,15 @@ the background (`rhotilde = rho / rho_FRW`, `Rtilde = R / (a R_H)`, `Utilde = U 
 
 ## Getting started
 
-The project is managed with [uv](https://docs.astral.sh/uv/) and requires Python 3.14.
+The project is managed with [uv](https://docs.astral.sh/uv/) (0.8.6 or newer) and requires Python 3.14 and a Rust
+toolchain, 1.85 or newer, with clippy and rustfmt (`rustup`): `uv sync` builds the Rust engine `pbh._engine` with
+maturin, and fails at once, rather than download a toolchain, where there is no `cargo`. (That guard is
+`[tool.uv.extra-build-variables]` in `pyproject.toml`, which a uv older than 0.8.6 ignores: such a uv, on a machine
+without Rust, would let maturin download one, about 500 MB.) Without Rust the package does not install at all, even
+for the numpy engine: the error then reads `Call to maturin.build_editable failed ... Cargo metadata failed. Do you
+have cargo in your PATH?`, and the cure is to install Rust (`rustup`) and run `uv sync` again. A lean install may drop
+the `dev` and `analysis` groups (`uv sync --no-dev`), but not `build`, which holds maturin: with
+`--no-default-groups`, add `--group build`.
 
 ```
 uv sync
@@ -63,6 +71,8 @@ configuration or a different one: every snapshot is a restart point, and a resta
 * `readout`: the rate window, the two-e-fold floor, the error bar and the target at which the mass is read, and
   whether the run stops there.
 * `stepping`: RK4's Courant number and the step cap.
+* `numerics`: `engine`, `python` (numpy, the reference and the default) or `rust` (the same stage compiled, the same
+  results; about twice as fast on a whole run). Not physics: a restart may switch engines.
 * `output`: the snapshot schedule (uniform in `xi` before formation, in physical time after), the flush cadence, and
   whether the full monitor record is written every step or only at snapshots.
 * `evolution`: `xi_end`, and `stop_on_bounce` to end a sub-threshold run once its core has bounced (the central
@@ -119,6 +129,8 @@ src/pbh/
   records, output, h5                initial and snapshot records; the evolution file
   monitors, readout, summary         per-step monitors; the mass read-out; the run summary
   michel                             the Michel accretion flow, the late-time background and a test
+  rust_engine, _engine.pyi           the adapter to the Rust engine and its type stubs
+rust/src/                            the Rust engine: the stage of equations.py, one function per Python function
 src/_old/                            the retired collocated code (2015-2026), kept for reference; not run
 ```
 
@@ -133,8 +145,18 @@ uv run pytest               # the fast suite (about 15 s)
 uv run pytest -m slow       # evolutions (about a minute)
 uv run pytest -m ''         # everything
 uv run ruff check . && uv run ruff format . && uv run pyright   # lint, format, strict types
-uv run pre-commit install   # all of the above on every commit
+uv run pre-commit install   # all of the above on every commit, and cargo fmt and clippy on the Rust
 ```
+
+The Rust engine is rebuilt by any `uv sync` or `uv run` after a change to `rust/` (never `maturin develop`); its
+gates are `cargo fmt --check` and `cargo clippy -- -D warnings` in `rust/`, and it is tested from pytest against the
+numpy engine (`tests/test_rust_engine.py`). Run `uv sync` once before the cargo gates in a fresh clone: they build
+PyO3 against the project's own interpreter, the one in `.venv` (`.cargo/config.toml`), which `uv sync` creates.
+`pbh` is built in the project environment, with the maturin of the default group `build`, not in an isolated one
+(`no-build-isolation-package` in `pyproject.toml`), so that an edit to the engine recompiles only the engine. CI pins
+the Rust toolchain (`.github/workflows/ci.yml`) and also checks the crate on its declared minimum, 1.85; until that
+job has run, the minimum is declared, not tested (see `rust/Cargo.toml`).
+`rust/target/` is the build tree: ignored, and refused by a pre-commit hook if it is ever staged.
 
 Style: flat pytest functions, pyright strict, explicit ABCs, and no computer algebra in the code or its tests (exact
 `Fraction` arithmetic where exactness is needed); the symbolic checks of the paper live with the paper.

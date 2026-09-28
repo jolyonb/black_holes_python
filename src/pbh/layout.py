@@ -85,10 +85,18 @@ class Layout:
         scalars = [state.M_e, state.W] if self.excised else [state.W]
         return np.concatenate((state.E[self.cells], state.U[self.faces_evolved], scalars))
 
-    def unpack(self, y: FloatArray) -> State:
-        """The state from a flat vector packed by `pack`, full-length arrays with NaN below `j_e` and `U_0 = 0`."""
+    def check_packed(self, y: FloatArray) -> None:
+        """Refuse a vector that is not packed for this layout (`unpack`'s check, which the Rust engine shares).
+
+        Raises:
+            ValueError: If `y` is not one-dimensional of length `size`.
+        """
         if y.shape != (self.size,):
             raise ValueError(f"expected a packed vector of length {self.size}, got shape {y.shape}")
+
+    def unpack(self, y: FloatArray) -> State:
+        """The state from a flat vector packed by `pack`, full-length arrays with NaN below `j_e` and `U_0 = 0`."""
+        self.check_packed(y)
         n_cells = self.N - self.j_e
         n_faces = self.N + 1 - max(self.j_e, 1)
         E = nan_array(self.N)

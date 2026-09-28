@@ -41,6 +41,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
 from fractions import Fraction
+from typing import TYPE_CHECKING
 
 import numpy as np
 
@@ -55,6 +56,10 @@ from pbh.outer import OuterClosure
 from pbh.state import FrwReference, State
 from pbh.stencils import StencilWeights
 from pbh.types import FloatArray, read_only
+
+if TYPE_CHECKING:  # the Rust engine is imported only when a Scheme asks for it (`Scheme.__post_init__`)
+    from pbh._engine import StageFrame
+    from pbh.rust_engine import RustStage
 
 #: The Courant number of eq:num:cfl. RK4's stable limit on the production footprint is 0.865 (0.835 to x_max = 48).
 COURANT_NUMBER = 0.75
@@ -112,6 +117,23 @@ RK4 = ButcherTableau(
 )
 
 
+class Engine(Enum):
+    """Which implementation evaluates a stage: the numpy engine (the reference and the default) or the Rust engine.
+
+    Both compute `calc_derivs` with the same operations in the same order (`rust/src`, one function per function of
+    `equations.py` and what it calls), and a stage agrees between them to the bit on this machine on every non-NaN
+    entry, with NaN in the same entries (tests/test_rust_engine.py). The Rust engine emits none of numpy's
+    `RuntimeWarning`s, and the sign of a computed NaN may differ (`pbh.rust_engine` says why). The engine is not
+    physics: a run records it in its configuration, and a restart may switch.
+    """
+
+    PYTHON = "python"
+    """numpy, `equations.calc_derivs`."""
+
+    RUST = "rust"
+    """The compiled stage of `pbh._engine`, through `pbh.rust_engine`."""
+
+
 #: How many frames a `Scheme` keeps: the three stage times of an RK4 step, `xi`, `xi + dxi / 2` and `xi + dxi`, and
 #: one more, the output time `land` that the driver clipped the step to, at which `checked_step` evaluates the result
 #: while its fourth stage stays at `xi + dxi`.
@@ -132,6 +154,7 @@ class Frame:
         reference: The reference solution `y_FRW` on this geometry (the fluid at rest in flat spacetime), unpacked,
             with its rate and flux.
         y_frw: `reference.state` packed by the layout: the vector to which the integrator adds its deviation.
+        rust: The same frame copied into the Rust engine, when the Scheme runs it; `None` on the numpy engine.
     """
 
     geo: Geometry
@@ -139,6 +162,7 @@ class Frame:
     w: StencilWeights
     reference: FrwReference
     y_frw: FloatArray
+    rust: StageFrame | None = None
 
 
 @dataclass(frozen=True)
@@ -153,6 +177,7 @@ class Scheme:
         settings: The kernel switches.
         spacetime: The spacetime: FRW (production), or flat, the limit without gravity of Section 7.7, whose reference
             is the fluid at rest. Excision needs gravity, so a flat scheme has no excised cells.
+        engine: Which implementation evaluates a stage: numpy (the default) or Rust (`Engine`).
     """
 
     eos: EquationOfState
@@ -161,6 +186,8 @@ class Scheme:
     outer: OuterClosure
     settings: KernelSettings
     spacetime: Spacetime = Spacetime.FRW
+    engine: Engine = Engine.PYTHON
+    _rust: RustStage | None = field(init=False, repr=False, compare=False)
     _static_frame: Frame | None = field(init=False, repr=False, compare=False)
     _frames: dict[float, Frame] = field(init=False, default_factory=dict[float, Frame], repr=False, compare=False)
 
@@ -172,7 +199,24 @@ class Scheme:
         """
         if self.spacetime is Spacetime.FLAT and self.layout.j_e > 0:
             raise ValueError("flat spacetime has no gravity, so no black hole to excise")
+        rust = None
+        if self.engine is Engine.RUST:
+            from pbh import rust_engine  # the extension is loaded only by a Scheme that runs it
+
+            rust = rust_engine.RustStage(self.eos, self.settings, self.outer, self.layout)
+        object.__setattr__(self, "_rust", rust)
         object.__setattr__(self, "_static_frame", self._new_frame(0.0) if self.map.is_static else None)
+
+    def __reduce__(
+        self,
+    ) -> tuple[type[Scheme], tuple[EquationOfState, Map, Layout, OuterClosure, KernelSettings, Spacetime, Engine]]:
+        """Pickle and copy a Scheme as its settings, from which the copy rebuilds its frames when it needs them.
+
+        The frames are a cache, and on the Rust engine they hold the extension's objects, which cannot be pickled;
+        rebuilding gives the same frames to the bit, since they are computed afresh from the same settings. So a Scheme
+        on either engine can be sent to a worker process or deep-copied.
+        """
+        return (Scheme, (self.eos, self.map, self.layout, self.outer, self.settings, self.spacetime, self.engine))
 
     def _new_frame(self, xi: float) -> Frame:
         """The frame at time `xi` built from the map: every stage time on a moving map, once on a static one."""
@@ -184,7 +228,8 @@ class Scheme:
         # Shared by every stage and caller that asks for this time (`frame`): read-only, so a stray write raises.
         read_only(geo.X, geo.X_xi, geo.dV, geo.dV_xi, geo.sbar, geo.dS, geo.dX, geo.Xm, geo.X2, geo.X3)
         read_only(geo.s_in, geo.s_out, w.grad_s, w.centred_U, w.r_L, w.r_R, y_frw)
-        return Frame(geo=geo, bg=bg, w=w, reference=reference, y_frw=y_frw)
+        rust = None if self._rust is None else self._rust.frame(geo, w, reference)
+        return Frame(geo=geo, bg=bg, w=w, reference=reference, y_frw=y_frw, rust=rust)
 
     def frame(self, xi: float) -> Frame:
         """The frame at time `xi`, kept for the last `FRAMES_KEPT` distinct times.
@@ -201,7 +246,14 @@ class Scheme:
                 frame = self._new_frame(xi)
             else:
                 bg = Background.at(self.eos, xi, self.spacetime)
-                frame = Frame(geo=static.geo, bg=bg, w=static.w, reference=static.reference, y_frw=static.y_frw)
+                frame = Frame(
+                    geo=static.geo,
+                    bg=bg,
+                    w=static.w,
+                    reference=static.reference,
+                    y_frw=static.y_frw,
+                    rust=static.rust,
+                )
             if len(self._frames) >= FRAMES_KEPT:
                 del self._frames[next(iter(self._frames))]  # dicts keep insertion order: this is the oldest
             self._frames[xi] = frame
@@ -210,6 +262,9 @@ class Scheme:
     def evaluate(self, xi: float, y: FloatArray) -> DerivsResult:
         """The time derivatives at time `xi` for the packed state `y`, with the fields they came from."""
         f = self.frame(xi)
+        if self._rust is not None:
+            assert f.rust is not None
+            return self._rust.evaluate(f.rust, f.bg, y)
         state = self.layout.unpack(y)
         return calc_derivs(state, f.geo, f.bg, self.eos, f.w, self.outer, self.settings, reference=f.reference)
 
@@ -220,6 +275,9 @@ class Scheme:
         deviation instead, which has not been rounded (see `derive`).
         """
         f = self.frame(xi)
+        if self._rust is not None:
+            assert f.rust is not None
+            return self._rust.evaluate_deviation(f.rust, f.bg, dy)
         deviation = self.layout.unpack(dy)
         state = self.whole_state(xi, deviation)
         return calc_derivs(

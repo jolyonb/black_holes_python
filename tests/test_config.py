@@ -103,6 +103,7 @@ def test_a_saved_error_names_the_file_and_every_bad_key(tmp_path: Path):
         ),  # a string in YAML
         ("stepping: {courant_number: 1.5}\n", "stepping.courant_number\n  Input should be less than or equal to 1"),
         ("stepping: {integrator: rk4}\n", "stepping.integrator\n  Extra inputs are not permitted"),
+        ("numerics: {engine: fortran}\n", "numerics.engine\n  Input should be 'python' or 'rust'"),
         ("shocks: {kernels: 3}\n", "shocks.kernels\n  Input should be 'production' or 'centred'"),
         ("output: {flush_every: 0}\n", "output.flush_every\n  Input should be greater than or equal to 1"),
         ("output: {snapshot_spacing: 0.1, snapshot_spacing_min: 0.2}\n", "snapshot_spacing_min = 0.2 exceeds"),
@@ -164,7 +165,18 @@ def test_a_saved_configuration_is_complete_carries_its_provenance_and_reloads_un
     out = tmp_path / "saved.config.yaml"
     save(config, out)
     document = yaml.safe_load(out.read_text())
-    sections = ["provenance", "fluid", "grid", "outer", "shocks", "excision", "readout", "stepping", "output"]
+    sections = [
+        "provenance",
+        "fluid",
+        "grid",
+        "outer",
+        "shocks",
+        "excision",
+        "readout",
+        "stepping",
+        "numerics",
+        "output",
+    ]
     sections.append("evolution")
     assert list(document) == sections
     assert document["grid"] == {"N": 40, "Rtilde_max": 4.0, "map": "sinh", "scale": 2.0}
@@ -208,6 +220,23 @@ def test_the_code_commit_is_unknown_outside_a_checkout(monkeypatch: pytest.Monke
     monkeypatch.setattr(subprocess, "run", not_a_repo)
     assert code_commit() == "unknown"
     code_commit.cache_clear()  # not the answer of a faked git for the tests that follow
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"), [("", "0123456789ab"), (" M src/pbh/config.py\n", "0123456789ab-dirty")]
+)
+def test_the_code_commit_is_the_short_hash_marked_dirty_by_uncommitted_changes(
+    monkeypatch: pytest.MonkeyPatch, status: str, expected: str
+):
+    # a faked git, so that the answer is tested in a copy of the code that is not a checkout as well
+    def git(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        out = "0123456789ab\n" if command[1] == "rev-parse" else status
+        return subprocess.CompletedProcess(args=command, returncode=0, stdout=out, stderr="")
+
+    code_commit.cache_clear()
+    monkeypatch.setattr(subprocess, "run", git)
+    assert code_commit() == expected
+    code_commit.cache_clear()
 
 
 # --- building ---

@@ -31,6 +31,8 @@ assembled from all of them. The driver reads the file and never sees a raw strin
       courant_number: 0.75
       cap_tolerance: 1.0e-5     # the step cap of eq:num:stepcap: relative error tolerance ...
       cap_efolds: 4.0           # ... over this many super-horizon e-folds
+    numerics:
+      engine: python            # python (numpy, the reference) or rust (the compiled stage); not physics
     output:
       snapshots: all                # all; milestones (initial, formation, switch-on, end); none (initial only)
       snapshot_spacing: 0.2         # snapshots every this much in xi on the background, tightening ...
@@ -72,7 +74,7 @@ from pbh.layout import Layout
 from pbh.maps import IdentityMap, Map, SinhStretch
 from pbh.outer import HeldAtFrw, OuterClosure, OutgoingWave, PenaltyStrengths
 from pbh.readout import ReadoutSettings
-from pbh.timestep import COURANT_NUMBER, Scheme, step_cap
+from pbh.timestep import COURANT_NUMBER, Engine, Scheme, step_cap
 
 
 class ConfigError(ValueError):
@@ -268,6 +270,18 @@ class SteppingConfig(Section):
         return step_cap(eos, self.cap_tolerance, self.cap_efolds)
 
 
+class NumericsConfig(Section):
+    """The `numerics` section: which implementation evaluates the stages (`timestep.Engine`).
+
+    Not physics: both engines compute the same rates, to the bit on every number on the machine they were compared on
+    (tests/test_rust_engine.py; the sign of a computed NaN may differ, and only numpy emits `RuntimeWarning`s). The
+    engine is recorded with every run, and nothing compares it on a restart, which may switch engines.
+    """
+
+    engine: Engine = Field(default=Engine.PYTHON, strict=False)
+    """`python`, numpy (the reference and the default), or `rust`, the compiled stage of `pbh._engine`."""
+
+
 class SnapshotChoice(Enum):
     """Which snapshots a run writes."""
 
@@ -346,6 +360,7 @@ class RunConfig(Section):
     excision: ExcisionConfig = ExcisionConfig()
     readout: ReadoutConfig = ReadoutConfig()
     stepping: SteppingConfig = SteppingConfig()
+    numerics: NumericsConfig = NumericsConfig()
     output: OutputConfig = OutputConfig()
     evolution: EvolutionConfig
 
@@ -357,6 +372,7 @@ class RunConfig(Section):
             Layout(self.grid.N) if layout is None else layout,
             self.outer.build(),
             self.shocks.build(),
+            engine=self.numerics.engine,
         )
 
 
