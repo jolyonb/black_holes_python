@@ -69,6 +69,23 @@ def test_a_pause_below_half_is_not_a_bounce_but_the_fall_after_it_is():
     assert t > 5.6 + BOUNCE_HOLD  # the hold that the second spike interrupted does not count
 
 
+def test_a_margin_still_falling_at_the_end_of_the_first_hold_is_waited_for():
+    # The density falls below half its peak at about 5.3 and stays there; the margin keeps falling until 6.2 and rises
+    # only after it. The first hold ends with the margin still falling, so the bounce is established later in the same
+    # fall, once a hold ends with the margin above its minimum; testing only the first hold never established it.
+    rho_phys = physical_density(XI, central(5.0, 0.2, 3.0))
+    margin = (
+        1.0 - 0.8 * np.exp(-(((XI - 6.2) / 0.3) ** 2)) * (XI < 6.2) - 0.8 * (XI >= 6.2) * np.exp(-((XI - 6.2) / 0.1))
+    )
+    k = peak_index(rho_phys)
+    assert k is not None
+    fallen = int(np.flatnonzero((rho_phys <= BOUNCE_FALL * rho_phys[k]) & (XI > XI[k]))[0])
+    t = bounce_time(XI, rho_phys, margin, k)
+    assert t is not None
+    assert t > XI[fallen] + BOUNCE_HOLD + 0.5  # not the first hold's end: the margin was still falling there
+    assert t >= 6.2  # once the margin has risen above its minimum
+
+
 def test_the_history_and_the_watch_agree_on_the_same_series():
     rho_0 = central(5.0, 0.2, 3.0)
     margin = 1.0 - 0.8 * np.exp(-(((XI - 5.0) / 0.3) ** 2))
@@ -138,3 +155,30 @@ def test_a_core_that_never_rose_is_described_as_such():
         "  smallest core margin 1.0000 at xi = 0.0000",
         "no horizon formed",
     ]
+
+
+def test_a_run_restarted_before_its_bounce_records_the_same_bounce_at_the_same_step(tmp_path: Path):
+    # The restart hands the core's watch its series from the file (driver.core_watch), and replays when it was tested,
+    # so the restarted run tests at the same steps and establishes the bounce where the uninterrupted run did.
+    config_path = tmp_path / "sub.yaml"
+    config_path.write_text(
+        "grid: {N: 100, Rtilde_max: 12.0, scale: 3.0}\nevolution: {xi_end: 9.0, stop_on_bounce: true}\n"
+    )
+    A = 0.49 * math.e / 8.0
+    initial = ["initial", "gaussian", "sub", "--config", str(config_path), "--A", f"{A:.12g}", "--ell", "2.0"]
+    assert main([*initial, "--dir", str(tmp_path)]) == 0
+    assert main(["run", str(config_path), "sub", "--dir", str(tmp_path)]) == 0
+    whole = RunReader(RunPaths.of(tmp_path, "sub").evolution)
+    bounce = next(e for e in whole.events if e.kind == "bounce")
+    k = max(
+        s.index for s in whole.snapshots if s.xi < bounce.payload["peak_xi"] + 0.3
+    )  # past the peak, before the hold
+    assert main(["restart", "sub", "again", "--snapshot", str(k), "--dir", str(tmp_path)]) == 0
+    again = RunReader(RunPaths.of(tmp_path, "again").evolution)
+    rebounce = next(e for e in again.events if e.kind == "bounce")
+    assert rebounce.payload == bounce.payload
+    assert rebounce.xi == bounce.xi
+    end, reend = whole.end, again.end
+    assert end is not None
+    assert reend is not None
+    assert (reend.xi, reend.payload["reason"]) == (end.xi, "the core bounced")

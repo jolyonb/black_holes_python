@@ -33,7 +33,7 @@ import yaml
 from cyclopts import App, CycloptsError, Parameter
 
 from pbh.config import ConfigError, RunConfig, load
-from pbh.driver import RunPaths, RunResult, epoch_history
+from pbh.driver import RunPaths, RunResult, core_watch, epoch_history
 from pbh.driver import run as run_driver
 from pbh.eos import Background
 from pbh.initial import GrowingMode, IllPosedDataError, NotCompensatedError
@@ -139,7 +139,8 @@ def restart(
     paths = RunPaths.of(dir, name)
     write_initial(paths.initial, record)
     history = epoch_history(reader, record.xi)  # the M_AH series the read-out needs, from before the snapshot
-    report(run_driver(parsed, read_initial(paths.initial), paths, history))
+    core = core_watch(reader, record.xi)  # and the core's series, for the bounce
+    report(run_driver(parsed, read_initial(paths.initial), paths, history, core))
 
 
 @app.command

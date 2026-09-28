@@ -74,23 +74,23 @@ def peak_index(rho_phys: FloatArray) -> int | None:
 
 
 def bounce_time(xi: FloatArray, rho_phys: FloatArray, margin: FloatArray, peak: int) -> float | None:
-    """When a bounce after `peak` was established, the end of the first hold that passes; `None` if none has.
+    """When a bounce after `peak` was established; `None` if it has not been.
 
-    A hold starts where the density falls to `BOUNCE_FALL` of the peak and passes if it stays there through
-    `BOUNCE_HOLD` in `xi` and the margin at its end is above the smallest margin before its start.
+    It is established at the first sample that ends a hold: the density has stayed at or below `BOUNCE_FALL` of the
+    peak through the whole of the last `BOUNCE_HOLD` in `xi`, and the margin there is above the smallest margin before
+    the hold began. Every sample of a fall is a candidate end, so a hold at whose end the margin is still falling is
+    followed by later ones in the same fall; testing only the hold that starts where the density first falls missed
+    such bounces (C = 0.497 at N = 200 then ran on to xi = 12).
     """
     fallen = rho_phys <= BOUNCE_FALL * rho_phys[peak]
     fallen[: peak + 1] = False
-    starts = np.flatnonzero(fallen & ~np.concatenate(([False], fallen[:-1])))
-    for s in starts:
-        end = xi[s] + BOUNCE_HOLD
-        if xi[-1] < end:
-            return None  # the series does not reach the end of this hold yet
-        window = (xi >= xi[s]) & (xi <= end)
-        e = int(np.flatnonzero(window)[-1])
-        if np.all(fallen[window]) and margin[e] > np.min(margin[: s + 1]):
-            return float(xi[e])
-    return None
+    samples = np.arange(xi.size)
+    fall_start = np.maximum.accumulate(np.where(fallen, 0, samples + 1))  # the first sample of the fall each is in
+    hold_start = np.searchsorted(xi, xi - BOUNCE_HOLD)  # the first sample of the hold that ends at each
+    held = fallen & (xi[np.minimum(fall_start, xi.size - 1)] <= xi - BOUNCE_HOLD)
+    risen = margin > np.minimum.accumulate(margin)[hold_start]
+    ends = np.flatnonzero(held & risen)
+    return float(xi[ends[0]]) if ends.size else None
 
 
 def collapse_history(xi: FloatArray, rho_0: FloatArray, margin: FloatArray) -> CollapseHistory:

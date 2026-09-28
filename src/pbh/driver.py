@@ -24,11 +24,12 @@ sits on the grid that gives, saves the configuration with its provenance, and th
 6. watch the core before formation (`collapse.py`): the central density and the core margin of every step are
    collected, and every `READOUT_CHECK` in `xi` tested for a bounce; one established is recorded as a `bounce` event
    with the peak of the physical central density and the smallest core margin, and the run ends there if the
-   configuration says so. The watch starts afresh on a restart.
+   configuration says so. A restart hands the watch its series from the source file (`core_watch`).
 
 The initial state is examined the same way before the first step, so that a run restarted from a snapshot makes
 the decisions the uninterrupted run made at that state; a restart hands the run its epoch's history of `M_AH` from
-the source file (`epoch_history`), so that it reads the mass the uninterrupted run would read. The switch-on writes
+the source file (`epoch_history`), so that it reads the mass the uninterrupted run would read, and the core's watch its
+series (`core_watch`), so that it records the bounce the uninterrupted run would record. The switch-on writes
 a snapshot of the state it is thrown on, unexcised and already carrying the new zone: the same collapse continued
 from it with excision off runs on the same grid, which is the comparison Section 8.3 asks for.
 
@@ -528,10 +529,39 @@ def epoch_history(reader: RunReader, xi: float) -> Epoch | None:
     return epoch
 
 
-def run(config: RunConfig, initial: StateRecord, paths: RunPaths, history: Epoch | None = None) -> RunResult:
+def core_watch(reader: RunReader, xi: float) -> CoreWatch:
+    """The core's watch as the uninterrupted run held it after its step at `xi`, from the run's file, for a restart.
+
+    Its series is the central density of the step record and the core margin of the horizon table, joined on the step,
+    for every step up to `xi` before any formation; it is marked bounced if a `bounce` event came at or before `xi`,
+    and the times it was tested are replayed with the cadence `watch_core` uses, so that the restarted run tests it at
+    the same steps and records the same bounce at the same step as the uninterrupted one would.
+    """
+    watch = CoreWatch()
+    formed = [e.xi for e in reader.events if e.kind == "formation"]
+    watch.bounced = any(e.kind == "bounce" and e.xi <= xi for e in reader.events)
+    margins = dict(zip(reader.horizon["step"], reader.horizon["core_margin"], strict=True))
+    steps = reader.steps
+    for step, t, rho_0 in zip(steps["step"], steps["xi"], steps["rho_0"], strict=True):
+        if float(t) > xi or (formed and float(t) >= formed[0]):
+            break
+        watch.add(float(t), float(rho_0), float(margins[step]))
+        if float(t) >= watch.checked + READOUT_CHECK:
+            watch.checked = float(t)
+    return watch
+
+
+def run(
+    config: RunConfig,
+    initial: StateRecord,
+    paths: RunPaths,
+    history: Epoch | None = None,
+    core: CoreWatch | None = None,
+) -> RunResult:
     """Run the configuration from the initial state and write the run's files; see the module docstring.
 
-    `history` is the epoch the initial state is in, with its series of `M_AH`, when it continues another run.
+    `history` is the epoch the initial state is in, with its series of `M_AH`, and `core` the core's watch
+    (`core_watch`), when it continues another run.
     """
     layout = Layout(config.grid.N, j_e=initial.j_e)
     sch = config.scheme(run_map(config, initial.zones), layout)
@@ -558,6 +588,7 @@ def run(config: RunConfig, initial: StateRecord, paths: RunPaths, history: Epoch
             initial.zones,
             far_zone_radius(initial),
             epoch=history,
+            core=core if core is not None else CoreWatch(),
         )
         try:
             if not bool(np.all(np.isfinite(r.dy))):  # a failure at the accepted state is an abort, never a retry
