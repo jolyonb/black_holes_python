@@ -40,8 +40,10 @@ that configuration and computes derived fields with the same functions the run u
 
 import dataclasses
 import json
+import operator
 import platform
 import socket
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -85,7 +87,12 @@ class Table[R]:
         self.fields = [f.name for f in dataclasses.fields(row_type)]  # type: ignore[reportArgumentType]
         self.lengths: dict[str, int] = {}  # the string columns and their capacities
         self.columns: dict[str, h5.Dataset] = {}  # held, so that a flush does not look each one up by name
-        self.pending: list[R] = []
+        # Each row is buffered as the tuple of its fields in column order, read in one call (`attrgetter`), and a flush
+        # turns the rows into columns with one `zip`: reading field by field was a million calls a run.
+        getter = operator.attrgetter(*self.fields)
+        self.values: Callable[[R], tuple[Any, ...]] = getter if len(self.fields) > 1 else lambda row: (getter(row),)
+        self.pending: list[tuple[Any, ...]] = []
+        self.last: R | None = None  # the last row buffered, until it is written
         for f in dataclasses.fields(row_type):  # type: ignore[reportArgumentType]
             kind = f.type if isinstance(f.type, str) else f.type.__name__
             if kind in ("float", "int"):
@@ -106,15 +113,17 @@ class Table[R]:
             size = len(str(getattr(row, name)).encode())
             if size > length:
                 raise ValueError(f"a string of {size} bytes does not fit the column {name!r} of {length}")
-        self.pending.append(row)
+        self.pending.append(self.values(row))
+        self.last = row
 
     def flush(self) -> None:
         """Write the buffered rows to disk, where a reader can see them."""
         if not self.pending:
             return
-        for name in self.fields:
-            h5.append_column(self.columns[name], [getattr(row, name) for row in self.pending])
+        for name, column in zip(self.fields, zip(*self.pending, strict=True), strict=True):
+            h5.append_column(self.columns[name], list(column))
         self.pending.clear()
+        self.last = None
 
 
 def read_table(group: h5.Group) -> dict[str, Column]:
@@ -299,7 +308,7 @@ class RunWriter[R: StepRow]:
     def __exit__(self, kind: type[BaseException] | None, value: BaseException | None, tb: TracebackType | None) -> None:
         """Close the file; a run that leaves by an exception is recorded as `interrupted` with the exception's text."""
         if not self.closed:
-            last = self.steps.pending[-1] if self.steps.pending else None
+            last = self.steps.last
             step, xi = (last.step, last.xi) if last is not None else (-1, float("nan"))
             self.close(step, xi, "completed" if value is None else "interrupted", error=repr(value) if value else "")
 
