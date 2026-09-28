@@ -88,6 +88,7 @@ impl FrwReference {
 }
 
 /// The state `y_FRW + delta y` from the unpacked deviation (`Scheme.whole_state`): `reference.state.plus(deviation)`.
+#[inline(never)] // kept out of line: see `calc_derivs`
 pub fn whole_state(reference: &FrwReference, deviation: &State) -> State {
     reference.state.plus(deviation)
 }

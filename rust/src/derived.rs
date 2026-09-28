@@ -60,6 +60,7 @@ pub struct Derived {
 /// Form the derived fields of one stage, asserting hyperbolicity on the retained entries (`derive`).
 ///
 /// `deviation` is the state's deviation from FRW, which `Gammabar^2` and the relative deviations read.
+#[inline(never)] // kept out of line: see `calc_derivs`
 pub fn derive(
     state: &State,
     geo: &Geometry,

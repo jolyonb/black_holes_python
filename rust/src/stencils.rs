@@ -95,6 +95,7 @@ impl StencilWeights {
 
     /// The face value `<f>_j` of a cell field (eq:num:stencils, first line; eq:numbh:rows1 at `j_e`): the two-cell
     /// average inside, `f_0` at the origin, the cell behind an excision face, NaN at face `N`.
+    #[inline(never)] // kept out of line: see `calc_derivs`
     pub fn face_average(&self, f: &[f64]) -> Vec<f64> {
         let N = self.layout.N;
         let j_e = self.layout.j_e;
@@ -122,6 +123,7 @@ impl StencilWeights {
 
     /// The gradient `(D_s f)_j = 2 X_j (f_j - f_{j-1}) / dS_j` of a cell field (eq:num:stencils, second line): zero
     /// at the origin and at an excision face, NaN at face `N`.
+    #[inline(never)] // kept out of line: see `calc_derivs`
     pub fn gradient_s(&self, f: &[f64]) -> Vec<f64> {
         let N = self.layout.N;
         let j_e = self.layout.j_e;
@@ -136,6 +138,7 @@ impl StencilWeights {
     /// The velocity gradient `(D_U U)_j` (eq:num:stencils, third and fourth lines; eq:numbh:rows1 at `j_e`): the
     /// centred two-face difference inside, the three-point one-sided row at face `N`, the one retained difference at
     /// an excision face, and NaN at the origin.
+    #[inline(never)] // kept out of line: see `calc_derivs`
     pub fn velocity_gradient(&self, U: &[f64]) -> Vec<f64> {
         let N = self.layout.N;
         let j_e = self.layout.j_e;

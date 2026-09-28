@@ -71,6 +71,7 @@ pub struct DerivsResult {
 ///
 /// `Theta`, `cE` and `Lam` are formed over the whole array, as numpy forms them, so their NaN entries come out of the
 /// same arithmetic.
+#[inline(never)] // kept out of line: see `calc_derivs`
 pub fn speeds(
     d: &Derived,
     deviation: &State,
@@ -110,6 +111,11 @@ pub fn speeds(
 ///
 /// `X_N_squared` and `X_je_squared` are the two scalar squares the Python forms by the C library's `pow`: `X_N ** 2`
 /// of the closures and `X[j_e] ** 2` of the viscous pressure's excision row.
+///
+/// Its array-level parts (`derive`, `speeds`, the kernels, the stencils, `whole_state`) are marked
+/// `#[inline(never)]`: inlined into this one function, the stage ran about 10 per cent slower at N = 1600 (281 against
+/// 312 us an RK4 attempt, 2026-09-28; measured, the cause not established). Out of line or in, the operations and
+/// their order are the same.
 pub fn calc_derivs(
     state: &State,
     geo: &Geometry,

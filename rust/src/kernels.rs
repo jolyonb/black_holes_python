@@ -182,6 +182,7 @@ fn one_sided(
 
 /// The density to both sides of every retained face, piecewise linear in `s = X^2` (eq:num:recon, eq:num:theta),
 /// carried out on the deviation `rho - 1` with one added back.
+#[inline(never)] // kept out of line: see `calc_derivs`
 pub fn reconstruct_density(
     delta_rho: &[f64],
     geo: &Geometry,
@@ -247,6 +248,7 @@ pub fn reconstruct_density(
 ///
 /// `X_je_squared` is `X[j_e] ** 2` as the Python forms it on the numpy scalar (the C library's `pow`), for the end
 /// row at an excision face.
+#[inline(never)] // kept out of line: see `calc_derivs`
 pub fn viscous_pressure(
     geo: &Geometry,
     d: &Derived,
@@ -324,6 +326,7 @@ pub fn viscous_pressure(
 
 /// The viscous pressure each one-sided flux of eq:num:hll carries at the faces (`viscous_sides`): the face average
 /// to both (`Averaged`), or each side its own cell's `q / rho` at its reconstructed density (`DensityWeighted`).
+#[inline(never)] // kept out of line: see `calc_derivs`
 pub fn viscous_sides(
     q: &[f64],
     q_f: &[f64],
@@ -358,6 +361,7 @@ pub fn viscous_sides(
 /// `drift = alpha (h X (e^phi - 1) + e^phi dU)` at that side's lapse; the bounds are
 /// `Lambda^+ = max(Theta + a, v^L, v^R, 0)` and `Lambda^- = min(Theta - a, v^L, v^R, 0)`, taken pairwise in the order
 /// printed.
+#[inline(never)] // kept out of line: see `calc_derivs`
 pub fn hll_flux(
     rho_L: &[f64],
     rho_R: &[f64],
