@@ -36,7 +36,7 @@ assembled from all of them. The driver reads the file and never sees a raw strin
       snapshot_spacing: 0.2         # snapshots every this much in xi on the background, tightening ...
       snapshot_spacing_min: 0.01    # ... as the core collapses down to this ...
       snapshot_spacing_after: 0.02  # ... and every this much physical time, in Hubble times at formation, after
-      flush_every: 200              # steps buffered before the step record is written
+      flush_every: 1000             # steps buffered before the step record is written
       monitor_every_step: false     # the full monitor record every step, not only at snapshots
     evolution:
       xi_end: 6.0                   # the run starts at the time of its initial data
@@ -316,8 +316,10 @@ class OutputConfig(Section):
     formation). Off, a snapshot is written at the first step at or past each scheduled time; the run still ends
     exactly at `xi_end`."""
 
-    flush_every: int = Field(default=200, ge=1)
-    """How many steps the step record is buffered before it is written to disk."""
+    flush_every: int = Field(default=1000, ge=1)
+    """How many steps the step record is buffered before it is written to disk. Each flush has a fixed cost per column,
+    which this many steps share (at 1000, the flushes cost about 13 us a step, mostly the per-row work of collecting
+    the rows); a crash loses at most this many steps, about half a second of a run at N = 1600 on the Rust engine."""
 
     monitor_every_step: bool = False
     """Whether the full monitor record of `monitors.py` is written every step rather than only at snapshots; the

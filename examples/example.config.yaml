@@ -56,7 +56,7 @@ output:
   snapshot_spacing_min: 0.01    # ... tightening as rho_0^(-1/2) as the core collapses, down to this ...
   snapshot_spacing_after: 0.02  # ... and every this much physical time, in Hubble times at formation, after it
   clip_to_snapshots: true       # steps land exactly on the snapshot times; false: snapshot at the first step past each
-  flush_every: 200              # steps buffered before the step record is written to disk
+  flush_every: 1000             # steps buffered before the step record is written to disk
   monitor_every_step: false     # the full monitor record every step rather than only at snapshots (costs ~20%)
 
 evolution:
