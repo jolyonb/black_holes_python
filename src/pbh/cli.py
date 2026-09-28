@@ -6,8 +6,8 @@ Every command works on a run directory and a run name, and a run is its three fi
     pbh validate CONFIG                              parse a configuration and print it with every default filled in
     pbh initial gaussian NAME --config CONFIG --A A --ell ELL [--xi0 XI]
                                                      write NAME.initial.h5: the growing mode of a Gaussian delta_m
-    pbh run CONFIG NAME                              run CONFIG from NAME.initial.h5, writing the other two files
-    pbh restart SOURCE NAME [--snapshot I] [--config CONFIG]
+    pbh run CONFIG NAME [--engine E]                 run CONFIG from NAME.initial.h5, writing the other two files
+    pbh restart SOURCE NAME [--snapshot I] [--config CONFIG] [--engine E]
                                                      start the run NAME from a snapshot of the run SOURCE (the last
                                                      by default), with SOURCE's configuration unless another is given
     pbh summary NAME [--export JSON]                 what NAME says about its black hole, recomputed from its
@@ -16,7 +16,8 @@ Every command works on a run directory and a run name, and a run is its three fi
 The Gaussian command is a convenience for the paper's standard perturbation; any other datum is written with
 `records.write_initial` from Python, since the initial data are the initial data however they were made. No flag
 overrides a configuration value: the configuration file is the record of the run, and editing it is the honest
-way to change one.
+way to change one. `--engine` is not one: it chooses which implementation evaluates the stages, numpy (`python`, the
+default) or the optional Rust engine (`rust`), which compute the same numbers, and both files record it.
 
 `main` is the entry point twice over: `pyproject.toml` registers it as the `pbh` console script, and running the
 module directly, `python -m pbh.cli`, reaches it through the block at the bottom.
@@ -41,12 +42,16 @@ from pbh.output import RunReader
 from pbh.profiles import Gaussian
 from pbh.records import StateRecord, read_initial, write_initial
 from pbh.summary import as_json, describe, summarise
+from pbh.timestep import Engine
 
 app = App(name="pbh", help="Primordial black hole formation: Misner-Sharp evolution of a perturbed FRW fluid.")
 initial = App(name="initial", help="Write an initial-data file.")
 app.command(initial)
 
 type Directory = Annotated[Path, Parameter(name="--dir", help="The run directory, where a run's three files live.")]
+type EngineChoice = Annotated[
+    Engine, Parameter(help="python (numpy, the reference) or rust (the optional compiled engine; the same numbers).")
+]
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -56,7 +61,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         command(*bound.args, **bound.kwargs)
     except SystemExit as leaving:  # --help, or an aborted run
         return int(leaving.code or 0)
-    except (ConfigError, IllPosedDataError, NotCompensatedError, ValueError, FileNotFoundError) as refused:
+    except (
+        ConfigError,
+        IllPosedDataError,
+        NotCompensatedError,
+        ValueError,
+        FileNotFoundError,
+        ModuleNotFoundError,
+    ) as refused:
         print(f"pbh: {refused}", file=sys.stderr)
         return 1
     except CycloptsError:  # cyclopts has already printed the usage error
@@ -116,11 +128,12 @@ def run(
     config: Annotated[Path, Parameter(help="The configuration file.")],
     name: Annotated[str, Parameter(help="The run: NAME.initial.h5 is read, the other two files are written.")],
     *,
+    engine: EngineChoice = Engine.PYTHON,
     dir: Directory = Path(),
 ) -> None:
     """Run a configuration from the run's initial-data file to its end."""
     paths = RunPaths.of(dir, name)
-    report(run_driver(load(config), read_initial(paths.initial), paths))
+    report(run_driver(load(config), read_initial(paths.initial), paths, engine=engine))
 
 
 @app.command
@@ -130,9 +143,13 @@ def restart(
     *,
     snapshot: Annotated[int, Parameter(help="Which snapshot of SOURCE; negative counts from the end.")] = -1,
     config: Annotated[Path | None, Parameter(help="A configuration to use instead of SOURCE's.")] = None,
+    engine: EngineChoice = Engine.PYTHON,
     dir: Directory = Path(),
 ) -> None:
-    """Start a new run from a snapshot of another, with its configuration unless another is given."""
+    """Start a new run from a snapshot of another, with its configuration unless another is given.
+
+    The engine is not inherited from SOURCE: it is this command's `--engine`, since the engines agree.
+    """
     reader = RunReader(RunPaths.of(dir, source).evolution)
     parsed: RunConfig = load(config) if config is not None else reader.config
     record = reader.snapshot(snapshot % len(reader.snapshots))
@@ -140,7 +157,7 @@ def restart(
     write_initial(paths.initial, record)
     history = epoch_history(reader, record.xi)  # the M_AH series the read-out needs, from before the snapshot
     core = core_watch(reader, record.xi)  # and the core's series, for the bounce
-    report(run_driver(parsed, read_initial(paths.initial), paths, history, core))
+    report(run_driver(parsed, read_initial(paths.initial), paths, history, core, engine))
 
 
 @app.command

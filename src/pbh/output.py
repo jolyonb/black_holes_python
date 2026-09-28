@@ -24,7 +24,8 @@ physical time in units of the Hubble time at formation, `e^xi` advancing by `sna
 snapshot, which is the clock the hole runs on. The driver clips its steps to land on those times exactly.
 
 The root carries the run's identity as attributes: the format tag and version, the complete text of the
-configuration as saved, the code's commit, the time of writing and the host. A reader rebuilds the `Scheme` from
+configuration as saved, the code's commit, the time of writing, the host and the engine that evaluated the
+stages (`timestep.Engine`). A reader rebuilds the `Scheme` from
 that configuration and computes derived fields with the same functions the run used.
 
     with RunWriter(path, config, N, row_type=StepRow) as out:
@@ -58,6 +59,7 @@ from pbh.horizon import HorizonRow
 from pbh.layout import Layout
 from pbh.maps import BlendMap, Map, Zone
 from pbh.records import StateRecord, none_if_nan, zones_as_mappings, zones_from_mappings
+from pbh.timestep import Engine
 from pbh.types import FloatArray
 
 FORMAT = "pbh-evolution"
@@ -220,9 +222,12 @@ class RunWriter[R: StepRow]:
         config: The run's configuration, stored in full.
         N: The number of cells, the width of the field columns.
         row_type: The step row type; `StepRow` or a dataclass extending it with the run's monitors.
+        engine: The engine that evaluates the run's stages, recorded as it is not part of the configuration.
     """
 
-    def __init__(self, path: Path, config: RunConfig, N: int, row_type: type[R]) -> None:
+    def __init__(
+        self, path: Path, config: RunConfig, N: int, row_type: type[R], engine: Engine = Engine.PYTHON
+    ) -> None:
         self.file = h5.create_file(path)
         h5.write_text(self.file, "format", FORMAT)
         h5.write_int(self.file, "version", VERSION)
@@ -230,6 +235,7 @@ class RunWriter[R: StepRow]:
         h5.write_text(self.file, "code_commit", code_commit())
         h5.write_text(self.file, "written", datetime.now(UTC).isoformat())
         h5.write_text(self.file, "host", f"{socket.gethostname()} ({platform.platform()})")
+        h5.write_text(self.file, "engine", engine.value)
         h5.write_int(self.file, "N", N)
         self.steps: Table[R] = Table(h5.create_group(self.file, "steps"), row_type)
         self.events = Table(h5.create_group(self.file, "events"), EventRow)
@@ -312,6 +318,7 @@ class RunReader:
             self.code_commit = h5.read_text(f, "code_commit")
             self.written = h5.read_text(f, "written")
             self.host = h5.read_text(f, "host")
+            self.engine = Engine(h5.read_text(f, "engine"))
             self.N = h5.read_int(f, "N")
 
     def _open(self) -> h5.File:

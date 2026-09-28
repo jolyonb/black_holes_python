@@ -31,8 +31,6 @@ assembled from all of them. The driver reads the file and never sees a raw strin
       courant_number: 0.75
       cap_tolerance: 1.0e-5     # the step cap of eq:num:stepcap: relative error tolerance ...
       cap_efolds: 4.0           # ... over this many super-horizon e-folds
-    numerics:
-      engine: python            # python (numpy, the reference) or rust (the compiled stage); not physics
     output:
       snapshots: all                # all; milestones (initial, formation, switch-on, end); none (initial only)
       snapshot_spacing: 0.2         # snapshots every this much in xi on the background, tightening ...
@@ -46,8 +44,12 @@ assembled from all of them. The driver reads the file and never sees a raw strin
 Every key has the default shown except `N`, `Rtilde_max` and `xi_end`, which a run must state. A file
 may omit any key with a default and may contain nothing else: an unknown key, a wrong type, or a value outside its
 range is an error naming the key, never a warning. `save` writes the complete configuration with every default
-filled in, under a `provenance` section giving the code's git commit and the time of writing; `load` accepts and
-discards that section, so a saved configuration reruns as it was.
+filled in, under a `provenance` section giving the code's git commit, the time of writing and, for a run, the engine
+that evaluated its stages; `load` accepts and discards that section, so a saved configuration reruns as it was.
+
+The engine (`timestep.Engine`, numpy or the optional Rust engine) is not configured here: it is not physics, and a
+configuration must run on every machine, with or without the Rust engine. It is chosen where the run is started
+(`pbh run --engine rust`, `RunConfig.scheme(engine=...)`) and recorded in the provenance.
 
 The sections are pydantic models in strict mode: a key gets the type it is declared with and nothing else, so `800`
 is an int but `"800"` and `true` are not; an enumeration is given by its value; `w` is given as a string like `1/3`.
@@ -270,18 +272,6 @@ class SteppingConfig(Section):
         return step_cap(eos, self.cap_tolerance, self.cap_efolds)
 
 
-class NumericsConfig(Section):
-    """The `numerics` section: which implementation evaluates the stages (`timestep.Engine`).
-
-    Not physics: both engines compute the same rates, to the bit on every number on the machine they were compared on
-    (tests/test_rust_engine.py; the sign of a computed NaN may differ, and only numpy emits `RuntimeWarning`s). The
-    engine is recorded with every run, and nothing compares it on a restart, which may switch engines.
-    """
-
-    engine: Engine = Field(default=Engine.PYTHON, strict=False)
-    """`python`, numpy (the reference and the default), or `rust`, the compiled stage of `pbh_engine` (optional)."""
-
-
 class SnapshotChoice(Enum):
     """Which snapshots a run writes."""
 
@@ -360,19 +350,21 @@ class RunConfig(Section):
     excision: ExcisionConfig = ExcisionConfig()
     readout: ReadoutConfig = ReadoutConfig()
     stepping: SteppingConfig = SteppingConfig()
-    numerics: NumericsConfig = NumericsConfig()
     output: OutputConfig = OutputConfig()
     evolution: EvolutionConfig
 
-    def scheme(self, map: Map | None = None, layout: Layout | None = None) -> Scheme:
-        """The scheme this configuration describes; `map` replaces the base map and `layout` the unexcised layout."""
+    def scheme(self, map: Map | None = None, layout: Layout | None = None, engine: Engine = Engine.PYTHON) -> Scheme:
+        """The scheme this configuration describes; `map` replaces the base map and `layout` the unexcised layout.
+
+        `engine` evaluates its stages: not part of the configuration (see the module docstring).
+        """
         return Scheme(
             self.fluid.build(),
             self.grid.build() if map is None else map,
             Layout(self.grid.N) if layout is None else layout,
             self.outer.build(),
             self.shocks.build(),
-            engine=self.numerics.engine,
+            engine=engine,
         )
 
 
@@ -401,16 +393,19 @@ class Provenance(Section):
     written: datetime
     """The time of writing, UTC."""
 
+    engine: Engine | None = Field(default=None, strict=False)
+    """The engine that evaluated the run's stages, for a run's configuration; absent otherwise."""
+
     @classmethod
-    def now(cls) -> Self:
-        """The provenance of a file written now by this code."""
-        return cls(code_commit=code_commit(), written=datetime.now(UTC))
+    def now(cls, engine: Engine | None = None) -> Self:
+        """The provenance of a file written now by this code, for a run on `engine` if one is given."""
+        return cls(code_commit=code_commit(), written=datetime.now(UTC), engine=engine)
 
 
-def save(config: RunConfig, path: Path) -> None:
-    """Write the complete configuration, every default filled in, under its provenance."""
+def save(config: RunConfig, path: Path, engine: Engine | None = None) -> None:
+    """Write the complete configuration, every default filled in, under its provenance (with the run's `engine`)."""
     document = {
-        "provenance": Provenance.now().model_dump(mode="json"),
+        "provenance": Provenance.now(engine).model_dump(mode="json", exclude_none=True),
         **config.model_dump(mode="json", exclude_none=True),
     }
     with path.open("w") as f:

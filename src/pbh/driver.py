@@ -71,7 +71,17 @@ from pbh.output import RunReader, RunWriter, next_snapshot_time, run_map
 from pbh.readout import Epoch, first_reading, readings, starts_new_epoch
 from pbh.records import StateRecord, shell_volumes
 from pbh.state import State
-from pbh.timestep import RK4, AcceptedStep, Frame, Scheme, StepAbortError, StepFailure, advance_checked, step_size
+from pbh.timestep import (
+    RK4,
+    AcceptedStep,
+    Engine,
+    Frame,
+    Scheme,
+    StepAbortError,
+    StepFailure,
+    advance_checked,
+    step_size,
+)
 from pbh.types import FloatArray
 
 FAR_ZONE_TOLERANCE = 1e-10
@@ -264,7 +274,7 @@ class Run:
 
     def remap(self, layout: Layout, state: State) -> DerivsResult:
         """Replace the scheme, the layout and the deviation for `state` on the current zones; the rate there."""
-        self.sch = self.config.scheme(run_map(self.config, self.zones), layout)
+        self.sch = self.config.scheme(run_map(self.config, self.zones), layout, self.sch.engine)
         geo = self.sch.frame(self.xi).geo
         self.dy = packed_deviation(state, geo, layout, geo.dV)
         return self.evaluate()
@@ -559,14 +569,15 @@ def run(
     paths: RunPaths,
     history: Epoch | None = None,
     core: CoreWatch | None = None,
+    engine: Engine = Engine.PYTHON,
 ) -> RunResult:
     """Run the configuration from the initial state and write the run's files; see the module docstring.
 
     `history` is the epoch the initial state is in, with its series of `M_AH`, and `core` the core's watch
-    (`core_watch`), when it continues another run.
+    (`core_watch`), when it continues another run. `engine` evaluates the stages, and is recorded in both files.
     """
     layout = Layout(config.grid.N, j_e=initial.j_e)
-    sch = config.scheme(run_map(config, initial.zones), layout)
+    sch = config.scheme(run_map(config, initial.zones), layout, engine)
     xi = initial.xi
     if not np.allclose(initial.X, sch.frame(xi).geo.X[: layout.N + 1], rtol=1e-12, atol=0.0):
         raise ValueError("the initial data are not sampled on the grid the configuration builds at their time")
@@ -574,12 +585,12 @@ def run(
     xi_end = config.evolution.xi_end
     if not xi_end > xi:
         raise ValueError(f"the initial time {xi} is not before the end {xi_end}")
-    save(config, paths.config)
+    save(config, paths.config, engine)
     cap = config.stepping.cap(sch.eos)
     weights = tuple(float(b) for b in RK4.b)
     scale = float(np.max(np.abs(sch.frw(xi))))  # the state's scale, for the companion estimate
 
-    with RunWriter(paths.evolution, config, layout.N, row_type=MonitoredStep) as out:
+    with RunWriter(paths.evolution, config, layout.N, row_type=MonitoredStep, engine=engine) as out:
         r = Run(
             config,
             out,

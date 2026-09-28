@@ -1,13 +1,16 @@
 """Tests of pbh.cli: the four verbs, in process."""
 
+import sys
 from pathlib import Path
 
 import pytest
 import yaml
 
+import pbh
 from pbh.cli import main
 from pbh.output import RunReader
 from pbh.records import read_initial
+from pbh.timestep import Engine
 
 CONFIG = """
 grid: {N: 40, Rtilde_max: 12.0, scale: 3.0}
@@ -55,12 +58,28 @@ def test_initial_gaussian_then_run_then_restart(tmp_path: Path, capsys: pytest.C
     assert "completed" in capsys.readouterr().out
     reader = RunReader(tmp_path / "g.evolution.h5")
     assert [s.xi for s in reader.snapshots] == [0.0, 0.1, 0.2]
-    assert main(["restart", "g", "h", "--dir", str(tmp_path), "--snapshot", "1"]) == 0
+    assert reader.engine is Engine.PYTHON  # the default, recorded in both files
+    assert yaml.safe_load((tmp_path / "g.config.yaml").read_text())["provenance"]["engine"] == "python"
+    assert main(["restart", "g", "h", "--dir", str(tmp_path), "--snapshot", "1", "--engine", "python"]) == 0
     assert "completed" in capsys.readouterr().out
     again = read_initial(tmp_path / "h.initial.h5")
     assert again.xi == 0.1
     assert again.provenance["source"] == "g.evolution.h5"
     assert [s.xi for s in RunReader(tmp_path / "h.evolution.h5").snapshots] == [0.1, 0.2]
+
+
+def test_an_engine_that_is_not_installed_or_does_not_exist_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+):
+    config = write_config(tmp_path)
+    args = ["initial", "gaussian", "g", "--config", str(config), "--A", "0.05", "--ell", "2.0", "--dir", str(tmp_path)]
+    assert main(args) == 0
+    monkeypatch.delitem(sys.modules, "pbh.rust_engine", raising=False)  # as on a machine without the Rust engine
+    monkeypatch.delattr(pbh, "rust_engine", raising=False)
+    monkeypatch.setitem(sys.modules, "pbh_engine", None)
+    assert main(["run", str(config), "g", "--engine", "rust", "--dir", str(tmp_path)]) == 1
+    assert "pbh_engine is not installed: install it with `uv sync --group rust`" in capsys.readouterr().err
+    assert main(["run", str(config), "g", "--engine", "fortran", "--dir", str(tmp_path)]) == 2  # a usage error
 
 
 def test_a_gaussian_the_reconstruction_refuses_is_an_error(tmp_path: Path, capsys: pytest.CaptureFixture[str]):

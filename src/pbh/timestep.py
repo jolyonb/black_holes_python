@@ -125,7 +125,8 @@ class Engine(Enum):
     `equations.py` and what it calls), and a stage agrees between them to the bit on this machine on every non-NaN
     entry, with NaN in the same entries (tests/test_rust_engine.py). The Rust engine emits none of numpy's
     `RuntimeWarning`s, and the sign of a computed NaN may differ (`pbh.rust_engine` says why). The engine is not
-    physics: a run records it in its configuration, and a restart may switch.
+    physics: it is chosen where a run is started (`pbh run --engine`), not configured, and a run records it in its
+    files' provenance; a restart may switch.
     """
 
     PYTHON = "python"
@@ -209,8 +210,8 @@ class Scheme:
                 if error.name != "pbh_engine":
                     raise
                 raise ModuleNotFoundError(
-                    "numerics.engine is rust, but the Rust engine pbh_engine is not installed: install it with "
-                    "`uv sync --group rust` (a Rust toolchain is required), or run with `engine: python`",
+                    "the Rust engine was asked for, but pbh_engine is not installed: install it with "
+                    "`uv sync --group rust` (a Rust toolchain is required), or run on the numpy engine, the default",
                     name=error.name,
                 ) from error
             rust = rust_engine.RustStage(self.eos, self.settings, self.outer, self.layout)

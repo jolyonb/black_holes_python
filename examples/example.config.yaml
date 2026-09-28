@@ -50,9 +50,6 @@ stepping:
   cap_tolerance: 1.0e-5       # the step cap of eq:num:stepcap: relative error tolerance ...
   cap_efolds: 4.0             # ... over this many super-horizon e-folds
 
-numerics:
-  engine: python              # python (numpy, the reference) or rust (the same stage compiled, optional package); not physics
-
 output:
   snapshots: all                # all; milestones (initial, formation, switch-on, end) for development runs; none (initial only)
   snapshot_spacing: 0.2         # snapshots every this much in xi on the background (32 KB each at N = 2000) ...

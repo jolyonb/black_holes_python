@@ -48,10 +48,11 @@ pytest.importorskip("pbh_engine", reason="the optional Rust engine is not instal
 
 import numpy as np
 import pbh_engine
+import yaml
 from violent import FAMILIES, SEEDS, W_CASES, Case, violent_case
 
 from pbh.cli import main
-from pbh.config import NumericsConfig, load, save
+from pbh.config import ConfigError, load, save
 from pbh.derived import NotHyperbolicError
 from pbh.driver import RunPaths
 from pbh.eos import RADIATION, EquationOfState, Spacetime
@@ -545,18 +546,17 @@ def test_sixty_checked_steps_are_the_same_on_both_engines(outer: OuterClosure, s
 def test_a_collapse_runs_to_its_read_out_through_the_same_events_on_both_engines(tmp_path: Path):
     readers: list[RunReader] = []
     A = 0.515 * math.e / 8.0
+    path = tmp_path / "collapse.yaml"
+    path.write_text(
+        "grid: {N: 100, Rtilde_max: 12.0, scale: 3.0}\noutput: {snapshots: milestones}\nevolution: {xi_end: 9.0}\n"
+    )
     for engine in Engine:
-        path = tmp_path / f"{engine.value}.yaml"
-        path.write_text(
-            "grid: {N: 100, Rtilde_max: 12.0, scale: 3.0}\n"
-            "output: {snapshots: milestones}\n"
-            f"numerics: {{engine: {engine.value}}}\n"
-            "evolution: {xi_end: 9.0}\n"
-        )
         args = ["initial", "gaussian", engine.value, "--config", str(path), "--A", f"{A:.12g}", "--ell", "2.0"]
         assert main([*args, "--dir", str(tmp_path)]) == 0
-        assert main(["run", str(path), engine.value, "--dir", str(tmp_path)]) == 0
-        readers.append(RunReader(RunPaths.of(tmp_path, engine.value).evolution))
+        assert main(["run", str(path), engine.value, "--engine", engine.value, "--dir", str(tmp_path)]) == 0
+        paths = RunPaths.of(tmp_path, engine.value)
+        readers.append(RunReader(paths.evolution))
+        assert yaml.safe_load(paths.config.read_text())["provenance"]["engine"] == engine.value
     a, b = readers
     kinds = [e.kind for e in a.events]
     assert {"formation", "switch_on", "re_excision", "readout"} <= set(kinds)
@@ -582,9 +582,8 @@ def test_a_collapse_runs_to_its_read_out_through_the_same_events_on_both_engines
             rb.xi_form,
             rb.zones,
         )
-    python = NumericsConfig()
-    assert a.config.model_copy(update={"numerics": python}) == b.config.model_copy(update={"numerics": python})
-    assert b.config.numerics.engine is Engine.RUST
+    assert a.config == b.config
+    assert (a.engine, b.engine) == (Engine.PYTHON, Engine.RUST)
 
 
 # --- the switch ---
@@ -593,21 +592,24 @@ def test_a_collapse_runs_to_its_read_out_through_the_same_events_on_both_engines
 MINIMAL = "grid: {N: 40, Rtilde_max: 8.0, scale: 3.0}\nevolution: {xi_end: 1.0}\n"
 
 
-def test_the_engine_is_a_configuration_switch_that_round_trips_and_defaults_to_numpy(tmp_path: Path):
-    old = tmp_path / "old.yaml"
-    old.write_text(MINIMAL)  # a file written before the switch existed
-    config = load(old)
-    assert config.numerics.engine is Engine.PYTHON
+def test_the_engine_is_chosen_with_the_scheme_defaults_to_numpy_and_is_recorded_only_as_provenance(tmp_path: Path):
+    path = tmp_path / "minimal.yaml"
+    path.write_text(MINIMAL)
+    config = load(path)
     sch = config.scheme()
     assert sch.engine is Engine.PYTHON
     assert sch.frame(0.0).rust is None
-    rust = config.model_copy(update={"numerics": NumericsConfig(engine=Engine.RUST)})
-    save(rust, tmp_path / "rust.yaml")
-    again = load(tmp_path / "rust.yaml")
-    assert again == rust
-    assert again.scheme().engine is Engine.RUST
-    assert again.scheme().frame(0.0).rust is not None
-    assert "engine: rust" in (tmp_path / "rust.yaml").read_text()
+    rust = config.scheme(engine=Engine.RUST)
+    assert rust.engine is Engine.RUST
+    assert rust.frame(0.0).rust is not None
+    save(config, tmp_path / "rust.yaml", Engine.RUST)  # a run's configuration, as the driver saves it
+    assert yaml.safe_load((tmp_path / "rust.yaml").read_text())["provenance"]["engine"] == "rust"
+    assert load(tmp_path / "rust.yaml") == config  # provenance, not configuration: it does not come back
+    save(config, tmp_path / "plain.yaml")  # anything else saved has no engine
+    assert "engine" not in yaml.safe_load((tmp_path / "plain.yaml").read_text())["provenance"]
+    path.write_text(MINIMAL + "numerics: {engine: rust}\n")
+    with pytest.raises(ConfigError, match="numerics"):  # not a section of the configuration
+        load(path)
 
 
 def test_importing_the_package_and_the_numpy_engine_does_not_load_the_extension():

@@ -15,7 +15,7 @@ the background (`rhotilde = rho / rho_FRW`, `Rtilde = R / (a R_H)`, `Utilde = U 
 ## Getting started
 
 The project is managed with [uv](https://docs.astral.sh/uv/) (0.8.6 or newer) and requires Python 3.14. `pbh` is
-pure Python and runs on its numpy engine alone. The Rust engine (`numerics: {engine: rust}`, the same stage compiled,
+pure Python and runs on its numpy engine alone. The Rust engine (`pbh run ... --engine rust`, the same stage compiled,
 about twice as fast) is a separate, optional package, `pbh-engine` in `rust/`, installed by the dependency group
 `rust`; building it needs a Rust toolchain, 1.85 or newer, with clippy and rustfmt (`rustup`).
 
@@ -27,7 +27,7 @@ uv run pbh --help
 
 `uv sync` without `--group rust` removes the engine again, and `uv run` without it neither installs nor rebuilds it,
 so for work with the engine pass the flag to both (`uv run --group rust pytest`). Without the engine everything runs
-on numpy: the Rust engine's tests are skipped, and a configuration asking for `engine: rust` is refused with the
+on numpy: the Rust engine's tests are skipped, and `--engine rust` is refused with the
 command that installs it. Where there is no `cargo`, `--group rust` fails at once rather than download a toolchain
 (about 500 MB); that guard is `[tool.uv.extra-build-variables]` in `pyproject.toml`, which a uv older than 0.8.6
 ignores.
@@ -57,6 +57,12 @@ with its series.
 `pbh restart SOURCE NAME [--snapshot K] [--config OTHER.yaml]` starts a new run from any snapshot of another, with its
 configuration or a different one: every snapshot is a restart point, and a restart carries the read-out's history.
 
+`pbh run` and `pbh restart` take `--engine python|rust`: which implementation evaluates the stages, numpy (the
+reference and the default) or the optional Rust engine (the same numbers, about twice as fast on a whole run). It is
+not physics and not part of the configuration, so a configuration runs on any machine; each run records its engine in
+the `provenance` of `NAME.config.yaml` and in the evolution file, and a restart uses its own `--engine`, not its
+source's.
+
 ## Configuration
 
 `examples/example.config.yaml` lists every key with its default. A configuration must state `grid.N`,
@@ -74,8 +80,6 @@ configuration or a different one: every snapshot is a restart point, and a resta
 * `readout`: the rate window, the two-e-fold floor, the error bar and the target at which the mass is read, and
   whether the run stops there.
 * `stepping`: RK4's Courant number and the step cap.
-* `numerics`: `engine`, `python` (numpy, the reference and the default) or `rust` (the same stage compiled, the same
-  results; about twice as fast on a whole run). Not physics: a restart may switch engines.
 * `output`: the snapshot schedule (uniform in `xi` before formation, in physical time after), the flush cadence, and
   whether the full monitor record is written every step or only at snapshots.
 * `evolution`: `xi_end`, and `stop_on_bounce` to end a sub-threshold run once its core has bounced (the central
