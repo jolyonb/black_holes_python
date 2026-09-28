@@ -216,13 +216,21 @@ def quintic_step(zeta: FloatArray) -> FloatArray:
     quintic is the simplest step that is.
     """
     z = np.clip(zeta, -1.0, 1.0)
-    return 0.5 + (15.0 * z - 10.0 * z**3 + 3.0 * z**5) / 16.0
+    z2 = z * z
+    z3 = z2 * z
+    return 0.5 + (15.0 * z - 10.0 * z3 + 3.0 * (z3 * z2)) / 16.0
 
 
 def quintic_step_at(zeta: float) -> float:
-    """`quintic_step` at one point, in floats: the powers by the C library's `pow`, as numpy's array powers are."""
+    """`quintic_step` at one point, in floats: the powers as products, as `quintic_step` forms them.
+
+    Products, not `**`: numpy's array `power` is the C library's `pow` on arm64 but its own SIMD version on x86 with
+    AVX-512, which differs from `pow` by an ulp, so only `+ - * /` make the two paths agree bit for bit everywhere.
+    """
     z = min(max(zeta, -1.0), 1.0)
-    return 0.5 + (15.0 * z - 10.0 * z**3 + 3.0 * z**5) / 16.0
+    z2 = z * z
+    z3 = z2 * z
+    return 0.5 + (15.0 * z - 10.0 * z3 + 3.0 * (z3 * z2)) / 16.0
 
 
 def ramp(xi: float, xi_on: float, tau_on: float) -> tuple[float, float]:

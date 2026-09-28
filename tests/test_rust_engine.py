@@ -20,7 +20,12 @@ tolerance:
   `LAPSE_ULPS` ulp of itself. So an entry that does not respond is held to a few ulp of itself, a small entry is
   measured against its own sensitivity rather than against the field's largest entry, and the fields that are formed
   without the lapse at all (`LAPSE_FREE`) are asserted exactly by name, after checking that none of them responds.
-  Here too the measured difference is zero.
+  An entry formed by a difference that nearly cancels also inherits its operands' allowances, since there an ulp of
+  an operand is many ulp of the result: the energy row from the two fluxes of its cell, the face-mass row from the
+  flux at the excision face, and a whole field (the flux, the rates) from its deviation (`WHOLE_FROM_DEVIATION`).
+  On arm64 the measured difference is zero. On x86 Linux with AVX-512 numpy's lapse is up to 2 ulp from the C
+  library's, and where the flux's FRW part and deviation cancel to 1e-5 of either, or two neighbouring fluxes do in
+  a cell's energy rate, one ulp of an operand is up to 2.6e5 ulp of the result: the case the inheritance covers.
 
 Refusals must agree as well: the same `NotHyperbolicError` (field, index, and the value, bit for bit or both NaN) and
 the same `ValueError` of a closure, raised by the same call. The states are the violent ones of the positivity tests
@@ -120,6 +125,15 @@ LAPSE_FREE = frozenset(
         "kernels.theta_scale",
     }
 )
+#: The whole fields formed as their FRW part plus a deviation the result also reports, by the deviation's name.
+WHOLE_FROM_DEVIATION = {
+    "F": "delta_F",
+    "kernels.F": "delta_F",
+    "rate.E": "deviation_rate.E",
+    "rate.U": "deviation_rate.U",
+    "rate.W": "deviation_rate.W",
+    "rate.M_e": "deviation_rate.M_e",
+}
 #: The kernel switches compared: production, the centred base scheme, and every other switch of `KernelSettings`.
 SETTINGS = {
     "production": PRODUCTION_KERNELS,
@@ -239,6 +253,20 @@ def lapse_allowance(sch: Scheme, xi: float, packed: FloatArray, deviation: bool,
         assert x is not None
         with np.errstate(invalid="ignore"):
             allowance[name] = LAPSE_MARGIN * r + LAPSE_ULPS * EPS * np.abs(x)
+    # The floor of a few ulp of the entry itself is right for an entry formed directly, but not for one formed by a
+    # difference that nearly cancels, where the difference is exact (Sterbenz) and an ulp of an operand arrives
+    # unchanged, however small the result: such an entry inherits its operands' allowances. The energy row is
+    # `-(delta F_(c+1) - delta F_c) + sigma delta E_c`, the face-mass row `sigma delta M_e - 3 delta F_(j_e)`, and a
+    # whole field its FRW part plus its deviation.
+    if "delta_F" in allowance:
+        faces = np.nan_to_num(allowance["delta_F"])
+        if "deviation_rate.E" in allowance:
+            allowance["deviation_rate.E"] = allowance["deviation_rate.E"] + faces[:-1] + faces[1:]
+        if "deviation_rate.M_e" in allowance:
+            allowance["deviation_rate.M_e"] = allowance["deviation_rate.M_e"] + 3.0 * faces[sch.layout.j_e]
+    for whole, deviation_part in WHOLE_FROM_DEVIATION.items():
+        if whole in allowance and deviation_part in allowance:
+            allowance[whole] = allowance[whole] + allowance[deviation_part]
     return allowance
 
 
