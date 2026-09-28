@@ -380,6 +380,40 @@ def blend_radii(
         ValueError: If the rows, their lengths or the rates do not match.
     """
 
+def emptying_rates(
+    Lam_plus: FloatArray,
+    Lam_minus: FloatArray,
+    v_L: FloatArray,
+    v_R: FloatArray,
+    rho_L: FloatArray,
+    rho_R: FloatArray,
+    X2: FloatArray,
+    E: FloatArray,
+    F_N: float,
+    energy_source_rate: float,
+    j_e: int,
+) -> FloatArray:
+    """Each retained cell's emptying rate (`monitors.emptying_rates`, with the kernels on); NaN below `j_e`.
+
+    Raises:
+        ValueError: If a face field is not one longer than the cell energies, or `j_e > N - 2`.
+    """
+
+def near_zone(
+    Xm: FloatArray,
+    X: FloatArray,
+    ephi: FloatArray,
+    rho: FloatArray,
+    U: FloatArray,
+    Gammabar2: FloatArray,
+    radii: list[float],
+) -> tuple[list[float], int]:
+    """`horizon.near_zone_numbers`: the near-zone monitors at each radius, and the retained cell of least lapse.
+
+    Raises:
+        ValueError: If the cell and face arrays do not match.
+    """
+
 @final
 class TrappingOutput:
     """The horizon finder's numbers on one slice (`pbh.horizon.Trapping`)."""

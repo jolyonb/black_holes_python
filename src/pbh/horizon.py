@@ -369,24 +369,90 @@ class NearZone:
 
 
 def near_zone(
-    state: State, d: Derived, geo: Geometry, report: HorizonReport, eos: EquationOfState, layout: Layout, xi: float
+    state: State,
+    d: Derived,
+    geo: Geometry,
+    report: HorizonReport,
+    eos: EquationOfState,
+    layout: Layout,
+    xi: float,
+    engine: Engine = Engine.PYTHON,
 ) -> NearZone:
-    """The near-zone monitors on this slice; the minimum lapse whether or not a horizon has formed."""
+    """The near-zone monitors on this slice; the minimum lapse whether or not a horizon has formed.
+
+    `engine` forms the numbers (`near_zone_numbers`, or the Rust engine's with the same operations).
+    """
     cells, faces = layout.cells, layout.faces
-    k = int(np.argmin(d.ephi[cells])) + layout.j_e
-    values = [float("nan")] * 6
+    radii: list[float] = []
     if report.apparent is not None:
-        Xm, X = geo.Xm[cells], geo.X[faces]
-        v = state.U[faces] / np.sqrt(d.Gammabar2[faces])
         scale = report.M_AH * float(np.exp(-eos.alpha_float * xi))  # the label radius of R = M_AH
-        for n, radius in enumerate((HORIZON, eos.sonic_radius_over_mass)):
-            R = radius * scale
-            if Xm[0] <= R <= Xm[-1]:
-                values[3 * n] = float(np.interp(R, Xm, d.ephi[cells]))
-                values[3 * n + 2] = float(np.interp(R, Xm, d.rho[cells]))
-            if X[0] <= R <= X[-1]:
-                values[3 * n + 1] = float(np.interp(R, X, v))
+        radii = [radius * scale for radius in (HORIZON, eos.sonic_radius_over_mass)]
+    fields = (geo.Xm[cells], geo.X[faces], d.ephi[cells], d.rho[cells], state.U[faces], d.Gammabar2[faces], radii)
+    if engine is Engine.RUST:
+        from pbh import rust_engine  # loaded only on the Rust engine, as in `Scheme`
+
+        values, k = rust_engine.near_zone(*fields)
+    else:
+        values, k = near_zone_numbers(*fields)
+    values = values if radii else [float("nan")] * 6
+    k += layout.j_e
     return NearZone(*values, min_lapse=float(d.ephi[k]), min_lapse_X=float(geo.Xm[k]))
+
+
+def near_zone_numbers(
+    Xm: FloatArray,
+    X: FloatArray,
+    ephi: FloatArray,
+    rho: FloatArray,
+    U: FloatArray,
+    Gammabar2: FloatArray,
+    radii: list[float],
+) -> tuple[list[float], int]:
+    """The near-zone monitors' numbers from the retained cells and faces.
+
+    `(e^phi, U / Gammabar, rho)` at each label radius, NaN off the retained grid, and the retained cell of the
+    smallest lapse; the Rust engine forms the same (`rust_engine.near_zone`).
+    """
+    values = [float("nan")] * (3 * len(radii))
+    for n, R in enumerate(radii):
+        if Xm[0] <= R <= Xm[-1]:
+            values[3 * n] = interpolate(R, Xm, ephi)
+            values[3 * n + 2] = interpolate(R, Xm, rho)
+        if X[0] <= R <= X[-1]:
+            j, inside = bracket(R, X)  # U / Gammabar at the faces around R: at one face if R is on it
+            v = [float(U[i]) / math.sqrt(float(Gammabar2[i])) for i in ((j, j + 1) if inside else (j,))]
+            values[3 * n + 1] = linear(R, X, j, inside, (v[0], v[-1]))
+    return values, int(np.argmin(ephi))
+
+
+def bracket(x: float, xp: FloatArray) -> tuple[int, bool]:
+    """The interval of the increasing `xp` holding `x`, `xp[0] <= x <= xp[-1]`.
+
+    The last `j` with `xp[j] <= x`, and whether `x` lies strictly inside `xp[j] .. xp[j + 1]` (otherwise it is on the
+    grid point `xp[j]`).
+    """
+    j = int(np.searchsorted(xp, x, side="right")) - 1
+    return j, j < len(xp) - 1 and float(xp[j]) != x
+
+
+def linear(x: float, xp: FloatArray, j: int, inside: bool, f: tuple[float, float]) -> float:
+    """The straight line through `(xp[j], f[0])` and `(xp[j + 1], f[1])` at `x`, or `f[0]` on the grid point.
+
+    `slope (x - xp[j]) + f[0]`, the formula of `np.interp`, written out so that both engines form it alike: whether
+    `np.interp`'s compiled multiply-add is fused depends on the platform (it is, on macOS arm64), and the Rust engine
+    does not fuse.
+    """
+    if not inside:
+        return f[0]
+    x_j = float(xp[j])
+    slope = (f[1] - f[0]) / (float(xp[j + 1]) - x_j)
+    return slope * (x - x_j) + f[0]
+
+
+def interpolate(x: float, xp: FloatArray, fp: FloatArray) -> float:
+    """`fp` interpolated linearly at `x`, `xp[0] <= x <= xp[-1]` (`linear`, on the bracketing interval)."""
+    j, inside = bracket(x, xp)
+    return linear(x, xp, j, inside, (float(fp[j]), float(fp[j + 1]) if inside else math.nan))
 
 
 @dataclass(frozen=True)

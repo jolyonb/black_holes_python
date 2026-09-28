@@ -36,7 +36,7 @@ import pickle
 import subprocess
 import sys
 from collections.abc import Callable
-from dataclasses import dataclass, fields, is_dataclass, replace
+from dataclasses import astuple, dataclass, fields, is_dataclass, replace
 from fractions import Fraction
 from pathlib import Path
 from typing import cast
@@ -58,11 +58,12 @@ from pbh.derived import NotHyperbolicError
 from pbh.driver import RunPaths
 from pbh.eos import RADIATION, EquationOfState, Spacetime
 from pbh.equations import DerivsResult
-from pbh.horizon import Trapping, find_horizons, trapping
+from pbh.horizon import Trapping, find_horizons, near_zone, near_zone_numbers, trapping
 from pbh.kernels import CENTRED_SCHEME, PRODUCTION_KERNELS, DensityLimiter, KernelSettings, ViscousFlux
 from pbh.layout import Layout
 from pbh.maps import BlendMap, IdentityMap, Map, PinnedMap, SinhStretch, Zone
 from pbh.michel import michel_flow, michel_grid, michel_state
+from pbh.monitors import emptying_rates
 from pbh.outer import (
     HeldAtFrw,
     HeldExterior,
@@ -914,6 +915,65 @@ def test_the_rust_engine_forms_a_blend_maps_radii_as_the_map_does():
         pbh_engine.blend_radii(np.ones(5), np.ones((3, 5)), [1.0], [0.0], 0.5)
 
 
+def test_the_monitors_formed_in_rust_are_the_numpy_monitors():
+    # the emptying rates on every violent state (the excised and pinned ones among them) and the near-zone monitors
+    # at radii across and beyond the retained grid, on a grid point, and between points: the same numbers
+    rng = np.random.default_rng(29)
+    compared = 0
+    for family in FAMILIES:
+        for seed in SEEDS:
+            case = violent_case(family, seed)
+            pair = case_pair(case, PRODUCTION_KERNELS)
+            try:
+                result = pair.numpy.evaluate(case.xi, pair.numpy.layout.pack(case.state))
+            except NotHyperbolicError, ValueError:
+                continue
+            geo, layout, eos, state = pair.numpy.frame(case.xi).geo, case.layout, case.eos, case.state
+            a = emptying_rates(result, state, geo, eos, layout)
+            b = emptying_rates(result, state, geo, eos, layout, Engine.RUST)
+            assert np.array_equal(a, b, equal_nan=True), f"{family} {seed}"
+            cells, faces = layout.cells, layout.faces
+            d = result.derived
+            fields = (geo.Xm[cells], geo.X[faces], d.ephi[cells], d.rho[cells], state.U[faces], d.Gammabar2[faces])
+            X = geo.X[faces]
+            radii = [
+                *rng.uniform(-0.1, 1.1, 6) * float(X[-1]),
+                float(X[3]),
+                float(geo.Xm[layout.j_e + 2]),
+                float(X[-1]),
+            ]
+            va, ka = near_zone_numbers(*fields, radii)
+            vb, kb = rust_engine.near_zone(*fields, radii)
+            assert ka == kb, f"{family} {seed}"
+            assert np.array_equal(va, vb, equal_nan=True), f"{family} {seed}"
+            compared += 1
+    assert compared > 50
+
+
+def test_the_near_zone_row_is_the_same_on_both_engines():
+    # the whole row, with and without an apparent horizon: the collapse blob and the violent states' trapped ones
+    rows = 0
+    for family in ("excised", "shock", "void"):
+        for seed in SEEDS:
+            case = violent_case(family, seed)
+            pair = case_pair(case, PRODUCTION_KERNELS)
+            try:
+                result = pair.numpy.evaluate(case.xi, pair.numpy.layout.pack(case.state))
+            except NotHyperbolicError, ValueError:
+                continue
+            frame = pair.numpy.frame(case.xi)
+            report = find_horizons(
+                case.state, result.derived, frame.geo, frame.bg, case.eos, case.map, case.layout, case.xi
+            )
+            a, b = (
+                near_zone(case.state, result.derived, frame.geo, report, case.eos, case.layout, case.xi, engine)
+                for engine in Engine
+            )
+            assert np.array_equal(astuple(a), astuple(b), equal_nan=True), f"{family} {seed}"
+            rows += report.apparent is not None
+    assert rows > 0  # rows with a horizon were compared
+
+
 def test_an_inconsistent_frame_is_refused_with_value_error_and_never_panics():
     stage = RustStage(RAD, PRODUCTION_KERNELS, HeldAtFrw(), Layout(20, 4))
     X, X_xi = SinhStretch(6.0, scale=2.0).radii(0.3, 20)
@@ -974,6 +1034,9 @@ def stub_value_matches(value: object, annotation: str, classes: dict[str, ast.Cl
         )
     if annotation == "str":
         return type(value) is str
+    if annotation == "list[float]":
+        entries = cast(list[object], value) if isinstance(value, list) else None
+        return entries is not None and all(type(entry) is float for entry in entries)
     if annotation.startswith("list[tuple[") or annotation.startswith("tuple["):
         inner = annotation.removeprefix("list[")[: -1 if annotation.startswith("list[") else None]
         parts_types = [part.strip() for part in inner.removeprefix("tuple[").removesuffix("]").split(",")]
@@ -1062,5 +1125,19 @@ def test_what_the_extension_returns_has_the_types_its_stubs_declare(monkeypatch:
     blend = BlendMap(SinhStretch(6.0, scale=2.0), 0.5, (Zone(xi_on=0.4, tau_on=0.3, x_t=0.3, Delta_t=0.1),))
     radii = pbh_engine.blend_radii(*blend.static_part(20), *blend.ramps(0.6), blend.alpha)
     assert stub_value_matches(radii, ast.unparse(annotation), classes)
+    case = violent_case("shock", 0)
+    pair = case_pair(case, PRODUCTION_KERNELS)
+    result = pair.numpy.evaluate(case.xi, pair.numpy.layout.pack(case.state))
+    geo = pair.numpy.frame(case.xi).geo
+    annotation = returns.pop("emptying_rates")
+    assert annotation is not None
+    rates = rust_engine.emptying_rates(result, case.state, geo, case.eos, case.layout)
+    assert stub_value_matches(rates, ast.unparse(annotation), classes)
+    annotation = returns.pop("near_zone")
+    assert annotation is not None
+    cells, faces = case.layout.cells, case.layout.faces
+    d = result.derived
+    fields = (geo.Xm[cells], geo.X[faces], d.ephi[cells], d.rho[cells], case.state.U[faces], d.Gammabar2[faces])
+    assert stub_value_matches(rust_engine.near_zone(*fields, [1.0, 2.0]), ast.unparse(annotation), classes)
     assert not returns  # every function is covered
     assert {out.kernels is None for out in captured} == {True, False}

@@ -15,7 +15,7 @@ from pbh.derived import Derived, derive
 from pbh.driver import RunPaths, run
 from pbh.eos import RADIATION, Background, EquationOfState
 from pbh.geometry import Geometry
-from pbh.horizon import HorizonReport, HorizonRow, NearZone, crossing, find_horizons, near_zone
+from pbh.horizon import HorizonReport, HorizonRow, NearZone, crossing, find_horizons, interpolate, linear, near_zone
 from pbh.initial import cell_contents
 from pbh.kernels import PRODUCTION_KERNELS
 from pbh.layout import Layout
@@ -397,3 +397,22 @@ def test_a_refused_switch_on_is_logged_and_the_run_goes_on_unexcised(tmp_path: P
     assert len(attempts) == 1
     assert attempts[0].payload["failed"] == ["three_trapped"]
     assert result.steps >= 1
+
+
+def test_the_near_zone_interpolation_is_np_interp_written_out():
+    # `slope (x - xp[j]) + fp[j]`, unfused: np.interp's own value where its multiply-add is not fused, within an ulp
+    # of the terms where it is; exact at every grid point, the ends included
+    rng = np.random.default_rng(3)
+    for _ in range(2000):
+        xp = np.cumsum(rng.uniform(0.01, 2.0, 7))
+        fp = rng.normal(size=7) * 10 ** rng.uniform(-3, 3)
+        x = float(rng.uniform(xp[0], xp[-1]))
+        j = int(np.searchsorted(xp, x, side="right")) - 1
+        slope = (fp[j + 1] - fp[j]) / (xp[j + 1] - xp[j])
+        assert interpolate(x, xp, fp) == float(slope * (x - xp[j]) + fp[j])
+        scale = max(abs(float(fp[j])), abs(float(fp[j + 1])))  # the terms' size: a fused rounding differs by its ulp
+        assert abs(interpolate(x, xp, fp) - float(np.interp(x, xp, fp))) <= 2.0 * np.spacing(scale)
+        for k in range(7):
+            assert interpolate(float(xp[k]), xp, fp) == fp[k]
+    assert linear(1.5, np.array([1.0, 2.0]), 0, True, (0.0, 4.0)) == 2.0
+    assert linear(2.0, np.array([1.0, 2.0]), 1, False, (7.0, math.nan)) == 7.0

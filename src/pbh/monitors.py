@@ -36,7 +36,7 @@ from pbh.layout import Layout
 from pbh.outer import characteristic_pair
 from pbh.output import StepRow
 from pbh.state import State
-from pbh.timestep import StageFluxes
+from pbh.timestep import Engine, StageFluxes
 from pbh.types import FloatArray, nan_array
 
 # --- the row of the step table ---
@@ -139,6 +139,7 @@ class StepInputs:
         rate_change: The largest change of the packed rate from the step's last stage to the evaluation at the new
             state, relative to the state's scale; `dxi / 6` times it is the companion estimate.
         far_zone_from: The radius beyond which the initial data were FRW.
+        engine: The engine the run evaluates on, which forms the emptying rates as well (`emptying_rates`).
     """
 
     step: int
@@ -156,6 +157,7 @@ class StepInputs:
     F_N_integral_before: float
     rate_change: float
     far_zone_from: float
+    engine: Engine = Engine.PYTHON
 
 
 def monitor_step(inputs: StepInputs, eos: EquationOfState, layout: Layout, full: bool = True) -> MonitoredStep:
@@ -185,7 +187,7 @@ def monitor_step(inputs: StepInputs, eos: EquationOfState, layout: Layout, full:
         "W": state.W,
         "penalty": u_minus - state.W,
         "companion": i.dxi / 6.0 * i.rate_change,
-        "emptying_ratio": i.dxi * float(np.max(emptying_rates(i.result, state, geo, eos, layout)[cells])),
+        "emptying_ratio": i.dxi * float(np.max(emptying_rates(i.result, state, geo, eos, layout, i.engine)[cells])),
     }
     if not full:
         return MonitoredStep(i.step, i.xi, i.dxi, i.limit, i.halvings, **every_step, **UNSET_COLUMNS)
@@ -395,7 +397,12 @@ UNSET_COLUMNS = dataclasses.asdict(UNSET)  # converted once: a plain step must s
 
 
 def emptying_rates(
-    result: DerivsResult, state: State, geo: Geometry, eos: EquationOfState, layout: Layout
+    result: DerivsResult,
+    state: State,
+    geo: Geometry,
+    eos: EquationOfState,
+    layout: Layout,
+    engine: Engine = Engine.PYTHON,
 ) -> FloatArray:
     """Each retained cell's `K_c - 2 + 3 alpha`: its loss rate over its content, less the source (eq:num:positivity).
 
@@ -408,6 +415,10 @@ def emptying_rates(
     k = result.kernels
     if k is None:
         return rates
+    if engine is Engine.RUST:
+        from pbh import rust_engine  # loaded only on the Rust engine, as in `Scheme`
+
+        return rust_engine.emptying_rates(result, state, geo, eos, layout)
     X2 = geo.X2
     Lp, Lm = k.Lam_plus, k.Lam_minus
     with np.errstate(invalid="ignore"):  # face 0 carries no flux, and the faces below j_e are not retained

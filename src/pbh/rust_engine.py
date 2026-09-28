@@ -311,3 +311,37 @@ def trapping(U: FloatArray, Gammabar2: FloatArray, layout: Layout) -> Trapping:
         core_margin_face=out.core_margin_face,
         outer_face_trapped=out.outer_face_trapped,
     )
+
+
+def emptying_rates(
+    result: DerivsResult, state: State, geo: Geometry, eos: EquationOfState, layout: Layout
+) -> FloatArray:
+    """`monitors.emptying_rates` with the kernels on, formed in Rust with the same operations (rust/src/monitors.rs)."""
+    k = result.kernels
+    assert k is not None
+    return pbh_engine.emptying_rates(
+        k.Lam_plus,
+        k.Lam_minus,
+        k.v_L,
+        k.v_R,
+        k.rho_L,
+        k.rho_R,
+        geo.X2,
+        np.asarray(state.E, dtype=np.float64),
+        float(result.F[layout.N]),
+        eos.energy_source_rate,
+        layout.j_e,
+    )
+
+
+def near_zone(
+    Xm: FloatArray,
+    X: FloatArray,
+    ephi: FloatArray,
+    rho: FloatArray,
+    U: FloatArray,
+    Gammabar2: FloatArray,
+    radii: list[float],
+) -> tuple[list[float], int]:
+    """`horizon.near_zone_numbers` formed in Rust with the same operations (`rust/src/monitors.rs`)."""
+    return pbh_engine.near_zone(Xm, X, ephi, rho, U, Gammabar2, radii)

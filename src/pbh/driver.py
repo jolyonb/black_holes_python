@@ -247,6 +247,7 @@ class Run:
     last_refusal: list[str] = field(default_factory=lambda: list[str]())
     epoch: Epoch | None = None
     core: CoreWatch = field(default_factory=CoreWatch)
+    _state: tuple[Scheme, float, FloatArray, State] | None = field(default=None, repr=False)
 
     @property
     def layout(self) -> Layout:
@@ -254,8 +255,17 @@ class Run:
         return self.sch.layout
 
     def state(self) -> State:
-        """The state the deviation stands for, at the current time."""
-        return self.sch.whole_state(self.xi, self.layout.unpack(self.dy))
+        """The state the deviation stands for, at the current time.
+
+        Formed once for each scheme, time and deviation, which a step replaces together (the deviation is a new array,
+        never written in place), and kept: the step's record and the horizon row both read it.
+        """
+        kept = self._state
+        if kept is not None and kept[0] is self.sch and kept[1] == self.xi and kept[2] is self.dy:
+            return kept[3]
+        state = self.sch.whole_state(self.xi, self.layout.unpack(self.dy))
+        self._state = (self.sch, self.xi, self.dy, state)
+        return state
 
     def evaluate(self) -> DerivsResult:
         """The rate at the current state."""
@@ -330,7 +340,8 @@ class Run:
     def record_horizon(self, report: HorizonReport, result: DerivsResult, face: FaceValues | None) -> HorizonRow:
         """Write the step's horizon row, with the near-zone monitors, and add its apparent horizon to the epoch."""
         frame = self.sch.frame(self.xi)
-        near = near_zone(self.state(), result.derived, frame.geo, report, self.sch.eos, self.layout, self.xi)
+        state, eos = self.state(), self.sch.eos
+        near = near_zone(state, result.derived, frame.geo, report, eos, self.layout, self.xi, self.sch.engine)
         row = HorizonRow.of(self.step, self.xi, report, self.zones[-1].inner_edge if self.zones else None, near, face)
         self.writer.horizon_row(row)
         a = report.apparent
@@ -363,9 +374,9 @@ class Run:
     def read_mass(self, row: HorizonRow) -> bool:
         """Try the read-out on the epoch's series when due, and record it once read; whether the run should stop."""
         epoch, readout = self.epoch, self.config.readout
-        settings = readout.build()
         if epoch is None or epoch.read or self.xi < epoch.checked + READOUT_CHECK:
             return False
+        settings = readout.build()
         if self.xi < epoch.xi_start + settings.floor + 0.5 * settings.window:  # no reading can qualify yet
             return False
         epoch.checked = self.xi
@@ -644,12 +655,12 @@ def run(
                 dy_new, stages = accepted.dy, accepted.stages
                 check_resolved(accepted, r.xi, result, layout)
                 result = accepted.result
-                state_new = r.sch.whole_state(xi_new, layout.unpack(dy_new))
                 # 3. the record of the step
                 r.step += 1
                 change = layout.pack(result.deviation_rate) - stages[-1].k
                 rate_change = float(np.max(np.abs(change)))
                 r.xi, r.dy = xi_new, dy_new
+                state_new = r.state()
                 at_snapshot = r.xi >= next_snapshot  # exactly on it when clipped, the first step past it when not
                 frame = r.sch.frame(r.xi)
                 row = monitor_step(
@@ -669,6 +680,7 @@ def run(
                         F_N_integral_before=r.F_N_integral,
                         rate_change=rate_change / scale,
                         far_zone_from=r.far_zone,
+                        engine=r.sch.engine,
                     ),
                     r.sch.eos,
                     layout,

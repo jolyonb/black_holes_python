@@ -16,11 +16,14 @@ mod geometry;
 mod horizon;
 mod kernels;
 mod layout;
+mod monitors;
 mod numpy_like;
 mod outer;
 mod state;
 mod stencils;
 mod timestep;
+
+use std::borrow::Cow;
 
 use numpy::{PyArray1, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
 use pyo3::exceptions::PyValueError;
@@ -44,6 +47,15 @@ static NOT_HYPERBOLIC_ERROR: PyOnceLock<Py<PyType>> = PyOnceLock::new();
 /// A numpy array's entries, copied (any strides).
 fn to_vec(a: &PyReadonlyArray1<'_, f64>) -> Vec<f64> {
     a.as_array().to_vec()
+}
+
+/// A numpy array's entries, read in place when it is contiguous (as every array the Python hands a monitor is) and
+/// copied otherwise.
+fn view<'a>(a: &'a PyReadonlyArray1<'_, f64>) -> Cow<'a, [f64]> {
+    match a.as_slice() {
+        Ok(s) => Cow::Borrowed(s),
+        Err(_) => Cow::Owned(to_vec(a)),
+    }
 }
 
 /// A fresh numpy array handed the vector without a copy.
@@ -788,6 +800,85 @@ fn blend_radii(
     Ok((to_numpy(py, X), to_numpy(py, X_xi)))
 }
 
+/// Each retained cell's emptying rate (`monitors.emptying_rates`, with the kernels on) from the kernels' face fields,
+/// `X^2` at the faces, the cell energies, the outer flux and the source rate.
+#[pyfunction]
+#[pyo3(signature = (Lam_plus, Lam_minus, v_L, v_R, rho_L, rho_R, X2, E, F_N, energy_source_rate, j_e))]
+#[allow(clippy::too_many_arguments)]
+fn emptying_rates(
+    py: Python<'_>,
+    Lam_plus: PyReadonlyArray1<'_, f64>,
+    Lam_minus: PyReadonlyArray1<'_, f64>,
+    v_L: PyReadonlyArray1<'_, f64>,
+    v_R: PyReadonlyArray1<'_, f64>,
+    rho_L: PyReadonlyArray1<'_, f64>,
+    rho_R: PyReadonlyArray1<'_, f64>,
+    X2: PyReadonlyArray1<'_, f64>,
+    E: PyReadonlyArray1<'_, f64>,
+    F_N: f64,
+    energy_source_rate: f64,
+    j_e: usize,
+) -> PyResult<Py<PyArray1<f64>>> {
+    let N = E.len();
+    let faces = [&Lam_plus, &Lam_minus, &v_L, &v_R, &rho_L, &rho_R, &X2];
+    if N < 2 || j_e > N - 2 || faces.iter().any(|a| a.len() != N + 1) {
+        return Err(PyValueError::new_err(format!(
+            "the emptying rates need N >= 2 cell energies, N + 1 entries of every face field and 0 <= j_e <= N - 2, \
+             got N = {N} and j_e = {j_e}"
+        )));
+    }
+    let rates = monitors::emptying_rates(
+        &view(&Lam_plus),
+        &view(&Lam_minus),
+        &view(&v_L),
+        &view(&v_R),
+        &view(&rho_L),
+        &view(&rho_R),
+        &view(&X2),
+        &view(&E),
+        F_N,
+        energy_source_rate,
+        j_e,
+    );
+    Ok(to_numpy(py, rates))
+}
+
+/// The near-zone monitors (`horizon.near_zone`) from the retained cells' midpoints, lapse and density, the retained
+/// faces' radii, velocities and `Gammabar^2`, at the label radii `radii`: `(e^phi, U / Gammabar, rho)` at each, and
+/// the retained cell of the smallest lapse.
+#[pyfunction]
+#[pyo3(signature = (Xm, X, ephi, rho, U, Gammabar2, radii))]
+#[allow(clippy::too_many_arguments)]
+fn near_zone(
+    Xm: PyReadonlyArray1<'_, f64>,
+    X: PyReadonlyArray1<'_, f64>,
+    ephi: PyReadonlyArray1<'_, f64>,
+    rho: PyReadonlyArray1<'_, f64>,
+    U: PyReadonlyArray1<'_, f64>,
+    Gammabar2: PyReadonlyArray1<'_, f64>,
+    radii: Vec<f64>,
+) -> PyResult<(Vec<f64>, usize)> {
+    let cells = Xm.len();
+    if cells < 1
+        || ephi.len() != cells
+        || rho.len() != cells
+        || [&X, &U, &Gammabar2].iter().any(|a| a.len() != cells + 1)
+    {
+        return Err(PyValueError::new_err(
+            "the near zone needs the retained cells' midpoints, lapse and density, and one more face than cells",
+        ));
+    }
+    Ok(monitors::near_zone(
+        &view(&Xm),
+        &view(&X),
+        &view(&ephi),
+        &view(&rho),
+        &view(&U),
+        &view(&Gammabar2),
+        &radii,
+    ))
+}
+
 /// The horizon finder's numbers on one slice (`pbh.horizon.Trapping`), read by the Python through the getters.
 #[pyclass(frozen, module = "pbh_engine")]
 pub struct TrappingOutput {
@@ -875,6 +966,8 @@ fn pbh_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<AttemptOutput>()?;
     m.add_function(wrap_pyfunction!(checked_step, m)?)?;
     m.add_function(wrap_pyfunction!(blend_radii, m)?)?;
+    m.add_function(wrap_pyfunction!(emptying_rates, m)?)?;
+    m.add_function(wrap_pyfunction!(near_zone, m)?)?;
     m.add_function(wrap_pyfunction!(trapping, m)?)?;
     Ok(())
 }
