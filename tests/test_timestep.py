@@ -1,8 +1,10 @@
 """Tests of pbh.timestep: the integrators, the deviation form on a moving map, the step rules, Bessel convergence."""
 
 import math
-from dataclasses import replace
+from collections.abc import Sequence
+from dataclasses import fields, is_dataclass, replace
 from fractions import Fraction
+from typing import cast
 
 import numpy as np
 import pytest
@@ -19,6 +21,7 @@ from pbh.state import State
 from pbh.timestep import (
     CHART_HALVINGS,
     COURANT_NUMBER,
+    FRAMES_KEPT,
     MAX_HALVINGS,
     RK4,
     ButcherTableau,
@@ -131,6 +134,46 @@ def test_on_a_static_map_the_frame_is_computed_once():
     assert sch.frame(0.0).w is sch.frame(1.0).w
     moving = scheme(PinnedMap(IdentityMap(4.0), alpha=0.5), 20)
     assert moving.frame(0.0).geo is not moving.frame(1.0).geo
+
+
+def test_a_moving_map_keeps_the_frames_of_the_last_few_times():
+    sch = scheme(PinnedMap(IdentityMap(4.0), alpha=0.5), 20)
+    first = sch.frame(0.0)
+    for n in range(1, FRAMES_KEPT):
+        sch.frame(0.1 * n)
+    assert sch.frame(0.0) is first, "kept while FRAMES_KEPT times or fewer were asked for"
+    sch.frame(0.5)  # one time too many: the oldest, 0.0, is dropped
+    again = sch.frame(0.0)
+    assert again is not first
+    assert np.array_equal(again.geo.X, first.geo.X), "a recomputed frame is the same geometry"
+    assert np.array_equal(sch.frw(0.0), first.y_frw)
+
+
+def test_the_shared_frame_arrays_are_read_only():
+    for m in (SinhStretch(4.0, scale=2.0), PinnedMap(IdentityMap(4.0), alpha=0.5)):
+        f = scheme(m, 20, j_e=3).frame(0.3)
+        geo, w = f.geo, f.w
+        arrays = [geo.X, geo.X_xi, geo.dV, geo.dV_xi, geo.sbar, geo.dS, geo.dX, geo.Xm, geo.X2, geo.X3, geo.s_in]
+        arrays += [geo.s_out, w.grad_s, w.centred_U, w.r_L, w.r_R]
+        in_fields = sum(isinstance(a, np.ndarray) for part in (geo, w) for a in vars(part).values())
+        assert len(arrays) == in_fields, "an array field was added to Geometry or StencilWeights: list it here"
+        ref = f.reference
+        ref_arrays = [ref.state.E, ref.state.U, ref.rate.E, ref.rate.U, ref.frw_speed, ref.F_frw]
+        in_ref = sum(isinstance(a, np.ndarray) for part in (ref, ref.state, ref.rate) for a in vars(part).values())
+        assert len(ref_arrays) == in_ref, "an array field was added to FrwReference or State: list it here"
+        for a in [*arrays, *ref_arrays, f.y_frw]:
+            with pytest.raises(ValueError, match="read-only"):
+                a[1] = 0.0
+
+
+def test_on_a_static_map_every_frame_shares_the_background_reference():
+    sch = scheme(SinhStretch(4.0, scale=2.0), 20)
+    first = sch.frame(0.0)
+    for n in range(1, 2 * FRAMES_KEPT):  # more times than are kept, so the first frame itself is dropped
+        assert sch.frame(0.1 * n).reference is first.reference
+        assert sch.frw(0.1 * n) is first.y_frw
+    moving = scheme(PinnedMap(IdentityMap(4.0), alpha=0.5), 20)
+    assert moving.frame(0.0).reference is not moving.frame(0.1).reference
 
 
 # --- the step rules ---
@@ -264,6 +307,72 @@ def checked_setup() -> tuple[Scheme, FloatArray, float, DerivsResult]:
     dy = sch.layout.pack(State(E=np.zeros(30), U=np.zeros(31), W=0.0))
     dy[:30] = 0.01 * sch.frame(0.5).geo.dV[:30] * np.sin(np.arange(30))  # a mild deviation of the contents
     return sch, dy, 0.5, sch.evaluate_deviation(0.5, dy)
+
+
+def arrays_in(obj: object) -> list[FloatArray]:
+    """Every numpy array inside a (nested) dataclass, tuple or list, in field order."""
+    if isinstance(obj, np.ndarray):
+        return [cast(FloatArray, obj)]
+    if is_dataclass(obj) and not isinstance(obj, type):
+        return [a for f in fields(obj) for a in arrays_in(getattr(obj, f.name))]
+    if isinstance(obj, (tuple, list)):
+        return [a for x in cast(Sequence[object], obj) for a in arrays_in(x)]
+    return []
+
+
+def entries_in(obj: object) -> list[bytes]:
+    """Every array and scalar inside a (nested) dataclass as raw bytes, NaN bit patterns included, in field order."""
+    if isinstance(obj, np.ndarray):
+        a = cast(FloatArray, obj)
+        return [repr(a.shape).encode() + np.ascontiguousarray(a).tobytes()]
+    if isinstance(obj, (float, int)):
+        return [np.float64(obj).tobytes()]
+    if is_dataclass(obj) and not isinstance(obj, type):
+        return [e for f in fields(obj) for e in entries_in(getattr(obj, f.name))]
+    if isinstance(obj, (tuple, list)):
+        return [e for x in cast(Sequence[object], obj) for e in entries_in(x)]
+    return [repr(obj).encode()]
+
+
+def test_the_stages_of_a_step_on_a_moving_map_keep_their_own_values_though_the_frames_are_shared():
+    # The Scheme shares a frame among every caller at one time, and RK4 keeps all four stages alive at once (the
+    # monitors read every stage, the driver the result). No array of one stage's result may share memory with another
+    # stage's, the result's or any frame's, and each must be, bit for bit, what a fresh Scheme computes at its time and
+    # state, whatever was evaluated after it.
+    def moving() -> Scheme:
+        zone = Zone(xi_on=0.4, tau_on=0.3, x_t=0.3, Delta_t=0.1)
+        return Scheme(
+            EOS,
+            BlendMap(SinhStretch(6.0, scale=2.0), 0.5, (zone,)),
+            Layout(30),
+            OutgoingWave(),
+            PRODUCTION_KERNELS,
+        )
+
+    sch, xi, dxi = moving(), 0.5, 0.05
+    dy = np.zeros(sch.layout.size)
+    dy[:30] = 0.01 * sch.frame(xi).geo.dV[:30] * np.sin(np.arange(30))
+    attempt = checked_step(sch, xi, dy, dxi, sch.evaluate_deviation(xi, dy))
+    assert attempt.result is not None
+    assert attempt.dy is not None
+    kept = [(stage.y, stage.result) for stage in attempt.stages] + [(attempt.dy, attempt.result)]
+    owned = [arrays_in(y) + arrays_in(result) for y, result in kept]  # what each stage and the result hold
+    assert all(len(arrays) > 30 for arrays in owned)
+    frames = {xi_i: sch.frame(xi_i) for xi_i in (xi, xi + dxi / 2, xi + dxi)}  # the times of the stages, all kept
+    shared = [a for f in frames.values() for a in arrays_in(f)]
+    for i, mine in enumerate(owned):
+        others = [a for j, theirs in enumerate(owned) if j != i for a in theirs]
+        for a in mine:
+            assert not any(np.shares_memory(a, b) for b in others + shared)
+    fresh = moving()
+    k = [sch.layout.pack(stage.result.deviation_rate) for stage in attempt.stages]
+    for stage, a_i in zip(attempt.stages, RK4.a, strict=True):
+        dy_i = dy.copy()  # the stage input, formed as checked_step forms it
+        for a_ij, k_j in zip(a_i, k, strict=False):
+            if a_ij:
+                dy_i += dxi * float(a_ij) * k_j
+        assert entries_in(fresh.evaluate_deviation(stage.xi, dy_i)) == entries_in(stage.result)
+    assert entries_in(fresh.evaluate_deviation(xi + dxi, attempt.dy)) == entries_in(attempt.result)
 
 
 REAL_EVALUATE = Scheme.evaluate_deviation

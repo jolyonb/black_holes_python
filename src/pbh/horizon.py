@@ -56,7 +56,7 @@ from pbh.geometry import Geometry
 from pbh.layout import Layout
 from pbh.maps import Map
 from pbh.state import State
-from pbh.types import FloatArray
+from pbh.types import FloatArray, nan_array
 
 
 @dataclass(frozen=True)
@@ -150,7 +150,7 @@ def find_horizons(
     N, j_e = layout.N, layout.j_e
     faces = layout.faces
     Gammabar = np.sqrt(d.Gammabar2[faces])
-    h = np.full(N + 1, np.nan)
+    h = nan_array(N + 1)
     h[faces] = state.U[faces] + Gammabar
     trapped = h[faces] < 0.0
     retained = np.arange(j_e, N + 1)
@@ -166,12 +166,12 @@ def find_horizons(
 
     M_AH, residual = float("nan"), float("nan")
     if apparent is not None:
-        M_AH = 0.5 * float(np.exp(float(eos.alpha) * xi)) * apparent.X
+        M_AH = 0.5 * float(np.exp(eos.alpha_float * xi)) * apparent.X
         j = apparent.j
         M_at = d.M[j] + (apparent.x * N - j) * (d.M[j + 1] - d.M[j])  # the cumulative mass at the horizon's label
         residual = M_at / (apparent.X * bg.Gammabar2) - 1.0  # 2m/R = M / (X Gammabar_FRW^2) in the scaled variables
 
-    margin = np.full(N + 1, np.nan)
+    margin = nan_array(N + 1)
     margin[faces] = 1.0 + state.U[faces] / Gammabar
     k = int(np.nanargmin(margin))
     expanding = np.flatnonzero(state.U[faces] > 0.0)
@@ -319,7 +319,7 @@ def near_zone(
     if report.apparent is not None:
         Xm, X = geo.Xm[cells], geo.X[faces]
         v = state.U[faces] / np.sqrt(d.Gammabar2[faces])
-        scale = report.M_AH * float(np.exp(-float(eos.alpha) * xi))  # the label radius of R = M_AH
+        scale = report.M_AH * float(np.exp(-eos.alpha_float * xi))  # the label radius of R = M_AH
         for n, radius in enumerate((HORIZON, eos.sonic_radius_over_mass)):
             R = radius * scale
             if Xm[0] <= R <= Xm[-1]:

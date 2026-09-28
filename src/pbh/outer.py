@@ -100,10 +100,12 @@ def base_flux_deviation(
     """The base flux of eq:num:energy at a face less the FRW flux, `(cE - d_xi X) X^2 <rho> - (alpha w X - d_xi X) X^2`.
 
     With `cE = alpha w X + (1 + w) drift` it is `X^2 [(alpha w X - d_xi X) (<rho> - 1) + (1 + w) drift <rho>]`, every
-    term of the size of the deviation. `equations.py` applies the same formula to arrays. In flat spacetime the Hubble
-    flow `X` carries the background coefficient `hubble = 0`.
+    term of the size of the deviation. `equations.py` applies the same formula to arrays, with the frame's
+    `FrwReference.frw_speed` for `alpha w X - d_xi X`; it is formed here from its arguments because the outgoing-wave
+    closure evaluates it at a velocity and a face motion of its own. In flat spacetime the Hubble flow `X` carries the
+    background coefficient `hubble = 0`.
     """
-    alpha, w = float(eos.alpha), float(eos.w)
+    alpha, w = eos.alpha_float, eos.w_float
     return X * X * ((alpha * w * hubble * X - X_xi) * delta_rho_f + (1.0 + w) * drift * rho_f)
 
 
@@ -247,7 +249,7 @@ class OutgoingWave(OuterClosure):
             raise ValueError("the outgoing-wave closure needs a static outer face, (d_xi X)_N = 0")
         if inputs.hubble != 1.0:
             raise ValueError("the outgoing-wave closure is derived about FRW; it has no flat-spacetime form")
-        alpha, w = float(eos.alpha), float(eos.w)
+        alpha, w = eos.alpha_float, eos.w_float
         tau = self.strengths
         X_N, c_s = inputs.X_N, inputs.c_s
 
@@ -298,7 +300,7 @@ class HeldExterior(OuterClosure):
         """
         if inputs.hubble != 1.0:
             raise ValueError("the held exterior is a steady flow about a hole; it has no flat-spacetime form")
-        alpha, w = float(eos.alpha), float(eos.w)
+        alpha, w = eos.alpha_float, eos.w_float
         X_N, X_xi_N = inputs.X_N, inputs.X_xi_N
         cE_N = alpha * ((1.0 + w) * self.ephi_N * inputs.U_N - X_N)
         F_N = (cE_N - X_xi_N) * X_N**2 * self.rho_N

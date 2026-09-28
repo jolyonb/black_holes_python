@@ -244,7 +244,7 @@ class Run:
 
     def state(self) -> State:
         """The state the deviation stands for, at the current time."""
-        return self.layout.unpack(self.sch.frw(self.xi) + self.dy)
+        return self.sch.whole_state(self.xi, self.layout.unpack(self.dy))
 
     def evaluate(self) -> DerivsResult:
         """The rate at the current state."""
@@ -624,7 +624,7 @@ def run(
                 dy_new, stages = accepted.dy, accepted.stages
                 check_resolved(accepted, r.xi, result, layout)
                 result = accepted.result
-                state_new = layout.unpack(r.sch.frw(xi_new) + dy_new)
+                state_new = r.sch.whole_state(xi_new, layout.unpack(dy_new))
                 # 3. the record of the step
                 r.step += 1
                 change = layout.pack(result.deviation_rate) - layout.pack(stages[-1].result.deviation_rate)

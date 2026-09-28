@@ -36,7 +36,7 @@ from pbh.layout import Layout
 from pbh.outer import characteristic_pair
 from pbh.output import StepRow
 from pbh.state import State
-from pbh.types import FloatArray
+from pbh.types import FloatArray, nan_array
 
 # --- what one stage contributes ---
 
@@ -246,7 +246,7 @@ def full_diagnostics(
     cells, faces = layout.cells, layout.faces
     geo, bg, d, state, sp = i.geo, i.bg, i.result.derived, i.state, i.result.speeds
     X = geo.X[: N + 1]
-    w = float(eos.w)
+    w = eos.w_float
 
     # validity, located; the theta-limiter
     rho_min_cell = j_e + int(np.argmin(d.rho[cells]))
@@ -442,7 +442,7 @@ def emptying_rates(
     `max(F_N, 0)` through the outer face. NaN on every cell with the kernels off, whose centred flux has no such form.
     """
     N, j_e = layout.N, layout.j_e
-    rates = np.full(N, np.nan)
+    rates = nan_array(N)
     k = result.kernels
     if k is None:
         return rates

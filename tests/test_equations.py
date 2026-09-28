@@ -2,6 +2,7 @@
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from fractions import Fraction
 
 import numpy as np
 import pytest
@@ -14,7 +15,7 @@ from pbh.kernels import CENTRED_SCHEME, PRODUCTION_KERNELS, KernelSettings, Visc
 from pbh.layout import Layout
 from pbh.maps import IdentityMap, Map, PinnedMap, SinhStretch
 from pbh.outer import PRODUCTION_STRENGTHS, HeldAtFrw, OuterClosure, OuterInputs, OuterRows, OutgoingWave
-from pbh.state import State, frw_rate, frw_state
+from pbh.state import FrwReference, State, frw_rate, frw_state
 from pbh.stencils import StencilWeights
 
 EOS = EquationOfState(RADIATION)
@@ -49,6 +50,23 @@ def smooth_state(su: Setup, amplitude: float = 0.02, seed: int = 0) -> State:
     E = geo.dV * (1.0 + amplitude * np.exp(-c1 * geo.sbar[:-1]))
     U = geo.X * (1.0 + amplitude * np.exp(-c2 * geo.X**2))
     return State(E=E, U=U, W=0.0, M_e=float(geo.X[lay.j_e]) ** 3)
+
+
+def test_a_reference_handed_in_is_the_one_formed_here_and_must_belong_to_the_stage():
+    su = Setup.of(SinhStretch(6.0, scale=2.0), 40, xi=0.8)
+    s = smooth_state(su)
+    own = FrwReference.of(su.geo, EOS)
+    args = (s, su.geo, su.bg, EOS, su.w, HELD, PRODUCTION_KERNELS)
+    assert np.array_equal(calc_derivs(*args, reference=own).rate.E, calc_derivs(*args).rate.E)
+    other = Setup.of(SinhStretch(6.0, scale=2.0), 40, xi=0.8)  # an equal geometry, but not this stage's
+    for wrong in (
+        FrwReference.of(other.geo, EOS),
+        FrwReference.of(su.geo, EquationOfState(Fraction(1, 5))),
+        FrwReference.of(su.geo, EOS, j_e=2),
+        FrwReference.of(su.geo, EOS, hubble=0.0),
+    ):
+        with pytest.raises(ValueError, match="another geometry"):
+            calc_derivs(*args, reference=wrong)
 
 
 # --- FRW: a fixed point on every static map, the exact solution on every moving one (Section 7.3) ---

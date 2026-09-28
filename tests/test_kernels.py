@@ -67,6 +67,14 @@ def test_minmod_returns_the_smallest_modulus_when_signs_agree_and_zero_otherwise
     assert np.array_equal(minmod(a, b, c), np.array([0.5, -1.0, 0.0, 0.0, 2.0]))
 
 
+def test_minmod_limits_a_zero_slope_to_a_positive_zero():
+    a = np.array([-0.0, 0.0, -1.0, -0.0])
+    b = np.array([-1.0, -1.0, -0.0, -0.0])
+    for out in (minmod(a, b), minmod(a, b, b)):
+        assert np.array_equal(out, np.zeros(4))
+        assert not np.signbit(out).any()
+
+
 # --- the density reconstruction, eq:num:recon ---
 
 
@@ -93,6 +101,8 @@ def test_the_mc_coefficients_tend_to_two_away_from_the_origin():
     r_R = geo.dS[c + 1] / (geo.X[c + 1] ** 2 - geo.sbar[c])
     assert r_L == pytest.approx(2.0, rel=1e-2)  # the approach is first order in dX / X, 0.4 per cent here
     assert r_R == pytest.approx(2.0, rel=1e-2)
+    assert su.w.r_L[c] == r_L, "the weights carry the same ratios, to the bit"
+    assert su.w.r_R[c] == r_R
 
 
 @pytest.mark.parametrize("limiter", [DensityLimiter.MC, DensityLimiter.MINMOD])

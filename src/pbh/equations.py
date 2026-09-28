@@ -80,9 +80,9 @@ from pbh.kernels import (
     viscous_sides,
 )
 from pbh.outer import OuterClosure, OuterInputs
-from pbh.state import State, deviation_from_frw, frw_rate
+from pbh.state import FrwReference, State, deviation_from_frw
 from pbh.stencils import StencilWeights
-from pbh.types import FloatArray
+from pbh.types import FloatArray, nan_array
 
 
 @dataclass(frozen=True)
@@ -138,12 +138,12 @@ def speeds(d: Derived, deviation: State, geo: Geometry, eos: EquationOfState, fa
 
     `hubble` is the background coefficient `h` of `Background`, which multiplies the Hubble flow `X`.
     """
-    alpha, w = float(eos.alpha), float(eos.w)
+    alpha, w = eos.alpha_float, eos.w_float
     N = geo.N
     X, ephi_f = geo.X[faces], d.ephi_f[faces]
-    drift = np.full(N + 1, np.nan)  # NaN below the retained faces, and so are Theta and cE
+    drift = nan_array(N + 1)  # NaN below the retained faces, and so are Theta and cE
     drift[faces] = alpha * (hubble * X * d.delta_ephi_f[faces] + ephi_f * deviation.U[faces])  # <ephi> U - h X
-    a = np.full(N + 1, np.nan)
+    a = nan_array(N + 1)
     a[faces] = alpha * eos.sqrt_w * ephi_f * np.sqrt(d.Gammabar2[faces])
     Theta = drift - geo.X_xi
     cE = alpha * w * hubble * geo.X + (1.0 + w) * drift
@@ -159,6 +159,7 @@ def calc_derivs(
     outer: OuterClosure,
     settings: KernelSettings,
     deviation: State | None = None,
+    reference: FrwReference | None = None,
 ) -> DerivsResult:
     """Evaluate the semi-discrete equations once: the rate of every unknown at this time and state.
 
@@ -171,21 +172,28 @@ def calc_derivs(
         outer: The closure of the outer face.
         settings: The kernel switches: production kernels or the centred base scheme, and their constants.
         deviation: The state's deviation from FRW, if the caller holds it (see `derive`).
+        reference: The background on this geometry, `FrwReference.of(geo, eos, j_e, h)`, if the caller holds it
+            (the `Scheme` keeps one per frame); otherwise it is formed here.
 
     Returns:
         The rate and the fields it was computed from.
 
     Raises:
         NotHyperbolicError: From the derived fields, if the state has left the hyperbolic domain.
+        ValueError: If `reference` was formed for another geometry, equation of state, excision face or `h`.
     """
     layout = w.layout
     N, j_e = layout.N, layout.j_e
-    alpha, w_eos = float(eos.alpha), float(eos.w)
+    alpha, w_eos = eos.alpha_float, eos.w_float
     h = bg.hubble  # 1 on FRW, 0 in flat spacetime: the coefficient of every Hubble, gravity and source term
     cells, faces = layout.cells, layout.faces
 
     if deviation is None:
         deviation = deviation_from_frw(state, geo, j_e, h)
+    if reference is None:
+        reference = FrwReference.of(geo, eos, j_e, h)
+    elif not reference.belongs_to(geo, eos, j_e, h):
+        raise ValueError("the FRW reference was formed for another geometry, equation of state, j_e or h")
     d = derive(state, geo, bg, eos, w, settings.theta, deviation)
     sp = speeds(d, deviation, geo, eos, faces, h)
     D_s_rho = w.gradient_s(d.delta_rho)  # the same difference as of rho, without its rounding to the FRW size
@@ -195,7 +203,8 @@ def calc_derivs(
     # FRW flux: from the kernels of Section 7.7, or, with the kernels off, the centred base flux of eq:num:energy, the
     # physical energy flux relative to the moving face, (cE_j - (d_xi X)_j) X_j^2 <rho>_j, and no force.
     X, X_xi = geo.X, geo.X_xi
-    F_frw = (alpha * w_eos * h * X - X_xi) * X**2  # the FRW flux, to which the deviation is added for the whole flux
+    F_frw = reference.F_frw  # the FRW flux, to which the deviation is added for the whole flux
+    frw_speed = reference.frw_speed  # alpha w h X - d_xi X: the FRW flux is frw_speed X^2
     kernels = None
     if settings.kernels is Kernels.PRODUCTION:
         rho_L, rho_R, delta_rho_L, delta_rho_R, theta_scale = reconstruct_density(
@@ -204,7 +213,7 @@ def calc_derivs(
         J, q, q_f, Q = viscous_pressure(state, geo, d, sp.Lam, eos, w, settings.c_v, settings.cap_tension)
         q_L, q_R = viscous_sides(q, q_f, d.rho, rho_L, rho_R, w.layout, settings.viscous_flux)
         delta_F, Lam_plus, Lam_minus, v_L, v_R = hll_flux(
-            rho_L, rho_R, delta_rho_L, delta_rho_R, q_L, q_R, deviation, geo, sp.Theta, sp.a, eos, w, h
+            rho_L, rho_R, delta_rho_L, delta_rho_R, q_L, q_R, deviation, geo, sp.Theta, sp.a, eos, w, h, frw_speed
         )
         kernels = KernelResult(
             rho_L=rho_L,
@@ -223,10 +232,10 @@ def calc_derivs(
             v_R=v_R,
         )
     else:
-        delta_F = np.full(N + 1, np.nan)
+        delta_F = nan_array(N + 1)
         f = faces
-        delta_F[f] = X[f] ** 2 * (
-            (alpha * w_eos * h * X[f] - X_xi[f]) * d.delta_rho_f[f] + (1.0 + w_eos) * sp.drift[f] * d.rho_f[f]
+        delta_F[f] = geo.X2[f] * (
+            frw_speed[f] * d.delta_rho_f[f] + (1.0 + w_eos) * sp.drift[f] * d.rho_f[f]
         )  # outer.base_flux_deviation, on the arrays
         if j_e == 0:
             delta_F[0] = 0.0
@@ -260,7 +269,7 @@ def calc_derivs(
     F = F_frw + delta_F  # the whole flux, for the monitors
 
     # The velocity rows at the interior faces, eq:num:velocity, as their deviation from the FRW rate (d_xi X)_j.
-    dU = np.full(N + 1, np.nan)
+    dU = nan_array(N + 1)
     j = slice(max(j_e, 1), N)
     Xj, ephi_f, rho_f = X[j], d.ephi_f[j], d.rho_f[j]
     expansion = (1.0 - alpha) * h * deviation.U[j]  # (1 - alpha) U_j, less the FRW part
@@ -277,13 +286,13 @@ def calc_derivs(
     # The energy rows, eq:num:energy: what flows out through the outer face minus what flows in through the inner
     # one, plus the source (2 - 3 alpha) E_c; and the face-mass row, eq:numbh:mass, with the same flux F_{j_e}. The
     # FRW parts cancel exactly in the algebra, -(F_FRW,c+1 - F_FRW,c) + (2 - 3 alpha) Delta V_c = d_xi Delta V_c.
-    dE = np.full(N, np.nan)
+    dE = nan_array(N)
     flux_out, flux_in = delta_F[j_e + 1 : N + 1], delta_F[j_e:N]
     dE[cells] = -(flux_out - flux_in) + h * eos.energy_source_rate * deviation.E[cells]
     dM_e = h * eos.energy_source_rate * deviation.M_e - 3.0 * float(delta_F[j_e]) if j_e > 0 else 0.0
 
     deviation_rate = State(E=dE, U=dU, W=rows.dW, M_e=dM_e)
-    frw = frw_rate(geo, j_e, h)
+    frw = reference.rate
     rate = State(E=frw.E + dE, U=frw.U + dU, W=rows.dW, M_e=frw.M_e + dM_e)
     return DerivsResult(
         rate=rate,

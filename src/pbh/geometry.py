@@ -33,10 +33,10 @@ midpoint nor the volume centroid has that property (Section 7.2).
 The virtual cell beyond the boundary, between the outer face and one more face the map supplies, holds no field; it
 exists only so that the difference of mean-square radii across face `N`, `dS_N`, is defined like every other.
 
-Array indexing follows the picture. Face arrays (`X`, `X_xi`, `dS`) have `N + 1` entries indexed by `j`; cell
-arrays (`dV`, `dV_xi`, `dX`, `Xm`) have `N` entries indexed by `c`; `sbar` is a cell array with the virtual cell
-appended as entry `N`. An entry that is not a thing (`dS_0`, since no gradient is formed at the origin) is NaN and is
-never read. The same convention carries over to the fields in `layout.py`.
+Array indexing follows the picture. Face arrays (`X`, `X_xi`, `dS`, `X2`, `X3`) have `N + 1` entries indexed by
+`j`; cell arrays (`dV`, `dV_xi`, `dX`, `Xm`, `s_in`, `s_out`) have `N` entries indexed by `c`; `sbar` is a cell array
+with the virtual cell appended as entry `N`. An entry that is not a thing (`dS_0`, since no gradient is formed at the
+origin) is NaN and is never read. The same convention carries over to the fields in `layout.py`.
 
 The map does not depend on `xi` before formation, so the geometry is computed once and cached by the caller; after
 formation the map moves and the geometry is recomputed at every stage (Section 7.1).
@@ -47,7 +47,7 @@ from typing import Self
 
 import numpy as np
 
-from pbh.types import FloatArray
+from pbh.types import FloatArray, nan_array
 
 
 def shell_volumes(X: FloatArray) -> FloatArray:
@@ -84,6 +84,17 @@ class Geometry:
             `1..N`; entry `0` is NaN because no gradient is ever formed at the origin (`(D_s f)_0 = 0` by definition).
         dX: The cell width `Delta X_c = X_{j+1} - X_j` (cells `0..N-1`).
         Xm: The cell midpoint `X_{m,c} = (X_j + X_{j+1}) / 2` (cells `0..N-1`).
+        X2: `X_j^2` (faces `0..N`), the areal factor of every flux and force: an array's `** 2`, which numpy forms
+            as the product `X X`.
+        X3: `X_j^3` (faces `0..N`), formed as the product `X X X`, a tenth of the cost of the general power `X ** 3`.
+            Neither is interchangeable with a scalar power: `float(X_j) ** 3` and a numpy scalar's `** 2` go through
+            the C library's `pow`, which differs from the product in the last bit at about a quarter of faces for the
+            cube (about one in a thousand for the square). `frw_state`'s `M_e`, `frw_rate` and the excision row of
+            `kernels.viscous_pressure` use the scalar power, as they always have; substituting these arrays there
+            changes every excised deviation.
+        s_in: `X_c^2 - sbar_c`, the offset in `s` of each cell's inner face from its mean (cells `0..N-1`); a cell's
+            linear profile in `s` has its inner face value at the slope times this.
+        s_out: `X_{c+1}^2 - sbar_c`, the same for its outer face (cells `0..N-1`).
     """
 
     X: FloatArray
@@ -94,6 +105,10 @@ class Geometry:
     dS: FloatArray
     dX: FloatArray
     Xm: FloatArray
+    X2: FloatArray
+    X3: FloatArray
+    s_in: FloatArray
+    s_out: FloatArray
 
     @property
     def N(self) -> int:
@@ -132,10 +147,11 @@ class Geometry:
         # The volume rate on a moving map, eq:num:geom third line, for the real cells only.
         dV_xi = X_plus2[:-1] * X_xi[1:-1] - X_minus2[:-1] * X_xi[:-2]
         # Delta S_j for faces 1..N is the difference of neighbouring cells' sbar, the virtual cell supplying face N.
-        dS = np.full(X.shape[0] - 1, np.nan)
+        dS = nan_array(X.shape[0] - 1)
         dS[1:] = np.diff(sbar_all)
+        faces = X[:-1]
         return cls(
-            X=X[:-1],
+            X=faces,
             X_xi=X_xi[:-1],
             dV=dV_all[:-1],
             dV_xi=dV_xi,
@@ -143,4 +159,8 @@ class Geometry:
             dS=dS,
             dX=(X_plus - X_minus)[:-1],
             Xm=(0.5 * (X_minus + X_plus))[:-1],
+            X2=X_minus2,  # X_-^2 over the pairs is X_j^2 at faces 0..N
+            X3=faces * faces * faces,
+            s_in=X_minus2[:-1] - sbar_all[:-1],
+            s_out=X_plus2[:-1] - sbar_all[:-1],
         )

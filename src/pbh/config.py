@@ -55,6 +55,7 @@ On YAML: floats need a digit on both sides of the point and after the exponent s
 which YAML reads as a string; the parser then reports the wrong type.
 """
 
+import functools
 import subprocess
 from datetime import UTC, datetime
 from enum import Enum
@@ -400,10 +401,13 @@ def save(config: RunConfig, path: Path) -> None:
         yaml.safe_dump(document, f, sort_keys=False)
 
 
+@functools.cache
 def code_commit() -> str:
     """The git commit of the code, short form, with `-dirty` appended if the tree has uncommitted changes.
 
-    `unknown` if the code is not in a git checkout.
+    `unknown` if the code is not in a git checkout. Asked of git once per process, at the first file written (two
+    subprocesses, 20-40 ms), rather than at every file a run writes; later edits to the tree are not seen. A process
+    that reloads edited modules (a notebook with autoreload) must call `code_commit.cache_clear()` for a new answer.
     """
     here = Path(__file__).resolve().parent
     try:

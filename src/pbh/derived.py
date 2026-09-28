@@ -46,7 +46,7 @@ from pbh.eos import Background, EquationOfState
 from pbh.geometry import Geometry
 from pbh.state import State, deviation_from_frw
 from pbh.stencils import StencilWeights
-from pbh.types import FloatArray
+from pbh.types import FloatArray, nan_array
 
 
 class NotHyperbolicError(Exception):
@@ -137,38 +137,38 @@ def derive(
     if deviation is None:
         deviation = deviation_from_frw(state, geo, layout.j_e, bg.hubble)
 
-    rho = np.full(N, np.nan)
+    rho = nan_array(N)
     rho[cells] = state.E[cells] / geo.dV[cells]
     _assert_positive(rho, cells, "rho")
-    delta_rho = np.full(N, np.nan)
+    delta_rho = nan_array(N)
     delta_rho[cells] = deviation.E[cells] / geo.dV[cells]
 
-    ephi = np.full(N, np.nan)
-    delta_ephi = np.full(N, np.nan)
+    ephi = nan_array(N)
+    delta_ephi = nan_array(N)
     ephi[cells], delta_ephi[cells] = eos.lapse_and_deviation(rho[cells], delta_rho[cells])
 
     # The mass inside each retained face: what is inside the innermost retained face (nothing, or the excised M_e)
     # plus three times the energy of every retained cell inside it (Section 7.2 and 8.3).
-    M = np.full(N + 1, np.nan)
+    M = nan_array(N + 1)
     M[layout.j_e] = state.M_e
     M[layout.j_e + 1 :] = state.M_e + 3.0 * np.cumsum(state.E[cells])
 
-    mt = np.full(N + 1, np.nan)
+    mt = nan_array(N + 1)
     inner = max(layout.j_e, 1)  # never face 0, whose mt is 0 / 0
     X = geo.X[inner:]
-    X3 = X * X * X  # a tenth of the cost of X ** 3, which numpy evaluates as a general power
+    X3 = geo.X3[inner:]
     mt[inner:] = M[inner:] / X3
 
-    dM = np.full(N + 1, np.nan)  # M - X^3, the mass against its FRW value, as a sum of small terms
+    dM = nan_array(N + 1)  # M - X^3, the mass against its FRW value, as a sum of small terms
     dM[layout.j_e] = deviation.M_e
     dM[layout.j_e + 1 :] = deviation.M_e + 3.0 * np.cumsum(deviation.E[cells])
 
-    delta_U = np.full(N + 1, np.nan)
+    delta_U = nan_array(N + 1)
     delta_U[inner:] = deviation.U[inner:] / X
-    delta_m = np.full(N + 1, np.nan)
+    delta_m = nan_array(N + 1)
     delta_m[inner:] = dM[inner:] / X3
 
-    Gammabar2 = np.full(N + 1, np.nan)
+    Gammabar2 = nan_array(N + 1)
     Gammabar2[inner:] = gammabar_squared(bg, X, state.U[inner:], deviation.U[inner:], dM[inner:])
     if layout.j_e == 0:
         Gammabar2[0] = bg.Gammabar2  # M / X ~ X^2 -> 0 at the origin, and U_0 = 0
@@ -212,7 +212,7 @@ def gammabar_squared(bg: Background, X: FloatArray, U: FloatArray, dU: FloatArra
 
 def _assert_positive(values: FloatArray, retained: slice, name: str) -> None:
     """Raise `NotHyperbolicError` at the first retained entry that is not positive (NaN counts as not positive)."""
-    bad = np.flatnonzero(~(values[retained] > 0.0))
-    if bad.size:
-        index = int(bad[0]) + retained.start
+    positive = values[retained] > 0.0
+    if not positive.all():
+        index = int(np.flatnonzero(~positive)[0]) + retained.start
         raise NotHyperbolicError(name, index, float(values[index]))

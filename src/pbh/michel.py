@@ -34,7 +34,7 @@ from pbh.geometry import Geometry
 from pbh.initial import cell_contents
 from pbh.layout import Layout
 from pbh.state import State
-from pbh.types import FloatArray
+from pbh.types import FloatArray, nan_array
 
 LAMBDA_C = 6.0 * math.sqrt(3.0)
 """The accretion eigenvalue of radiation, eq:exc:lambdac: `(1 + 3w)^((1 + 3w) / 2w) / (4 w^(3/2))` at `w = 1/3`."""
@@ -90,7 +90,7 @@ def michel_flow(r_over_M: FloatArray) -> MichelFlow:
 
 def hole_mass_tilde(M_over_RH: float, xi: float, eos: EquationOfState) -> float:
     """The hole's mass in the cumulative-sum bookkeeping, `2 (M / R_H) e^((2 - 3 alpha) xi)`."""
-    return 2.0 * M_over_RH * math.exp((2.0 - 3.0 * float(eos.alpha)) * xi)
+    return 2.0 * M_over_RH * math.exp((2.0 - 3.0 * eos.alpha_float) * xi)
 
 
 def michel_state(geo: Geometry, bg: Background, eos: EquationOfState, M_over_RH: float, layout: Layout) -> State:
@@ -104,7 +104,7 @@ def michel_state(geo: Geometry, bg: Background, eos: EquationOfState, M_over_RH:
         raise ValueError("the Michel flow is written for radiation only")
     N, j_e = layout.N, layout.j_e
     X = geo.X[: N + 1]
-    scale = math.exp(float(eos.alpha) * bg.xi) / M_over_RH  # r / M = scale X
+    scale = math.exp(eos.alpha_float * bg.xi) / M_over_RH  # r / M = scale X
     r_inner = scale * float(X[j_e])  # the flow is only evaluated on the retained cells
 
     def excess(Xq: FloatArray) -> FloatArray:
@@ -114,10 +114,10 @@ def michel_state(geo: Geometry, bg: Background, eos: EquationOfState, M_over_RH:
         out[retained] = michel_flow(scale * Xq[retained]).compression - 1.0
         return out
 
-    E = np.full(N, np.nan)
-    U = np.full(N + 1, np.nan)
+    E = nan_array(N)
+    U = nan_array(N + 1)
     E[j_e:] = cell_contents(excess, geo)[j_e:]
-    U[j_e:] = math.exp((1.0 - float(eos.alpha)) * bg.xi) * michel_flow(scale * X[j_e:]).U
+    U[j_e:] = math.exp((1.0 - eos.alpha_float) * bg.xi) * michel_flow(scale * X[j_e:]).U
     return State(E=E, U=U, W=0.0, M_e=hole_mass_tilde(M_over_RH, bg.xi, eos))
 
 
@@ -126,5 +126,5 @@ def michel_grid(
 ) -> tuple[int, float]:
     """The number of cells and the outer radius of a uniform grid in `X` with cells of `dX / M` out to `r / M`."""
     N = round(outer_r_over_M / dX_over_M)
-    X_max = outer_r_over_M * M_over_RH * math.exp(-float(eos.alpha) * xi)
+    X_max = outer_r_over_M * M_over_RH * math.exp(-eos.alpha_float * xi)
     return N, X_max

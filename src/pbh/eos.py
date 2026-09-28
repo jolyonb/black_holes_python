@@ -74,6 +74,10 @@ class EquationOfState:
     Attributes:
         w: The equation of state parameter of `P = w rho`, in its exact rational representation.
         alpha: The scale-factor exponent `2 / (3 (1 + w))` (eq:asol), exact; `1/2` for radiation.
+        w_float: `w` as a float, the one form every floating-point formula of the code uses, converted once here
+            rather than by `float(w)` at each use (which saves about a microsecond per stage; the point is the single
+            representation).
+        alpha_float: `alpha` as a float, likewise.
         sqrt_w: The sound speed of the fluid in units of light, `sqrt(w)` (eq:eul:speeds).
         lapse_exponent: The exponent of the algebraic lapse `e^phi = rhotilde ** lapse_exponent` for smooth flow,
             `-w / (1 + w) = -3 alpha w / 2` (eq:MSphinov); `-1/4` for radiation.
@@ -90,6 +94,8 @@ class EquationOfState:
 
     w: Fraction
     alpha: Fraction = field(init=False)
+    w_float: float = field(init=False)
+    alpha_float: float = field(init=False)
     sqrt_w: float = field(init=False)
     lapse_exponent: float = field(init=False)
     energy_source_rate: float = field(init=False)
@@ -106,6 +112,8 @@ class EquationOfState:
         one_plus_3w = 1 + 3 * w
         derived = {
             "alpha": alpha,
+            "w_float": float(w),
+            "alpha_float": float(alpha),
             "sqrt_w": math.sqrt(w),
             "lapse_exponent": float(-w / (1 + w)),
             "energy_source_rate": float(2 - 3 * alpha),
@@ -209,7 +217,7 @@ class Background:
     @classmethod
     def at(cls, eos: EquationOfState, xi: float, spacetime: Spacetime = Spacetime.FRW) -> Self:
         """Evaluate the FRW background of Section 3 at time `xi` for the fluid `eos`, or the flat one at rest."""
-        alpha = float(eos.alpha)
+        alpha = eos.alpha_float
         if spacetime is Spacetime.FLAT:
             return cls(
                 xi=xi,

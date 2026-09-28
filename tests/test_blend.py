@@ -112,6 +112,18 @@ def test_one_zone_is_the_printed_map_on_both_bases(base: Map, xi: float):
     assert not m.is_static
 
 
+def test_the_map_keeps_what_does_not_depend_on_time_and_gives_the_same_radii_at_every_time():
+    kept = BlendMap(SinhStretch(8.0, scale=2.0), ALPHA, (ZONE,))
+    for xi in (4.0, 5.0, 4.0, 7.0):  # the first call fills the store, the rest read it
+        fresh = BlendMap(SinhStretch(8.0, scale=2.0), ALPHA, (ZONE,))
+        for a, b in zip(kept.radii(xi, 50), fresh.radii(xi, 50), strict=True):
+            assert np.array_equal(a, b)
+    B, weights = kept._static_part(50)  # pyright: ignore[reportPrivateUsage]
+    for a in (B, weights):
+        with pytest.raises(ValueError, match="read-only"):
+            a[..., 0] = 1.0
+
+
 @pytest.mark.parametrize("base", BASES)
 def test_the_four_identities(base: Map):
     N = 400

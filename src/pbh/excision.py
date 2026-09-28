@@ -137,7 +137,7 @@ def outflow_margin(j: int, state: State, d: Derived, geo: Geometry, eos: Equatio
     is used, since that is what the rows will see once the switch is thrown. `mu > 0` is the light-cone criterion
     of the outflow-margin theorem: every signal leaves through the face and none is tangent to it.
     """
-    alpha = float(eos.alpha)
+    alpha = eos.alpha_float
     ephi_face = d.ephi[j]  # the cell outside face j, which the first-order rows take as the face value
     Gammabar = math.sqrt(d.Gammabar2[j])
     return (alpha * geo.X[j] + geo.X_xi[j]) - alpha * ephi_face * (state.U[j] + Gammabar)
@@ -162,7 +162,7 @@ def attempt_switch_on(
     apparent = report.apparent
     assert apparent is not None, "a switch-on needs an apparent horizon"
     N = layout.N
-    alpha = float(eos.alpha)
+    alpha = eos.alpha_float
     x_e = excision.eta * math.exp(-alpha * excision.tau_on) * apparent.x
     j_e = max(math.ceil(N * x_e), layout.j_e)  # a face already further out stays where it is
     inside = 1 <= j_e < apparent.j
@@ -282,7 +282,7 @@ def check_face(
         if not value < 0.0:
             raise ExcisionError("the faces j_e .. j_e + 2 trapped", j_e + offset, value)
     Theta, a = float(speeds.Theta[j_e]), float(speeds.a[j_e])
-    alpha = float(eos.alpha)
+    alpha = eos.alpha_float
     # the physical margin: (H R_H e^(alpha xi) / alpha) mu, with H R_H = e^(-xi) in the units of the paper
     physical = math.exp((alpha - 1.0) * xi) / alpha * mu
     apparent = report.apparent

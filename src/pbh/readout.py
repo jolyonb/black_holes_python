@@ -63,7 +63,7 @@ import numpy as np
 
 from pbh.eos import EquationOfState
 from pbh.horizon import HorizonReport
-from pbh.types import FloatArray
+from pbh.types import FloatArray, nan_array
 
 
 @dataclass(frozen=True)
@@ -180,7 +180,7 @@ def readings(xi: FloatArray, M_AH: FloatArray, eos: EquationOfState, settings: R
 def _bars(omega: FloatArray, Q: FloatArray, settings: ReadoutSettings) -> FloatArray:
     """`omega [max Q - min Q]` over the readings of the preceding `bar_span` (inclusive), NaN until a whole span."""
     span = round(settings.bar_span / settings.spacing)
-    bar = np.full(omega.size, np.nan)
+    bar = nan_array(omega.size)
     for i in range(span, omega.size):
         behind = Q[i - span : i + 1]
         if np.all(np.isfinite(behind)):

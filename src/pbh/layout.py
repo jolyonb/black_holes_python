@@ -30,7 +30,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from pbh.state import State
-from pbh.types import FloatArray
+from pbh.types import FloatArray, nan_array
 
 
 @dataclass(frozen=True)
@@ -91,9 +91,9 @@ class Layout:
             raise ValueError(f"expected a packed vector of length {self.size}, got shape {y.shape}")
         n_cells = self.N - self.j_e
         n_faces = self.N + 1 - max(self.j_e, 1)
-        E = np.full(self.N, np.nan)
+        E = nan_array(self.N)
         E[self.cells] = y[:n_cells]
-        U = np.full(self.N + 1, np.nan)
+        U = nan_array(self.N + 1)
         U[self.faces_evolved] = y[n_cells : n_cells + n_faces]
         if not self.excised:
             U[0] = 0.0

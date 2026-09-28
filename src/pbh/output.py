@@ -391,4 +391,4 @@ def run_map(config: RunConfig, zones: tuple[Zone, ...]) -> Map:
     base = config.grid.build()
     if not zones:
         return base
-    return BlendMap(base, float(config.fluid.build().alpha), zones)
+    return BlendMap(base, config.fluid.build().alpha_float, zones)

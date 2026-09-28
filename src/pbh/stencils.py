@@ -50,7 +50,10 @@ extrapolated face density reaches zero.
 Every coefficient of these stencils depends on the geometry alone, so on a static map it is the same at every stage
 (Section 7.1). `StencilWeights.of(geo, layout)` computes them once; the caller caches it together with the
 geometry, and its methods apply the stencils to a field and do nothing but multiply and subtract, bar the one
-theta-limited reconstruction at face `N`.
+theta-limited reconstruction at face `N`. It also carries the two ratios `r_L`, `r_R` of the monotonized-central
+limiter of the density reconstruction (eq:num:recon, `kernels.py`), for the same reason: they are the coefficients of
+a stencil that depend on the geometry alone, and a stage would otherwise form them afresh every time. (The powers of
+`X` and the face offsets in `s` that the kernels and the derived fields use are geometry, and live on `Geometry`.)
 
 Outputs are face arrays, `N + 1` long, NaN where the operator is not defined (below `j_e`; `(D_s f)_N`;
 `(D_U U)_0`), following the convention of `layout.py`.
@@ -63,12 +66,12 @@ import numpy as np
 
 from pbh.geometry import Geometry
 from pbh.layout import Layout
-from pbh.types import FloatArray
+from pbh.types import FloatArray, nan_array
 
 
 @dataclass(frozen=True)
 class StencilWeights:
-    """The geometry-dependent coefficients of the three stencils, computed once per geometry.
+    """The geometry-dependent coefficients of the three stencils and of the mc limiter, computed once per geometry.
 
     Attributes:
         layout: Which faces are retained and where the excision rows apply.
@@ -79,6 +82,9 @@ class StencilWeights:
             gradient at the excision face; never read without one.
         outer_rho: The last cell's `(sbar_{N-1} - sbar_{N-2}, X_{N-1}^2 - sbar_{N-1}, X_N^2 - sbar_{N-1})`: the
             divisor of its one-sided slope in `s`, and the offsets in `s` of its two faces from its mean.
+        r_L: `dS_c / (sbar_c - X_c^2)`, the ratio of eq:num:recon that scales the inner one-sided slope in the
+            monotonized-central limiter (cells `1..N-2`, NaN elsewhere).
+        r_R: `dS_{c+1} / (X_{c+1}^2 - sbar_c)`, the same for the outer one (cells `1..N-2`, NaN elsewhere).
     """
 
     layout: Layout
@@ -87,20 +93,28 @@ class StencilWeights:
     outer_U: tuple[float, float, float]
     excision_U: float
     outer_rho: tuple[float, float, float]
+    r_L: FloatArray
+    r_R: FloatArray
 
     @classmethod
     def of(cls, geo: Geometry, layout: Layout) -> Self:
         """Compute the weights for this geometry and these retained faces."""
         N, j_e = layout.N, layout.j_e
-        X = geo.X
-        grad_s = np.full(N + 1, np.nan)
-        grad_s[1:N] = 2.0 * X[1:N] / geo.dS[1:N]
-        centred_U = np.full(N + 1, np.nan)
+        X, dS = geo.X, geo.dS
+        grad_s = nan_array(N + 1)
+        grad_s[1:N] = 2.0 * X[1:N] / dS[1:N]
+        centred_U = nan_array(N + 1)
         centred_U[1:N] = 1.0 / (X[2 : N + 1] - X[0 : N - 1])
         outer_U = cls._one_sided_three_point(float(geo.dX[N - 1]), float(geo.dX[N - 2]))
         excision_U = 1.0 / float(geo.dX[j_e])  # the one retained difference at an excision face
-        X2, sbar = X**2, geo.sbar
-        outer_rho = (float(geo.dS[N - 1]), float(X2[N - 1] - sbar[N - 1]), float(X2[N] - sbar[N - 1]))
+        s_in, s_out = geo.s_in, geo.s_out  # each cell's face offsets in `s` from its mean, X^2 - sbar
+        outer_rho = (float(dS[N - 1]), float(s_in[N - 1]), float(s_out[N - 1]))
+        # The mc ratios: the difference quotient across each face over that face's offset, r = dS / (sbar - X_c^2)
+        # inside and dS / (X_{c+1}^2 - sbar) outside; the reconstruction multiplies its slope by the same offsets.
+        interior = slice(1, N - 1)  # the cells with two faces inside the grid (the mc limiter's cells)
+        r_L, r_R = nan_array(N), nan_array(N)
+        r_L[interior] = -dS[1 : N - 1] / s_in[interior]  # negation is exact: bit for bit dS / (sbar - X^2)
+        r_R[interior] = dS[2:N] / s_out[interior]
         return cls(
             layout=layout,
             grad_s=grad_s,
@@ -108,6 +122,8 @@ class StencilWeights:
             outer_U=outer_U,
             excision_U=excision_U,
             outer_rho=outer_rho,
+            r_L=r_L,
+            r_R=r_R,
         )
 
     def face_average(self, f: FloatArray) -> FloatArray:
@@ -121,7 +137,7 @@ class StencilWeights:
             excision face the cell behind it. NaN at face `N`, whose state is `outer_face_density`'s.
         """
         N, j_e = self.layout.N, self.layout.j_e
-        avg = np.full(N + 1, np.nan)
+        avg = nan_array(N + 1)
         avg[j_e + 1 : N] = 0.5 * (f[j_e : N - 1] + f[j_e + 1 : N])
         avg[j_e] = f[j_e]  # f_0 at the origin; the cell behind an excision face
         return avg
@@ -159,7 +175,7 @@ class StencilWeights:
             difference inside. NaN at face `N`, where no gradient is ever formed.
         """
         N, j_e = self.layout.N, self.layout.j_e
-        grad = np.full(N + 1, np.nan)
+        grad = nan_array(N + 1)
         grad[j_e + 1 : N] = self.grad_s[j_e + 1 : N] * (f[j_e + 1 : N] - f[j_e : N - 1])
         grad[j_e] = 0.0  # none at the origin, and none formed at an excision face
         return grad
@@ -176,7 +192,7 @@ class StencilWeights:
             carries no velocity gradient.
         """
         N, j_e = self.layout.N, self.layout.j_e
-        grad = np.full(N + 1, np.nan)
+        grad = nan_array(N + 1)
         lo, hi = j_e + 1, N  # the centred rows: faces 1 .. N-1 unexcised, j_e+1 .. N-1 excised
         grad[lo:hi] = self.centred_U[lo:hi] * (U[lo + 1 : hi + 1] - U[lo - 1 : hi - 1])
         a_0, a_1, a_2 = self.outer_U

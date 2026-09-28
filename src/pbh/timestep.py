@@ -30,8 +30,10 @@ retained `rho_c > 0` and `Gammabar_j^2 > 0`; an attempt that fails is refused an
 with half the step (`advance_checked`). This is what keeps accepted states positive: the semi-discrete scheme is
 positive (eq:num:positivity), but an explicit step can overshoot it.
 
-`Frame` bundles what a stage needs at one time, the geometry, the background and the stencil weights, and `Scheme`
-builds frames from the map and the layout: once for a static map, at every stage time for a moving one (Section 7.1).
+`Frame` bundles what a stage needs at one time, the geometry, the stencil weights, the scale factor and the reference
+solution, and `Scheme` builds frames from the map and the layout: once for a static map (bar the scale factor), at
+every stage time for a moving one (Section 7.1), keeping the frames of the last few times, which the stepper and the
+driver ask for repeatedly.
 """
 
 import math
@@ -50,9 +52,9 @@ from pbh.kernels import KernelSettings
 from pbh.layout import Layout
 from pbh.maps import Map
 from pbh.outer import OuterClosure
-from pbh.state import frw_state
+from pbh.state import FrwReference, State
 from pbh.stencils import StencilWeights
-from pbh.types import FloatArray
+from pbh.types import FloatArray, read_only
 
 #: The Courant number of eq:num:cfl. RK4's stable limit on the production footprint is 0.865 (0.835 to x_max = 48).
 COURANT_NUMBER = 0.75
@@ -110,13 +112,33 @@ RK4 = ButcherTableau(
 )
 
 
+#: How many frames a `Scheme` keeps: the three stage times of an RK4 step, `xi`, `xi + dxi / 2` and `xi + dxi`, and
+#: one more, the output time `land` that the driver clipped the step to, at which `checked_step` evaluates the result
+#: while its fourth stage stays at `xi + dxi`.
+FRAMES_KEPT = 4
+
+
 @dataclass(frozen=True)
 class Frame:
-    """What a stage needs at one time: the geometry, the background and the stencil weights."""
+    """What a stage needs at one time: the geometry, the stencil weights, the scale factor and the reference solution.
+
+    A frame is shared by every caller that asks its `Scheme` for the same time, so its arrays are read-only: an
+    in-place write by any consumer raises rather than silently changing the next stage's geometry.
+
+    Attributes:
+        geo: The geometry.
+        bg: The scale-factor background at this time: `a`, `H`, the Hubble radius, `Gammabar`, `c_s` and `h`.
+        w: The stencil weights.
+        reference: The reference solution `y_FRW` on this geometry (the fluid at rest in flat spacetime), unpacked,
+            with its rate and flux.
+        y_frw: `reference.state` packed by the layout: the vector to which the integrator adds its deviation.
+    """
 
     geo: Geometry
     bg: Background
     w: StencilWeights
+    reference: FrwReference
+    y_frw: FloatArray
 
 
 @dataclass(frozen=True)
@@ -139,28 +161,57 @@ class Scheme:
     outer: OuterClosure
     settings: KernelSettings
     spacetime: Spacetime = Spacetime.FRW
-    _static_frame: tuple[Geometry, StencilWeights] | None = field(init=False, repr=False, compare=False)
+    _static_frame: Frame | None = field(init=False, repr=False, compare=False)
+    _frames: dict[float, Frame] = field(init=False, default_factory=dict[float, Frame], repr=False, compare=False)
 
     def __post_init__(self) -> None:
-        """On a static map the geometry and the weights are computed once here and reused (Section 7.1)."""
+        """On a static map the frame is built once here, and every later frame shares all of it but `bg`.
+
+        The geometry and the weights do not depend on `xi` on a static map (Section 7.1), nor does the reference
+        solution, whose only other input `h` depends on the spacetime alone.
+        """
         if self.spacetime is Spacetime.FLAT and self.layout.j_e > 0:
             raise ValueError("flat spacetime has no gravity, so no black hole to excise")
-        cached = (self._geometry_and_weights(0.0)) if self.map.is_static else None
-        object.__setattr__(self, "_static_frame", cached)
+        object.__setattr__(self, "_static_frame", self._new_frame(0.0) if self.map.is_static else None)
 
-    def _geometry_and_weights(self, xi: float) -> tuple[Geometry, StencilWeights]:
+    def _new_frame(self, xi: float) -> Frame:
+        """The frame at time `xi` built from the map: every stage time on a moving map, once on a static one."""
         geo = Geometry.of(*self.map.radii(xi, self.layout.N))
-        return geo, StencilWeights.of(geo, self.layout)
+        w = StencilWeights.of(geo, self.layout)
+        bg = Background.at(self.eos, xi, self.spacetime)
+        reference = FrwReference.of(geo, self.eos, self.layout.j_e, bg.hubble)  # makes its own arrays read-only
+        y_frw = self.layout.pack(reference.state)
+        # Shared by every stage and caller that asks for this time (`frame`): read-only, so a stray write raises.
+        read_only(geo.X, geo.X_xi, geo.dV, geo.dV_xi, geo.sbar, geo.dS, geo.dX, geo.Xm, geo.X2, geo.X3)
+        read_only(geo.s_in, geo.s_out, w.grad_s, w.centred_U, w.r_L, w.r_R, y_frw)
+        return Frame(geo=geo, bg=bg, w=w, reference=reference, y_frw=y_frw)
 
     def frame(self, xi: float) -> Frame:
-        """The frame at time `xi`: the cached geometry on a static map, a fresh one on a moving map."""
-        geo, w = self._static_frame if self._static_frame is not None else self._geometry_and_weights(xi)
-        return Frame(geo=geo, bg=Background.at(self.eos, xi, self.spacetime), w=w)
+        """The frame at time `xi`, kept for the last `FRAMES_KEPT` distinct times.
+
+        On a static map every frame is the one built in `__post_init__` with the background of its own time; on a
+        moving map each new time builds its own. Frames are keyed on the exact float `xi`: a time that differs in the
+        last bit is simply a new frame. Everything a frame depends on besides `xi` is fixed for the Scheme's lifetime,
+        and a re-excision or a new zone builds a new Scheme, so a kept frame is never stale.
+        """
+        frame = self._frames.get(xi)
+        if frame is None:
+            static = self._static_frame
+            if static is None:
+                frame = self._new_frame(xi)
+            else:
+                bg = Background.at(self.eos, xi, self.spacetime)
+                frame = Frame(geo=static.geo, bg=bg, w=static.w, reference=static.reference, y_frw=static.y_frw)
+            if len(self._frames) >= FRAMES_KEPT:
+                del self._frames[next(iter(self._frames))]  # dicts keep insertion order: this is the oldest
+            self._frames[xi] = frame
+        return frame
 
     def evaluate(self, xi: float, y: FloatArray) -> DerivsResult:
         """The time derivatives at time `xi` for the packed state `y`, with the fields they came from."""
         f = self.frame(xi)
-        return calc_derivs(self.layout.unpack(y), f.geo, f.bg, self.eos, f.w, self.outer, self.settings)
+        state = self.layout.unpack(y)
+        return calc_derivs(state, f.geo, f.bg, self.eos, f.w, self.outer, self.settings, reference=f.reference)
 
     def evaluate_deviation(self, xi: float, dy: FloatArray) -> DerivsResult:
         """`evaluate` at the state `y_FRW + delta y`, handing the stage the deviation as well, which it needs whole.
@@ -169,14 +220,25 @@ class Scheme:
         deviation instead, which has not been rounded (see `derive`).
         """
         f = self.frame(xi)
-        state = self.layout.unpack(self.frw(xi) + dy)
         deviation = self.layout.unpack(dy)
-        return calc_derivs(state, f.geo, f.bg, self.eos, f.w, self.outer, self.settings, deviation)
+        state = self.whole_state(xi, deviation)
+        return calc_derivs(
+            state, f.geo, f.bg, self.eos, f.w, self.outer, self.settings, deviation=deviation, reference=f.reference
+        )
+
+    def whole_state(self, xi: float, deviation: State) -> State:
+        """The state `y_FRW + delta y` at time `xi`, from the unpacked deviation: the one recipe for it.
+
+        Bit for bit `unpack(frw(xi) + delta y)`, without packing and unpacking a second vector: the retained entries
+        are the same sums; the excised ones are NaN either way (the deviation's are); and where `unpack` sets a value
+        by fiat, the sum gives it exactly, `U_0 = h X_0 + 0 = 0` (`Geometry.of` insists on `X_0 = 0`) and before
+        excision `M_e = X_0^3 + 0 = 0`.
+        """
+        return self.frame(xi).reference.state.plus(deviation)
 
     def frw(self, xi: float) -> FloatArray:
-        """The packed background state at time `xi`: FRW, or the fluid at rest in flat spacetime."""
-        f = self.frame(xi)
-        return self.layout.pack(frw_state(f.geo, self.layout.j_e, f.bg.hubble))
+        """The packed background state at time `xi`: FRW, or the fluid at rest in flat spacetime (read-only)."""
+        return self.frame(xi).y_frw
 
     def deviation_rate(self, xi: float, dy: FloatArray) -> FloatArray:
         """The right-hand side in deviation form: the stage's rate of the deviation at `y_FRW + delta y`."""

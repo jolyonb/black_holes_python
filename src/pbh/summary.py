@@ -38,7 +38,7 @@ from pbh.collapse import CollapseHistory, collapse_history
 from pbh.eos import EquationOfState
 from pbh.output import RunReader
 from pbh.readout import Readings, ReadoutSettings, first_reading, readings, resample
-from pbh.types import FloatArray
+from pbh.types import FloatArray, nan_array
 
 LAST = 0.5
 """The e-folds at the end of an epoch over which the reference mass is the mean of the estimate."""
@@ -179,7 +179,7 @@ def fit_accretion(
     return AccretionFit(
         M_inf=1.0 / float(intercept),
         efficiency=lam / eos.accretion_eigenvalue,
-        F=(1.0 + float(eos.w)) * lam / 4.0,
+        F=(1.0 + eos.w_float) * lam / 4.0,
         points=int(late.sum()),
     )
 
@@ -191,15 +191,15 @@ def enclosed_mass(reader: RunReader, index: int, R: FloatArray, eos: EquationOfS
     """
     record = reader.snapshot(index)
     state = record.state
-    alpha = float(eos.alpha)
+    alpha = eos.alpha_float
     X = record.X
     j_e = record.j_e
-    M = np.full(X.size, np.nan)
+    M = nan_array(X.size)
     M[j_e] = state.M_e
     M[j_e + 1 :] = state.M_e + 3.0 * np.cumsum(state.E[j_e:])
     labels = R * math.exp(-alpha * record.xi)  # the label radius of a fixed physical radius at this time
     inside = (labels >= X[j_e]) & (labels <= X[-1])
-    m = np.full(R.size, np.nan)
+    m = nan_array(R.size)
     # within a cell the density is uniform, so the enclosed mass is linear in the volume, X^3
     M_at = np.interp(labels[inside] ** 3, X[j_e:] ** 3, M[j_e:])
     m[inside] = 0.5 * math.exp((3.0 * alpha - 2.0) * record.xi) * M_at

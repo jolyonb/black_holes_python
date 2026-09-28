@@ -59,7 +59,7 @@ from pbh.geometry import Geometry
 from pbh.layout import Layout
 from pbh.state import State
 from pbh.stencils import StencilWeights, theta_limited_faces
-from pbh.types import FloatArray
+from pbh.types import FloatArray, nan_array
 
 
 class Kernels(Enum):
@@ -162,10 +162,14 @@ class KernelResult:
 
 def minmod(*slopes: FloatArray) -> FloatArray:
     """The minmod of two or three arrays: the one of smallest modulus where all agree in sign, zero otherwise."""
-    stacked = np.stack(slopes)
-    all_positive = np.all(stacked > 0.0, axis=0)
-    all_negative = np.all(stacked < 0.0, axis=0)
-    smallest = np.min(np.abs(stacked), axis=0)
+    first, *rest = slopes
+    smallest = np.abs(first)
+    all_positive = first > 0.0
+    all_negative = first < 0.0
+    for s in rest:
+        smallest = np.minimum(smallest, np.abs(s))
+        all_positive &= s > 0.0
+        all_negative &= s < 0.0
     return np.where(all_positive, smallest, np.where(all_negative, -smallest, 0.0))
 
 
@@ -192,18 +196,17 @@ def reconstruct_density(
     """
     layout = w.layout
     N, j_e = layout.N, layout.j_e
-    X2, sbar, dS = geo.X**2, geo.sbar, geo.dS
+    dS = geo.dS
     # The one-sided slopes d_j across the interior retained faces j_e+1 .. N-1, indexed by face.
-    d = np.full(N + 1, np.nan)
+    d = nan_array(N + 1)
     d[j_e + 1 : N] = (delta_rho[j_e + 1 : N] - delta_rho[j_e : N - 1]) / dS[j_e + 1 : N]
     # The limited slope of every retained cell: the interior cells from their two faces, the first and last retained
     # cells from their single adjacent difference, which keeps second order at the origin.
-    slope = np.full(N, np.nan)
-    c = np.arange(j_e + 1, N - 1)
-    d_in, d_out = d[c], d[c + 1]
+    slope = nan_array(N)
+    c, c_next = slice(j_e + 1, N - 1), slice(j_e + 2, N)  # the interior retained cells c, and their outer faces c + 1
+    d_in, d_out = d[c], d[c_next]
     if limiter is DensityLimiter.MC:
-        r_L = dS[c] / (sbar[c] - X2[c])
-        r_R = dS[c + 1] / (X2[c + 1] - sbar[c])
+        r_L, r_R = w.r_L[c], w.r_R[c]  # dS_c / (sbar_c - X_c^2) and dS_{c+1} / (X_{c+1}^2 - sbar_c), eq:num:recon
         slope[c] = minmod(0.5 * (d_in + d_out), r_L * d_in, r_R * d_out)
     else:
         slope[c] = minmod(d_in, d_out)
@@ -215,15 +218,15 @@ def reconstruct_density(
     # from reaching zero. It replaces a floor: near vacuum a floored face value sat far above its cell's content, and a
     # face value near zero has an unbounded lapse (Section 7.7).
     cells = slice(j_e, N)
-    t = np.full(N, np.nan)
+    t = nan_array(N)
     t[cells], delta_in, delta_out = theta_limited_faces(
         delta_rho[cells],
-        slope[cells] * (X2[j_e:N] - sbar[cells]),
-        slope[cells] * (X2[j_e + 1 : N + 1] - sbar[cells]),
+        slope[cells] * geo.s_in[cells],  # the slope times X^2 - sbar_c at each face
+        slope[cells] * geo.s_out[cells],
         theta,
     )
-    delta_L = np.full(N + 1, np.nan)
-    delta_R = np.full(N + 1, np.nan)
+    delta_L = nan_array(N + 1)
+    delta_R = nan_array(N + 1)
     delta_L[j_e + 1 : N + 1] = delta_out  # cell c is inside face c + 1 ...
     delta_R[j_e:N] = delta_in  # ... and outside face c
     delta_L[j_e] = delta_R[j_e]  # nothing inside the innermost face: transmissive (F_0 = 0 anyway at the origin)
@@ -259,21 +262,21 @@ def viscous_pressure(
     layout = w.layout
     N, j_e = layout.N, layout.j_e
     X, Xm, dX = geo.X, geo.Xm, geo.dX
-    alpha, w_eos = float(eos.alpha), float(eos.w)
+    alpha, w_eos = eos.alpha_float, eos.w_float
     cells = layout.cells
     # (c) The peculiar velocity, its slope in each cell, and the minmod-limited slope at each face: the single
     # adjacent difference at the innermost retained face and at the outer face.
     upsilon = X * d.delta_U  # U - h X, the velocity relative to the background flow, from the deviation (`derive`)
     if j_e == 0:
         upsilon[0] = 0.0  # U_0 = X_0 = 0
-    g = np.full(N, np.nan)
+    g = nan_array(N)
     g[cells] = (upsilon[j_e + 1 : N + 1] - upsilon[j_e:N]) / dX[cells]
-    g_f = np.full(N + 1, np.nan)
+    g_f = nan_array(N + 1)
     g_f[j_e + 1 : N] = minmod(g[j_e : N - 1], g[j_e + 1 : N])
     g_f[j_e] = g[j_e]
     g_f[N] = g[N - 1]
     # The limited jump across each cell: the profiles from its two faces, evaluated at the midpoint.
-    J = np.full(N, np.nan)
+    J = nan_array(N)
     inner, outer = slice(j_e, N), slice(j_e + 1, N + 1)
     J[cells] = (upsilon[outer] + g_f[outer] * (Xm[cells] - X[outer])) - (
         upsilon[inner] + g_f[inner] * (Xm[cells] - X[inner])
@@ -281,7 +284,7 @@ def viscous_pressure(
     # The viscous pressure on the cells, normalised by the signal speed and the inertia factor, tapered at the edge.
     Lam_hat = np.maximum(Lam[inner], Lam[outer])
     Gammabar2_hat = 0.5 * (d.Gammabar2[inner] + d.Gammabar2[outer])
-    q = np.full(N, np.nan)
+    q = nan_array(N)
     q[cells] = -0.5 * c_v * Lam_hat * (1.0 + w_eos) * d.rho[cells] / (alpha * d.ephi[cells] * Gammabar2_hat) * J[cells]
     if cap_tension:
         # In expansion the Rusanov-normalised q is a tension. In an under-resolved core or beside a nearly empty
@@ -294,9 +297,11 @@ def viscous_pressure(
     # Its face value (the stencil's, which is the cell behind an excision face) and its areal force: the interior
     # stencil, and the kernels' own end row at the excision face.
     q_f = w.face_average(q)
-    Q = np.full(N + 1, np.nan)
-    Q[j_e + 1 : N] = w.gradient_s(geo.sbar[:-1] * q)[j_e + 1 : N] / X[j_e + 1 : N] ** 2
+    Q = nan_array(N + 1)
+    Q[j_e + 1 : N] = w.gradient_s(geo.sbar[:-1] * q)[j_e + 1 : N] / geo.X2[j_e + 1 : N]
     if j_e > 0:
+        # `X[j_e] ** 2` on the scalar, not the cached `geo.X2[j_e]`: a numpy scalar squares by the C library's `pow`,
+        # an array by `x * x`, and the two differ in the last bit for about one input in a thousand.
         Q[j_e] = 2.0 * geo.sbar[j_e] * q[j_e] / (X[j_e] ** 2 * dX[j_e])
     else:
         Q[0] = 0.0  # face 0 has no velocity equation
@@ -348,6 +353,7 @@ def hll_flux(
     eos: EquationOfState,
     w: StencilWeights,
     hubble: float,
+    frw_speed: FloatArray,
 ) -> tuple[FloatArray, FloatArray, FloatArray, FloatArray, FloatArray]:
     """The HLL energy flux through the retained faces `j < N` (eq:num:hll) as its deviation from the FRW flux.
 
@@ -394,6 +400,8 @@ def hll_flux(
         eos: The equation of state.
         w: The stencil weights, for the layout.
         hubble: The background coefficient `h` of `Background`: 1 on FRW, 0 in flat spacetime.
+        frw_speed: `alpha w h X_j - (d_xi X)_j` at every face (`FrwReference.frw_speed`): the FRW flux is
+            `frw_speed X^2`.
 
     Returns:
         `(F_j - F_FRW,j, Lambda^+_j, Lambda^-_j, v^L_j, v^R_j)` at the retained faces `j < N`: the flux deviation,
@@ -402,10 +410,10 @@ def hll_flux(
     layout = w.layout
     N, j_e = layout.N, layout.j_e
     faces = slice(j_e, N)  # the interior faces and the innermost one; face N belongs to the outer closure
-    X, X_xi, dU = geo.X[faces], geo.X_xi[faces], deviation.U[faces]
-    alpha, w_eos = float(eos.alpha), float(eos.w)
-    frw_speed = alpha * w_eos * hubble * X - X_xi  # the FRW flux is frw_speed X^2
-    X2 = X * X
+    X, dU = geo.X[faces], deviation.U[faces]
+    alpha, w_eos = eos.alpha_float, eos.w_float
+    frw_speed = frw_speed[faces]
+    X2 = geo.X2[faces]
 
     def one_sided(rho: FloatArray, delta_rho: FloatArray, q: FloatArray) -> tuple[FloatArray, FloatArray]:
         """The one-sided flux less the FRW flux, and the chord speed `F_j(rho, q) / (X^2 rho)`."""
@@ -416,16 +424,17 @@ def hll_flux(
 
     G_L, v_L = one_sided(rho_L[faces], delta_rho_L[faces], q_L[faces])
     G_R, v_R = one_sided(rho_R[faces], delta_rho_R[faces], q_R[faces])
-    zero = np.zeros_like(X)
-    Lam_plus = np.full(N + 1, np.nan)
-    Lam_minus = np.full(N + 1, np.nan)
-    Lam_plus[faces] = np.maximum.reduce([Theta[faces] + a[faces], v_L, v_R, zero])
-    Lam_minus[faces] = np.minimum.reduce([Theta[faces] - a[faces], v_L, v_R, zero])
-    chord_L = np.full(N + 1, np.nan)
-    chord_R = np.full(N + 1, np.nan)
+    Lam_plus = nan_array(N + 1)
+    Lam_minus = nan_array(N + 1)
+    # eq:num:hll: Lambda^+ = max(Theta + a, v^L, v^R, 0) and Lambda^- = min(Theta - a, v^L, v^R, 0), taken pairwise
+    # in the order printed (np.maximum.reduce over a list would first stack the four into a 2-D array).
+    Lam_plus[faces] = np.maximum(np.maximum(np.maximum(Theta[faces] + a[faces], v_L), v_R), 0.0)
+    Lam_minus[faces] = np.minimum(np.minimum(np.minimum(Theta[faces] - a[faces], v_L), v_R), 0.0)
+    chord_L = nan_array(N + 1)
+    chord_R = nan_array(N + 1)
     chord_L[faces], chord_R[faces] = v_L, v_R
     Lp, Lm = Lam_plus[faces], Lam_minus[faces]
-    delta_F = np.full(N + 1, np.nan)
+    delta_F = nan_array(N + 1)
     delta_F[faces] = (Lp * G_L - Lm * G_R + Lp * Lm * X2 * (delta_rho_R[faces] - delta_rho_L[faces])) / (Lp - Lm)
     if j_e == 0:
         delta_F[0] = 0.0

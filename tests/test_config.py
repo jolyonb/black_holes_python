@@ -197,14 +197,17 @@ def test_the_code_commit_is_unknown_outside_a_checkout(monkeypatch: pytest.Monke
     def no_git(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
         raise OSError("git not found")
 
+    code_commit.cache_clear()  # it asks git once per process
     monkeypatch.setattr(subprocess, "run", no_git)
     assert code_commit() == "unknown"
 
     def not_a_repo(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(args=[], returncode=128, stdout="", stderr="fatal: not a git repository")
 
+    code_commit.cache_clear()
     monkeypatch.setattr(subprocess, "run", not_a_repo)
     assert code_commit() == "unknown"
+    code_commit.cache_clear()  # not the answer of a faked git for the tests that follow
 
 
 # --- building ---

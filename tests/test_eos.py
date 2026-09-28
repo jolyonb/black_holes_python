@@ -50,6 +50,8 @@ def radiation() -> EquationOfState:
 def test_radiation_constants_are_the_printed_values(radiation: EquationOfState):
     assert radiation.is_radiation
     assert radiation.alpha == Fraction(1, 2)  # eq:asol: alpha = 1/2 for w = 1/3
+    assert radiation.alpha_float == 0.5
+    assert radiation.w_float == float(Fraction(1, 3))
     assert radiation.sqrt_w == pytest.approx(1 / math.sqrt(3))
     assert radiation.lapse_exponent == -0.25  # eq:MSphinov: e^phi = rhotilde^(-1/4)
     assert radiation.energy_source_rate == 0.5  # 2 - 3 alpha

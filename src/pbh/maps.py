@@ -27,11 +27,11 @@ cached (Section 7.1).
 
 import math
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
-from pbh.types import FloatArray
+from pbh.types import FloatArray, read_only
 
 type MapValues = tuple[FloatArray, FloatArray]
 """`(X, X_xi)`: the radii of the faces `0..N+1` and their velocities at fixed face number."""
@@ -289,6 +289,9 @@ class BlendMap(Map):
     base: Map
     alpha: float
     zones: tuple[Zone, ...]
+    _at_faces: dict[int, tuple[FloatArray, FloatArray]] = field(
+        init=False, default_factory=dict[int, tuple[FloatArray, FloatArray]], repr=False, compare=False
+    )
 
     def __post_init__(self) -> None:
         if not self.base.is_static:
@@ -318,24 +321,40 @@ class BlendMap(Map):
         rows.append(steps[-1])
         return np.array(rows)
 
-    def _factors(self, xi: float, u: FloatArray) -> tuple[FloatArray, FloatArray]:
-        """`sum_k w_k e^(-alpha T_k)` and `sum_k w_k dT_k/dxi e^(-alpha T_k)` at the labels `u`."""
-        w = self.weights(u)
-        factor = np.zeros_like(u)
-        rate = np.zeros_like(u)
+    def _factors(self, xi: float, weights: FloatArray) -> tuple[FloatArray, FloatArray]:
+        """`sum_k w_k e^(-alpha T_k)` and `sum_k w_k dT_k/dxi e^(-alpha T_k)`, given the partition of unity `w_k`.
+
+        `weights` is what `weights(u)` returns for some labels: one row per zone, then the static exterior's row.
+        """
+        factor = np.zeros_like(weights[0])  # one entry per label
+        rate = np.zeros_like(weights[0])
         for k, zone in enumerate(self.zones):
             T, dT = ramp(xi, zone.xi_on, zone.tau_on)
             pinned = math.exp(-self.alpha * T)
-            factor += w[k] * pinned
-            rate += w[k] * dT * pinned
-        return factor + w[-1], rate  # the static exterior has T = 0
+            factor += weights[k] * pinned
+            rate += weights[k] * dT * pinned
+        return factor + weights[-1], rate  # the static exterior has T = 0
 
     def radii(self, xi: float, N: int) -> MapValues:
         """`X = B sum_k w_k e^(-alpha T_k)` and `d_xi X = -alpha B sum_k w_k dT_k/dxi e^(-alpha T_k)`."""
-        B, _ = self.base.radii(0.0, N)  # the base is static, so its time argument is immaterial
-        factor, rate = self._factors(xi, fractions(N))
+        B, weights = self._static_part(N)
+        factor, rate = self._factors(xi, weights)
         return B * factor, -self.alpha * B * rate
+
+    def _static_part(self, N: int) -> tuple[FloatArray, FloatArray]:
+        """`(B, weights)` at the faces of an `N`-cell grid: the base radii and the partition of unity, free of `xi`.
+
+        Computed at the first call for each `N` and kept (read-only), since a moving map is evaluated at every new
+        stage time; only the ramps change with `xi`.
+        """
+        kept = self._at_faces.get(N)
+        if kept is None:
+            B, _ = self.base.radii(0.0, N)  # the base is static, so its time argument is immaterial
+            weights = self.weights(fractions(N))
+            read_only(B, weights)
+            kept = self._at_faces[N] = (B, weights)
+        return kept
 
     def radius_at(self, xi: float, u: FloatArray) -> FloatArray:
         """`X(xi, u) = B(u) sum_k w_k(u) e^(-alpha T_k)`."""
-        return self.base.radius_at(0.0, u) * self._factors(xi, u)[0]
+        return self.base.radius_at(0.0, u) * self._factors(xi, self.weights(u))[0]
