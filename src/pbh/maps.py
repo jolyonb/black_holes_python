@@ -64,6 +64,14 @@ class Map(ABC):
         the radius there, which is second order on any grid; interpolating the radius between the faces is not.
         """
 
+    @abstractmethod
+    def radius(self, xi: float, u: float) -> float:
+        """`radius_at` at a single label, in floats: the same number, bit for bit, without the arrays.
+
+        The finder asks for one radius at every step, where numpy's overhead on a one-entry array is most of the cost;
+        each map forms it with the same operations in the same order, and numpy's own `sinh` on the scalar.
+        """
+
 
 @dataclass(frozen=True)
 class IdentityMap(Map):
@@ -95,6 +103,10 @@ class IdentityMap(Map):
 
     def radius_at(self, xi: float, u: FloatArray) -> FloatArray:
         """`X = Rtilde_max u`."""
+        return self.Rtilde_max * u
+
+    def radius(self, xi: float, u: float) -> float:
+        """`X = Rtilde_max u` at one label."""
         return self.Rtilde_max * u
 
 
@@ -134,6 +146,10 @@ class SinhStretch(Map):
     def radius_at(self, xi: float, u: FloatArray) -> FloatArray:
         """`X = L sinh(u asinh(Rtilde_max / L))`."""
         return self.scale * np.sinh(u * math.asinh(self.Rtilde_max / self.scale))
+
+    def radius(self, xi: float, u: float) -> float:
+        """`X = L sinh(u asinh(Rtilde_max / L))` at one label, by numpy's `sinh` as `radius_at` takes it."""
+        return self.scale * float(np.sinh(u * math.asinh(self.Rtilde_max / self.scale)))
 
 
 @dataclass(frozen=True)
@@ -184,6 +200,10 @@ class PinnedMap(Map):
         """`X = e^(-alpha (xi - xi_on)) B(u)`."""
         return math.exp(-self.alpha * (xi - self.xi_on)) * self.base.radius_at(0.0, u)
 
+    def radius(self, xi: float, u: float) -> float:
+        """`X = e^(-alpha (xi - xi_on)) B(u)` at one label."""
+        return math.exp(-self.alpha * (xi - self.xi_on)) * self.base.radius(0.0, u)
+
 
 # --- the post-formation map: the base pinned in zones, joined by flat steps, switched on by ramps (Section 8.1) ---
 
@@ -196,6 +216,12 @@ def quintic_step(zeta: FloatArray) -> FloatArray:
     quintic is the simplest step that is.
     """
     z = np.clip(zeta, -1.0, 1.0)
+    return 0.5 + (15.0 * z - 10.0 * z**3 + 3.0 * z**5) / 16.0
+
+
+def quintic_step_at(zeta: float) -> float:
+    """`quintic_step` at one point, in floats: the powers by the C library's `pow`, as numpy's array powers are."""
+    z = min(max(zeta, -1.0), 1.0)
     return 0.5 + (15.0 * z - 10.0 * z**3 + 3.0 * z**5) / 16.0
 
 
@@ -250,6 +276,10 @@ class Zone:
     def step(self, u: FloatArray) -> FloatArray:
         """`chi(x) = sigma_5((x - x_t) / Delta_t)` at the labels `u`."""
         return quintic_step((u - self.x_t) / self.Delta_t)
+
+    def step_at(self, u: float) -> float:
+        """`step` at one label, in floats."""
+        return quintic_step_at((u - self.x_t) / self.Delta_t)
 
 
 @dataclass(frozen=True)
@@ -358,3 +388,13 @@ class BlendMap(Map):
     def radius_at(self, xi: float, u: FloatArray) -> FloatArray:
         """`X(xi, u) = B(u) sum_k w_k(u) e^(-alpha T_k)`."""
         return self.base.radius_at(0.0, u) * self._factors(xi, self.weights(u))[0]
+
+    def radius(self, xi: float, u: float) -> float:
+        """`X(xi, u)` at one label: the weights and factor of `weights` and `_factors`, summed in their order."""
+        steps = [zone.step_at(u) for zone in self.zones]
+        weights = [1.0 - steps[0], *(steps[k] - steps[k + 1] for k in range(len(steps) - 1)), steps[-1]]
+        factor = 0.0
+        for k, zone in enumerate(self.zones):
+            T, _ = ramp(xi, zone.xi_on, zone.tau_on)
+            factor += weights[k] * math.exp(-self.alpha * T)
+        return self.base.radius(0.0, u) * (factor + weights[-1])

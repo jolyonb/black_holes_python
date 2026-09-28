@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from pbh.geometry import Geometry
-from pbh.maps import IdentityMap, Map, PinnedMap, SinhStretch, fractions
+from pbh.maps import BlendMap, IdentityMap, Map, PinnedMap, SinhStretch, Zone, fractions
 
 # --- the face fractions ---
 
@@ -116,3 +116,27 @@ def test_the_pinned_map_is_its_base_at_the_pin_on_time_and_holds_the_physical_ra
 def test_only_a_static_map_can_be_pinned():
     with pytest.raises(ValueError, match="static"):
         PinnedMap(PinnedMap(IdentityMap(1.0), alpha=0.5), alpha=0.5)
+
+
+def test_the_radius_at_one_label_is_radius_at_to_the_bit():
+    # the float path the finder and the switch-on use, against the one-entry array it replaces: every map family, at
+    # the zone edges and the transitions' centres, off the grid, and at random labels, before, inside and after ramps
+    rng = np.random.default_rng(5)
+    zones = (
+        Zone(xi_on=1.0, tau_on=0.3, x_t=0.2, Delta_t=0.05),
+        Zone(xi_on=1.4, tau_on=0.25, x_t=0.4, Delta_t=0.1),
+        Zone(xi_on=2.0, tau_on=0.5, x_t=0.7, Delta_t=0.15),
+    )
+    alpha = 0.5
+    maps: list[Map] = [IdentityMap(8.0), SinhStretch(24.0, 3.0), SinhStretch(30.0, 0.15)]
+    maps += [PinnedMap(base, alpha, xi_on=1.0) for base in maps[:2]]
+    maps += [BlendMap(base, alpha, zones[:n]) for base in (IdentityMap(8.0), SinhStretch(30.0, 3.0)) for n in (1, 2, 3)]
+    edges = [edge for zone in zones for edge in (zone.inner_edge, zone.x_t, zone.outer_edge)]
+    labels = [0.0, 1.0, 2.0, 1e-300, *edges, *rng.uniform(0.0, 2.0, 300)]
+    for m in maps:
+        for xi in (0.0, 1.0, 1.1, 1.5, 2.3, 7.0):
+            for u in labels:
+                u = float(u)
+                one = m.radius(xi, u)
+                assert type(one) is float
+                assert one == float(m.radius_at(xi, np.array([u]))[0]), (m, xi, u)

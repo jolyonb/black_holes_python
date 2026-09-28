@@ -174,7 +174,7 @@ def attempt_switch_on(
     Delta_t = 0.5 * (x_out - x_in)
     x_t = place_transition(0.5 * (x_in + x_out), Delta_t, zones)
     fits = x_t + Delta_t < OUTER_STATIC_LABEL
-    X_out = float(grid.radius_at(xi, np.array([x_t + Delta_t]))[0])  # where it ends, an extension's pushed outward
+    X_out = grid.radius(xi, x_t + Delta_t)  # where it ends, an extension's pushed outward
     no_overlap = not zones or x_t - Delta_t >= zones[-1].outer_edge  # the test `BlendMap` makes, exactly
     return SwitchAttempt(
         x_AH=apparent.x,
@@ -190,7 +190,7 @@ def attempt_switch_on(
         x_t=x_t,
         Delta_t=Delta_t,
         X_out=X_out,
-        X_static=float(grid.radius_at(xi, np.array([OUTER_STATIC_LABEL]))[0]),
+        X_static=grid.radius(xi, OUTER_STATIC_LABEL),
         no_overlap=no_overlap,
     )
 
@@ -201,13 +201,13 @@ def label_of(grid: Map, xi: float, X: float) -> float:
     Labels beyond the outer face are returned up to `2`, which is enough to tell that a transition does not fit.
     """
     lo, hi = 0.0, 2.0
-    if float(grid.radius_at(xi, np.array([hi]))[0]) <= X:
+    if grid.radius(xi, hi) <= X:
         return hi
     while True:
         mid = 0.5 * (lo + hi)
         if mid in (lo, hi):  # converged to the last bit
             return hi
-        if float(grid.radius_at(xi, np.array([mid]))[0]) < X:
+        if grid.radius(xi, mid) < X:
             lo = mid
         else:
             hi = mid

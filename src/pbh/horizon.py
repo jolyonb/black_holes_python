@@ -225,7 +225,7 @@ def find_horizons(
     horizons: list[Horizon] = []
     for j, fraction, outer in t.crossings:
         x = (j + fraction) / N
-        X = float(map.radius_at(xi, np.array([x]))[0])
+        X = map.radius(xi, x)
         horizons.append(Horizon(j=j, x=x, X=X, outer=outer))
     outer_boundaries = [horizon for horizon in horizons if horizon.outer]
     apparent = outer_boundaries[-1] if outer_boundaries else None
