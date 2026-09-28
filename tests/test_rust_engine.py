@@ -350,16 +350,16 @@ def test_the_engines_agree_on_violent_states_with_odd_penalty_strengths(w: str):
 
 
 def test_the_engines_agree_on_the_smallest_grids_and_at_the_last_excision_faces():
-    # N = 2 to 7, with j_e = 0, 1, N - 2 and N - 1 (where the retained-cell loops are empty or reach an excised
-    # neighbour, and the outer face density is NaN even at FRW): the index edges of every Rust loop, under every
+    # N = 2 to 7, with j_e = 0, 1 and N - 2 (two retained cells, the fewest a Layout allows): the index edges of
+    # every Rust loop, under every
     # kernel switch and closure, in FRW and flat spacetime (where only the held face closes: the others refuse, as
     # `test_the_closures_refuse_...` checks). The states are FRW with the density up to 60 per cent higher or three
-    # times lower and the velocity 30 per cent off; about 70 per cent give a result and the rest a trapped face. numpy
-    # may warn at the NaN outer face, so the comparison is with its warnings silenced (see `test_numpy_warns_...`).
+    # times lower and the velocity 30 per cent off; most give a result and the rest a trapped face. numpy may warn at
+    # a trapped face, so the comparison is with its warnings silenced (see `test_numpy_warns_...`).
     rng = np.random.default_rng(11)
     for w, eos in (("w=1/3", RAD), ("w=1", EquationOfState(Fraction(1)))):
         for N in (2, 3, 4, 7):
-            for j_e in sorted({0, 1, N - 2, N - 1}):
+            for j_e in sorted({j for j in (0, 1, N - 2) if j <= N - 2}):
                 for m in (IdentityMap(3.0), SinhStretch(5.0, 1.5)):
                     for spacetime in (Spacetime.FRW, Spacetime.FLAT) if j_e == 0 else (Spacetime.FRW,):
                         for name, settings in SETTINGS.items():
@@ -383,10 +383,13 @@ def test_the_engines_agree_on_the_smallest_grids_and_at_the_last_excision_faces(
 
 
 def refused_state(case: Case, what: str) -> State:
-    """The case with a negative density, a trapped interior (`Gammabar^2 < 0`), or a non-finite energy."""
+    """The case with a negative density, an outer face density that rounds to zero, a trapped interior
+    (`Gammabar^2 < 0`), or a non-finite energy."""
     E, U = case.state.E.copy(), case.state.U.copy()
     if what == "rho":
         E[7] = -E[7]
+    elif what == "rho_N":
+        E[-1] *= 1e-17  # positive, but the deviation form's face density is `1 + delta`, which rounds to zero
     elif what == "Gammabar2":
         E[:20] *= 1e3  # far more mass inside than the expansion and the velocity can hold
         U[1:21] = 0.0
@@ -395,7 +398,7 @@ def refused_state(case: Case, what: str) -> State:
     return State(E=E, U=U, W=case.state.W, M_e=case.state.M_e)
 
 
-@pytest.mark.parametrize("what", ["rho", "Gammabar2", "nonfinite"])
+@pytest.mark.parametrize("what", ["rho", "rho_N", "Gammabar2", "nonfinite"])
 def test_a_state_outside_the_hyperbolic_domain_is_refused_alike(what: str):
     case = violent_case("stretched", 0)
     state = refused_state(case, what)
@@ -405,6 +408,7 @@ def test_a_state_outside_the_hyperbolic_domain_is_refused_alike(what: str):
         with pytest.raises(NotHyperbolicError) as refused:
             pair.numpy.evaluate(case.xi, y)
         assert refused.value.field == ("Gammabar2" if what == "Gammabar2" else "rho")
+        assert (refused.value.index == case.layout.N) == (what == "rho_N")
         assert math.isfinite(refused.value.value) == (what != "nonfinite")
         pair.assert_agree(case.xi, y, f"{what} {name}")
 
@@ -703,7 +707,7 @@ def test_an_inconsistent_frame_is_refused_with_value_error_and_never_panics():
     good = frame_arrays(sch, 0.3)
     pbh_engine.StageFrame(**good)  # pyright: ignore[reportArgumentType]
     X, rate_U = cast(FloatArray, good["X"]), cast(FloatArray, good["rate_U"])
-    for key, bad in (("j_e", 20), ("j_e", 40), ("X", X[:-3]), ("rate_U", rate_U[:-1])):
+    for key, bad in (("j_e", 19), ("j_e", 20), ("j_e", 40), ("X", X[:-3]), ("rate_U", rate_U[:-1])):
         with pytest.raises(ValueError, match=r"N >= 2|must have length"):
             pbh_engine.StageFrame(**(good | {key: bad}))  # pyright: ignore[reportArgumentType]
     one: dict[str, object] = {k: (cast(FloatArray, v)[:1] if isinstance(v, np.ndarray) else v) for k, v in good.items()}

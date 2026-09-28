@@ -53,7 +53,7 @@ class NotHyperbolicError(Exception):
     """A stage found a non-positive density or `Gammabar^2`: the system has left its hyperbolic domain.
 
     Attributes:
-        field: `"rho"` (a cell) or `"Gammabar2"` (a face).
+        field: `"rho"` (a cell, or at index `N` the outer face's density) or `"Gammabar2"` (a face).
         index: The cell or face index of the first offending entry.
         value: The offending value.
     """
@@ -128,7 +128,8 @@ def derive(
         The `Derived` fields, full length, NaN below the excision face.
 
     Raises:
-        NotHyperbolicError: If any retained `rho_c <= 0` or `Gammabar_j^2 <= 0`.
+        NotHyperbolicError: If any retained `rho_c <= 0` or `Gammabar_j^2 <= 0`, or the outer face's density
+            `rho_f[N] <= 0` (reported as `rho` at index `N`), in that order.
     """
     layout = w.layout
     cells, faces = layout.cells, layout.faces
@@ -179,6 +180,8 @@ def derive(
     rho_f, delta_rho_f = w.face_average(rho), w.face_average(delta_rho)
     ephi_f, delta_ephi_f = w.face_average(ephi), w.face_average(delta_ephi)
     rho_f[N], delta_rho_f[N] = w.outer_face_density(delta_rho, theta)
+    # At least theta rho_{N-1} > 0 in exact arithmetic, but `1 + delta` rounds to zero once rho_{N-1} is below ~1e-16
+    _assert_positive(rho_f, slice(N, N + 1), "rho")
     ephi_N, delta_ephi_N = eos.lapse_and_deviation(rho_f[N : N + 1], delta_rho_f[N : N + 1])
     ephi_f[N], delta_ephi_f[N] = ephi_N[0], delta_ephi_N[0]
 

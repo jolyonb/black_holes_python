@@ -377,8 +377,8 @@ class StepFailure:
     Attributes:
         cause: Why it was refused.
         stage: `2`, `3`, ... for a stage input, `0` for the result.
-        index: The cell (density) or face (`Gammabar^2`) that failed; `-1` for a non-finite state found before any
-            evaluation.
+        index: The cell (density; `N` for the outer face's density) or face (`Gammabar^2`) that failed; `-1` for a
+            non-finite state found before any evaluation.
         value: The failing value, NaN if none.
     """
 

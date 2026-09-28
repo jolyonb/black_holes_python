@@ -43,10 +43,11 @@ def test_too_few_cells_are_refused():
         Layout(1)
 
 
-@pytest.mark.parametrize("j_e", [-1, N, N + 3])
-def test_an_excision_face_outside_the_grid_is_refused(j_e: int):
-    with pytest.raises(ValueError, match="0 <= j_e < N"):
+@pytest.mark.parametrize("j_e", [-1, N - 1, N, N + 3])
+def test_an_excision_face_outside_the_grid_or_leaving_one_cell_is_refused(j_e: int):
+    with pytest.raises(ValueError, match="0 <= j_e <= N - 2"):
         Layout(N, j_e)
+    Layout(N, N - 2)  # two retained cells, the fewest the outer face's density can be formed from
 
 
 def test_pack_puts_the_unknowns_in_the_documented_order():

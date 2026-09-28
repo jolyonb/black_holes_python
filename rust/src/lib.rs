@@ -117,9 +117,9 @@ impl StageFrame {
         // inconsistent frame is a ValueError and never an index out of bounds (which pyo3 raises as a PanicException,
         // a BaseException) or a wrapped subtraction.
         let N = dV.len();
-        if N < 2 || j_e >= N {
+        if N < 2 || j_e > N - 2 {
             return Err(PyValueError::new_err(format!(
-                "a frame needs N >= 2 cells and 0 <= j_e < N, got N = {N} and j_e = {j_e}"
+                "a frame needs N >= 2 cells and 0 <= j_e <= N - 2, got N = {N} and j_e = {j_e}"
             )));
         }
         let cells = N;

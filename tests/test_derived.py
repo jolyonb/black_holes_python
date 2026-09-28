@@ -185,6 +185,20 @@ def test_a_non_positive_gammabar2_aborts_naming_the_face():
     assert (info.value.field, info.value.index) == ("Gammabar2", 3)
 
 
+def test_an_outer_face_density_rounded_to_zero_aborts_naming_the_face():
+    # rho_{N-1} > 0, so the theta-limited face density is at least theta rho_{N-1} > 0 in exact arithmetic, but the
+    # deviation form's `1 + delta` rounds it to zero below ~1e-16, where the lapse and every rate would be NaN
+    geo, bg, w = setup(IdentityMap, 10, 2.0)
+    s = frw_state(geo)
+    E = s.E.copy()
+    E[9] = 1e-17 * geo.dV[9]
+    with pytest.raises(NotHyperbolicError, match=r"rho\[10\]") as info:
+        derive(State(E=E, U=s.U, W=0.0), geo, bg, EOS, w, THETA)
+    assert (info.value.field, info.value.index, info.value.value) == ("rho", 10, 0.0)
+    E[9] = 1e-14 * geo.dV[9]  # far below the 5e-13 abort line, and still resolved: a positive face density
+    assert derive(State(E=E, U=s.U, W=0.0), geo, bg, EOS, w, THETA).rho_f[10] > 0.0
+
+
 def test_a_nan_in_a_retained_cell_aborts_rather_than_passing_silently():
     geo, bg, w = setup(IdentityMap, 10, 2.0)
     s = frw_state(geo)

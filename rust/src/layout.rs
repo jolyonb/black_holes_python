@@ -11,7 +11,7 @@ use crate::state::State;
 pub struct Layout {
     /// The number of cells.
     pub N: usize,
-    /// The excision face; `0` before excision. Always `j_e < N`, with `N >= 2`, as the Python's `Layout` requires:
+    /// The excision face; `0` before excision. Always `j_e <= N - 2`, with `N >= 2`, as the Python's `Layout` requires:
     /// `StageFrame::new` refuses anything else, so the subtractions `N - j_e` below cannot wrap.
     pub j_e: usize,
 }

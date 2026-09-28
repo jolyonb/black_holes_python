@@ -47,11 +47,18 @@ class Layout:
     j_e: int = 0
 
     def __post_init__(self) -> None:
-        """The excision face must lie inside the grid: `0 <= j_e < N` (Section 8.2 needs `1 <= j_e < j_*`)."""
+        """At least two cells retained: `0 <= j_e <= N - 2` (Section 8.2 needs `1 <= j_e < j_*`).
+
+        The outer face's density reads the last two cells (`StencilWeights.outer_face_density`), so with one retained
+        cell it would read an excised one. Re-excision leaves three trapped faces outside the face, so a run never
+        comes near this bound.
+        """
         if self.N < 2:
             raise ValueError(f"need at least two cells, got N = {self.N}")
-        if not 0 <= self.j_e < self.N:
-            raise ValueError(f"the excision face must satisfy 0 <= j_e < N, got j_e = {self.j_e} with N = {self.N}")
+        if not 0 <= self.j_e <= self.N - 2:
+            raise ValueError(
+                f"the excision face must satisfy 0 <= j_e <= N - 2, got j_e = {self.j_e} with N = {self.N}"
+            )
 
     @property
     def excised(self) -> bool:

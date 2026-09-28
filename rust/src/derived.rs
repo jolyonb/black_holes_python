@@ -7,7 +7,8 @@
 //! outer face's one state (Section 7.5).
 //!
 //! The hyperbolicity checks are the Python's, in its order: every retained `rho_c` first, the first offender by index,
-//! then `Gammabar_j^2` over the retained faces. NaN counts as not positive.
+//! then `Gammabar_j^2` over the retained faces, then the outer face's density (as `rho` at index `N`). NaN counts as
+//! not positive.
 
 use crate::eos::{Background, EquationOfState};
 use crate::geometry::Geometry;
@@ -16,7 +17,7 @@ use crate::stencils::StencilWeights;
 
 /// A non-positive density or `Gammabar^2` (`NotHyperbolicError`): the system has left its hyperbolic domain.
 pub struct NotHyperbolic {
-    /// `"rho"` (a cell) or `"Gammabar2"` (a face).
+    /// `"rho"` (a cell, or at index `N` the outer face's density) or `"Gammabar2"` (a face).
     pub field: &'static str,
     /// The cell or face index of the first offending entry.
     pub index: usize,
@@ -143,6 +144,8 @@ pub fn derive(
     let outer = w.outer_face_density(&delta_rho, theta);
     rho_f[N] = outer.rho;
     delta_rho_f[N] = outer.delta_rho;
+    // At least theta rho_{N-1} > 0 in exact arithmetic, but `1 + delta` rounds to zero once rho_{N-1} is below ~1e-16
+    assert_positive(&rho_f, N, "rho")?;
     let lapse_N = eos.lapse_and_deviation(rho_f[N], delta_rho_f[N]);
     ephi_f[N] = lapse_N.ephi;
     delta_ephi_f[N] = lapse_N.delta_ephi;
