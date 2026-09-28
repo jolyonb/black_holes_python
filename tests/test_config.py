@@ -105,6 +105,7 @@ def test_a_saved_error_names_the_file_and_every_bad_key(tmp_path: Path):
         ("stepping: {integrator: rk4}\n", "stepping.integrator\n  Extra inputs are not permitted"),
         ("shocks: {kernels: 3}\n", "shocks.kernels\n  Input should be 'production' or 'centred'"),
         ("output: {flush_every: 0}\n", "output.flush_every\n  Input should be greater than or equal to 1"),
+        ("output: {snapshot_spacing: 0.1, snapshot_spacing_min: 0.2}\n", "snapshot_spacing_min = 0.2 exceeds"),
         ("excision: {eta: 1.0}\n", "excision.eta\n  Input should be less than 1"),
     ],
 )

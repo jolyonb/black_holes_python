@@ -48,7 +48,7 @@ CONFIG = RunConfig(
     grid=GridConfig(N=N, Rtilde_max=4.0, map=MapFamily.UNIFORM),
     outer=OuterConfig(closure=OuterChoice.HELD),
     shocks=ShockConfig(kernels=Kernels.CENTRED),
-    output=OutputConfig(snapshot_spacing=0.1, flush_every=7),
+    output=OutputConfig(snapshot_spacing=0.1, snapshot_spacing_min=0.1, flush_every=7),
     evolution=EvolutionConfig(xi_end=0.4),
 )
 
@@ -95,9 +95,36 @@ def test_a_run_writes_its_three_files_lands_on_its_schedule_and_keeps_its_books(
     assert end.payload["status"] == "completed"
 
 
+def test_with_clipping_off_the_stepper_runs_free_and_snapshots_at_the_first_step_past_each_time(tmp_path: Path):
+    # Snapshots every 0.03, closer than the steps (0.1 here): clipped, every step is cut short to land on one.
+    spacing = 0.03
+    free = OutputConfig(snapshot_spacing=spacing, snapshot_spacing_min=spacing, clip_to_snapshots=False)
+    config = CONFIG.model_copy(update={"output": free})
+    paths = RunPaths.of(tmp_path, "free")
+    bessel_initial(paths, config)
+    result = run(config, read_initial(paths.initial), paths)
+    assert result.xi == 0.4  # the end is still landed on exactly
+    reader = RunReader(paths.evolution)
+    steps = np.asarray(reader.steps["xi"])
+    assert [str(v) for v in reader.steps["limit"]].count("output_clip") <= 1  # the end, at most
+    times = [s.xi for s in reader.snapshots]
+    assert times[0] == 0.0
+    assert times[-1] == 0.4
+    for t in times[1:-1]:  # each the first step at or past a scheduled time the step before had not reached
+        before = steps[steps < t]
+        scheduled = (np.floor(before[-1] / spacing + 1e-9) + 1) * spacing if before.size else spacing
+        assert t >= scheduled - 1e-12
+    clipped = CONFIG.model_copy(update={"output": OutputConfig(snapshot_spacing=spacing, snapshot_spacing_min=spacing)})
+    assert result.steps < run(clipped, read_initial(paths.initial), RunPaths.of(tmp_path, "clipped")).steps
+
+
 def test_the_full_row_every_step_switch_and_the_restart_that_reproduces_the_run_bit_for_bit(tmp_path: Path):
     config = CONFIG.model_copy(
-        update={"output": OutputConfig(snapshot_spacing=0.1, flush_every=7, monitor_every_step=True)}
+        update={
+            "output": OutputConfig(
+                snapshot_spacing=0.1, snapshot_spacing_min=0.1, flush_every=7, monitor_every_step=True
+            )
+        }
     )
     paths = RunPaths.of(tmp_path, "whole")
     run(config, bessel_initial(paths, config), paths)
@@ -230,7 +257,7 @@ def test_a_run_started_from_a_record_with_zones_runs_on_the_blend_and_keeps_the_
     times = [s.xi for s in reader.snapshots]
     expected = [0.1]
     while expected[-1] < 0.35:
-        expected.append(min(next_snapshot_time(expected[-1], 0.05, config.output), 0.35))
+        expected.append(min(next_snapshot_time(expected[-1], 0.05, config.output, 1.0), 0.35))
     assert times == expected  # the post-formation schedule, from the carried xi_form
     last = reader.snapshot(len(times) - 1)
     assert last.zones == (zone,)

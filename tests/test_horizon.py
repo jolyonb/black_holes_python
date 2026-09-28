@@ -24,6 +24,7 @@ from pbh.output import RunReader
 from pbh.records import read_initial
 from pbh.state import State, frw_state
 from pbh.stencils import StencilWeights
+from pbh.timestep import CHART_HALVINGS
 from pbh.types import FloatArray
 
 THETA = PRODUCTION_KERNELS.theta  # the theta-limiter fraction, which fixes the outer face density
@@ -275,9 +276,14 @@ def test_a_collapse_records_its_formation_and_its_horizon_history(tmp_path: Path
     result = run(config, read_initial(paths.initial), paths)
     assert result.status == "aborted"  # unexcised, the interior breaks the areal coordinate after formation
     reader = RunReader(paths.evolution)
-    kinds = [e.kind for e in reader.events]
+    events = reader.events
+    kinds = [e.kind for e in events]
+    assert kinds[0] == "formation"
+    assert kinds[-2:] == ["abort", "end"]
+    rejections = [e for e in events if e.kind == "rejection"]
+    assert {e.payload["cause"] for e in rejections} == {"stage_Gammabar2"}  # only the chart ever refuses a step
     # The step that breaks the chart is tried at two halvings more, three `rejection`s, before the run aborts.
-    assert kinds == ["formation", "rejection", "rejection", "rejection", "abort", "end"]
+    assert [e.step for e in rejections].count(events[-2].step) == CHART_HALVINGS + 1
     end = reader.end
     assert end is not None
     assert "a trapped region the excision has not caught" in end.payload["reason"]

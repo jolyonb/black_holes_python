@@ -166,21 +166,33 @@ def test_event_rows_carry_their_payload_as_json():
 
 
 def test_the_snapshot_schedule_is_uniform_in_xi_before_formation_and_in_physical_time_after():
-    output = OutputConfig(snapshot_spacing=0.05, snapshot_spacing_after=0.1)
-    assert next_snapshot_time(0.3, None, output) == 7 * 0.05  # the next multiple, computed from its index
-    assert next_snapshot_time(0.3, 0.5, output) == 7 * 0.05  # not yet formed
-    assert next_snapshot_time(0.32, None, output) == 7 * 0.05
-    assert next_snapshot_time(0.0, None, output) == 0.05  # a time already reached counts as passed
+    output = OutputConfig(snapshot_spacing=0.05, snapshot_spacing_min=0.05, snapshot_spacing_after=0.1)
+    assert next_snapshot_time(0.3, None, output, 1.0) == 7 * 0.05  # the next multiple, computed from its index
+    assert next_snapshot_time(0.3, 0.5, output, 1.0) == 7 * 0.05  # not yet formed
+    assert next_snapshot_time(0.32, None, output, 9.0) == 7 * 0.05  # uniform: the core's density does not enter
+    assert next_snapshot_time(0.0, None, output, 1.0) == 0.05  # a time already reached counts as passed
     xi_form = 2.0
     xi = xi_form
     times = [xi]
     for _ in range(3):
-        xi = next_snapshot_time(xi, xi_form, output)
+        xi = next_snapshot_time(xi, xi_form, output, 100.0)  # after formation the core's density does not enter
         times.append(xi)
     physical = np.exp(times) / np.exp(xi_form)  # in Hubble times at formation
     assert np.diff(physical) == pytest.approx([0.1, 0.1, 0.1])
     assert np.all(np.diff(np.diff(times)) < 0.0)  # closer and closer in xi, as the steps are
-    assert next_snapshot_time(times[1], xi_form, output) == times[2]  # from any time, the same next time
+    assert next_snapshot_time(times[1], xi_form, output, 1.0) == times[2]  # from any time, the same next time
+
+
+def test_before_formation_the_snapshots_follow_the_cores_own_clock():
+    # The spacing is snapshot_spacing rho_0^(-1/2), rounded to the lattice of snapshot_spacing_min, between the two.
+    output = OutputConfig()  # 0.2 on the background, down to 0.01
+    assert next_snapshot_time(1.0, None, output, 1.0) == 120 * 0.01  # the background: 0.2
+    assert next_snapshot_time(1.0, None, output, 1.0001) == 120 * 0.01  # a faint overdensity rounds to the same
+    assert next_snapshot_time(1.0, None, output, 0.5) == 120 * 0.01  # an underdense centre: never coarser
+    assert next_snapshot_time(1.0, None, output, 4.0) == 110 * 0.01  # twice as fast a clock: 0.1
+    assert next_snapshot_time(1.0, None, output, 100.0) == 102 * 0.01  # ten times: 0.02
+    assert next_snapshot_time(1.0, None, output, 1e6) == 101 * 0.01  # never finer than the lattice
+    assert next_snapshot_time(1.004, None, output, 4.0) == 110 * 0.01  # off the lattice: from the multiple below it
 
 
 def test_a_snapshot_round_trips_as_a_restartable_state_on_the_configurations_grid(tmp_path: Path):

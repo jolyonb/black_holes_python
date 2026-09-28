@@ -47,6 +47,9 @@ cd ../analysis/phaseB && uv run --project ../../code python -m pytest tests -q -
   (analysis repo), and exploratory reports are not committed. The owner reads every line.
 * Code style: flat pytest functions, ruff, pyright strict, explicit ABCs; no sympy in the code or its tests (exact
   `Fraction` arithmetic or numerics). Do not commit or push unless asked, each time.
+* For development runs, set `output: {snapshots: milestones}` (initial state, formation, switch-on, end only): the
+  steps then run free of snapshot times, about 2x faster at N = 400 and 1.25x at N = 1600 than the default schedule,
+  with restart points kept where they matter. `none` keeps only the initial state.
 * Verification per change: the fast suite, the slow suite when evolutions are touched, the check scripts of the
   affected sections; any `pbh` API change also runs `../analysis/v4/checks/sec7_numerics.py`, the only analysis
   script that imports `pbh`.

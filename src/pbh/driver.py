@@ -49,7 +49,7 @@ from typing import Any, Literal
 import numpy as np
 
 from pbh.collapse import CoreWatch
-from pbh.config import RunConfig, save
+from pbh.config import RunConfig, SnapshotChoice, save
 from pbh.derived import NotHyperbolicError
 from pbh.equations import DerivsResult
 from pbh.excision import (
@@ -251,7 +251,9 @@ class Run:
         return self.sch.evaluate_deviation(self.xi, self.dy)
 
     def snapshot(self) -> None:
-        """Write the current state as a snapshot."""
+        """Write the current state as a snapshot; with `snapshots: none`, only the initial state."""
+        if self.config.output.snapshots is SnapshotChoice.NONE and self.step > 0:
+            return
         self.writer.snapshot(self.step, self.xi, self.layout, self.dy, self.xi_form, self.zones)
 
     def event(self, kind: str, payload: dict[str, Any]) -> None:
@@ -596,14 +598,17 @@ def run(
             result, report, face = r.examine(r.state(), r.evaluate())
             r.snapshot()
             read = r.read_mass(r.record_horizon(report, result, face))
-            next_snapshot = next_snapshot_time(r.xi, r.xi_form, output)
+            scheduled = output.snapshots is SnapshotChoice.ALL
+            rho_0 = float(result.derived.rho[r.layout.j_e])
+            next_snapshot = next_snapshot_time(r.xi, r.xi_form, output, rho_0) if scheduled else math.inf
             at_snapshot = True
             bounced = False
             while r.xi < xi_end and not read and not bounced:
-                # 1. the step: Courant or cap, clipped to land exactly on the next snapshot time or the end
+                # 1. the step: Courant or cap, clipped to land exactly on the end and, unless the configuration lets
+                # the stepper run free, on the next snapshot time
                 choice = step_size(result, r.sch.frame(r.xi).geo, r.layout, config.stepping.courant_number, cap)
                 dxi, limit = choice.dxi, choice.limit.value
-                landing = min(next_snapshot, xi_end)
+                landing = min(next_snapshot, xi_end) if output.clip_to_snapshots else xi_end
                 if r.xi + dxi >= landing - 1e-12 * max(1.0, abs(landing)):
                     dxi, limit = landing - r.xi, "output_clip"
                 # 2. the checked step: every stage and the result inside the domain, or a halved step (Section 7.6)
@@ -625,7 +630,7 @@ def run(
                 change = layout.pack(result.deviation_rate) - layout.pack(stages[-1].result.deviation_rate)
                 rate_change = float(np.max(np.abs(change)))
                 r.xi, r.dy = xi_new, dy_new
-                at_snapshot = r.xi == next_snapshot
+                at_snapshot = r.xi >= next_snapshot  # exactly on it when clipped, the first step past it when not
                 frame = r.sch.frame(r.xi)
                 row = monitor_step(
                     StepInputs(
@@ -657,10 +662,12 @@ def run(
                 horizon_row = r.record_horizon(report, result, face)
                 read = r.read_mass(horizon_row)
                 bounced = r.watch_core(row.rho_0, horizon_row)
-                if at_snapshot:
+                formed_now = r.xi_form is not None and not formed_before
+                if at_snapshot or (formed_now and not scheduled):  # the formation is a milestone
                     r.snapshot()
-                if at_snapshot or (r.xi_form is not None and not formed_before):
-                    next_snapshot = next_snapshot_time(r.xi, r.xi_form, output)  # re-planned at formation
+                    at_snapshot = True
+                if scheduled and (at_snapshot or formed_now):
+                    next_snapshot = next_snapshot_time(r.xi, r.xi_form, output, row.rho_0)  # re-planned at formation
                 if r.step % output.flush_every == 0:
                     out.flush()
             if not at_snapshot:

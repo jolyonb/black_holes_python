@@ -32,7 +32,9 @@ assembled from all of them. The driver reads the file and never sees a raw strin
       cap_tolerance: 1.0e-5     # the step cap of eq:num:stepcap: relative error tolerance ...
       cap_efolds: 4.0           # ... over this many super-horizon e-folds
     output:
-      snapshot_spacing: 0.02        # snapshots every this much in xi before formation ...
+      snapshots: all                # all; milestones (initial, formation, switch-on, end); none (initial only)
+      snapshot_spacing: 0.2         # snapshots every this much in xi on the background, tightening ...
+      snapshot_spacing_min: 0.01    # ... as the core collapses down to this ...
       snapshot_spacing_after: 0.02  # ... and every this much physical time, in Hubble times at formation, after
       flush_every: 200              # steps buffered before the step record is written
       monitor_every_step: false     # the full monitor record every step, not only at snapshots
@@ -265,15 +267,49 @@ class SteppingConfig(Section):
         return step_cap(eos, self.cap_tolerance, self.cap_efolds)
 
 
+class SnapshotChoice(Enum):
+    """Which snapshots a run writes."""
+
+    ALL = "all"
+    """The schedule of `output.next_snapshot_time`, with the milestones."""
+
+    MILESTONES = "milestones"
+    """Only the initial state, the formation, the switch-on (the state an unexcised continuation starts from) and the
+    end: for development runs that need no fields in between. The steps then run free of any snapshot time."""
+
+    NONE = "none"
+    """The initial state only: a restart can start the run again, but from nowhere later, and the summary has no fields
+    after the start to read (no enclosed-mass spheres). The step, event and horizon records are written as always."""
+
+
 class OutputConfig(Section):
     """The `output` section: the snapshot schedule and the flush cadence of the evolution file (`output.py`)."""
 
-    snapshot_spacing: float = Field(default=0.02, gt=0.0)
-    """Before formation, the spacing of snapshots in `xi`; at N = 2000 a snapshot is 32 KB and costs a few tenths
-    of a millisecond, so this is a few hundred snapshots and ten megabytes over a run."""
+    snapshots: SnapshotChoice = Field(default=SnapshotChoice.ALL, strict=False)
+    """Which snapshots are written: all, the milestones only, or the initial state only. The spacing and clipping
+    settings below apply to `all` alone: with the others there are no scheduled times, and the steps are the Courant
+    steps (or the cap), landing only on `xi_end`. For development runs, `milestones` is probably what is wanted: about
+    twice as fast at N = 400 and a quarter faster at N = 1600 than the default, with restart points at formation and
+    switch-on."""
+
+    snapshot_spacing: float = Field(default=0.2, gt=0.0)
+    """Before formation, the spacing of snapshots in `xi` on the background; it tightens as the core collapses, as
+    `rhotilde_0^(-1/2)`, the core's own clock (`output.next_snapshot_time`). Steps are clipped to land on snapshot
+    times, so a dense schedule costs steps as well as writes: at N = 400 a fixed 0.02 took 42 per cent more steps."""
+
+    snapshot_spacing_min: float = Field(default=0.01, gt=0.0)
+    """The densest spacing before formation, and the lattice every pre-formation snapshot time is a multiple of;
+    equal to `snapshot_spacing`, the schedule is uniform."""
 
     snapshot_spacing_after: float = Field(default=0.02, gt=0.0)
     """After formation, the spacing of snapshots in physical time, in units of the Hubble time at formation."""
+
+    clip_to_snapshots: bool = True
+    """Whether steps are clipped to land exactly on the snapshot times. Exact times let an excised and an unexcised
+    run of the same collapse, or runs at different resolutions, be compared at identical times; the price is at most
+    half a step per snapshot on average (5 per cent of the steps at N = 1600, 27 at N = 400, on a collapse to
+    formation). Off, a snapshot is written at the first step at or past each scheduled time; the run still ends
+    exactly at `xi_end`."""
 
     flush_every: int = Field(default=200, ge=1)
     """How many steps the step record is buffered before it is written to disk."""
@@ -281,6 +317,14 @@ class OutputConfig(Section):
     monitor_every_step: bool = False
     """Whether the full monitor record of `monitors.py` is written every step rather than only at snapshots; the
     cheap first tier, the minima, the bookkeeping and the boundary scalars, is recorded every step regardless."""
+
+    @model_validator(mode="after")
+    def _the_densest_spacing_is_the_finest(self) -> Self:
+        if self.snapshot_spacing_min > self.snapshot_spacing:
+            raise ValueError(
+                f"snapshot_spacing_min = {self.snapshot_spacing_min} exceeds snapshot_spacing = {self.snapshot_spacing}"
+            )
+        return self
 
 
 class EvolutionConfig(Section):

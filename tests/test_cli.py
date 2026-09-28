@@ -11,7 +11,7 @@ from pbh.records import read_initial
 
 CONFIG = """
 grid: {N: 40, Rtilde_max: 12.0, scale: 3.0}
-output: {snapshot_spacing: 0.1}
+output: {snapshot_spacing: 0.1, snapshot_spacing_min: 0.1}
 evolution: {xi_end: 0.2}
 """
 

@@ -17,10 +17,11 @@ A snapshot stores what the integrator carries and nothing derived: the deviation
 the face velocities, `W`, `M_e`, the excision face and the time. Radii, densities, the lapse and the rest are
 recomputed by the reader with the same functions the run used, so that what is plotted is what the run saw, and
 every snapshot is a state to restart from. The snapshot times are a schedule that depends only on the
-configuration and the formation time, so that two runs of the same collapse, one excised and one not, write their
-snapshots at the same times: uniform in `xi` before formation, and after it uniform in physical time in units of
-the Hubble time at formation, `e^xi` advancing by `snapshot_spacing_after e^(xi_form)` per snapshot, which is the
-clock the hole runs on. The driver clips its steps to land on those times exactly.
+configuration, the central density at each snapshot before formation and the formation time, so that two runs of the
+same collapse, one excised and one not, write their snapshots at the same times: before formation on the core's own
+clock, from every 0.2 in `xi` on the background to every 0.01 as the core collapses, and after it uniform in
+physical time in units of the Hubble time at formation, `e^xi` advancing by `snapshot_spacing_after e^(xi_form)` per
+snapshot, which is the clock the hole runs on. The driver clips its steps to land on those times exactly.
 
 The root carries the run's identity as attributes: the format tag and version, the complete text of the
 configuration as saved, the code's commit, the time of writing and the host. A reader rebuilds the `Scheme` from
@@ -184,18 +185,26 @@ class SnapshotInfo:
     j_e: int
 
 
-def next_snapshot_time(xi: float, xi_form: float | None, output: OutputConfig) -> float:
-    """The first snapshot time after `xi`: the schedule both the excised and the unexcised run compute.
+def next_snapshot_time(xi: float, xi_form: float | None, output: OutputConfig, rho_0: float) -> float:
+    """The first snapshot time after `xi`, the state at `xi` having central density `rho_0`.
 
-    Before formation the snapshot times are the multiples of `snapshot_spacing`, `k snapshot_spacing`; from
-    formation on they are the times at which the physical time has advanced from formation by whole multiples of
-    `snapshot_spacing_after` Hubble times at formation, `xi_form + ln(1 + m snapshot_spacing_after)`. Each time is
-    computed from its index and never by accumulation, so two runs of the same collapse, or a run and its restart,
-    land on the same floating-point times; a time already reached counts as passed.
+    Before formation the spacing follows the core's own clock: a core of density `rhotilde_0` evolves on a dynamical
+    time proportional to `rho^(-1/2)`, which in `xi` is `rhotilde_0^(-1/2)`, so the spacing is `snapshot_spacing`
+    on the background and tightens as the core collapses, `snapshot_spacing rhotilde_0^(-1/2)`, never below
+    `snapshot_spacing_min`. The times are the multiples of `snapshot_spacing_min`: the next is the spacing's nearest
+    whole number of multiples on, at least one. With `snapshot_spacing_min = snapshot_spacing` this is the uniform
+    schedule `k snapshot_spacing`. From formation on the times are those at which the physical time has advanced from
+    formation by whole multiples of `snapshot_spacing_after` Hubble times at formation,
+    `xi_form + ln(1 + m snapshot_spacing_after)`. Each time is computed from an index and never by accumulation, so
+    two runs of the same collapse, or a run and its restart from a snapshot, land on the same floating-point times; a
+    time already reached counts as passed. Before formation the excised and the unexcised run are the same run, and
+    after it the schedule depends on the formation time alone.
     """
     if xi_form is None or xi < xi_form:
-        k = int(np.floor(xi / output.snapshot_spacing + 1e-9)) + 1
-        return k * output.snapshot_spacing
+        lattice = output.snapshot_spacing_min
+        spacing = output.snapshot_spacing * min(1.0, float(rho_0) ** -0.5) if rho_0 > 0.0 else output.snapshot_spacing
+        n = max(1, round(spacing / lattice))
+        return (int(np.floor(xi / lattice + 1e-9)) + n) * lattice
     m = int(np.floor((np.exp(xi - xi_form) - 1.0) / output.snapshot_spacing_after + 1e-9)) + 1
     return xi_form + float(np.log1p(m * output.snapshot_spacing_after))
 
