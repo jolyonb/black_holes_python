@@ -1,4 +1,6 @@
-"""Type stubs of `pbh._engine`, the Rust engine (rust/src), for pyright strict. Only `pbh.rust_engine` imports it.
+"""Type stubs of `pbh_engine`, the Rust engine (src/), for pyright strict. Only `pbh.rust_engine` imports it.
+
+maturin ships this file in the wheel, with a `py.typed` marker, as the module's stubs.
 
 Every array a `StageOutput` hands back is new to that stage call (a second read of the same attribute returns the
 same object, not another copy), owned by numpy, and has its Python length: `N` for a cell field and
@@ -8,7 +10,10 @@ The packed vectors must be one-dimensional native float64 (`pbh.rust_engine.Rust
 
 from typing import final
 
-from pbh.types import FloatArray
+import numpy as np
+from numpy.typing import NDArray
+
+type FloatArray = NDArray[np.float64]  # pbh.types.FloatArray, restated so that the stubs import nothing from pbh
 
 @final
 class StageFrame:

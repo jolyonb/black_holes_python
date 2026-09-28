@@ -30,6 +30,7 @@ in flat spacetime.
 
 import ast
 import copy
+import importlib
 import math
 import pickle
 import subprocess
@@ -41,11 +42,14 @@ from pathlib import Path
 from typing import cast
 from unittest.mock import patch
 
-import numpy as np
 import pytest
+
+pytest.importorskip("pbh_engine", reason="the optional Rust engine is not installed (uv sync --group rust)")
+
+import numpy as np
+import pbh_engine
 from violent import FAMILIES, SEEDS, W_CASES, Case, violent_case
 
-from pbh import _engine
 from pbh.cli import main
 from pbh.config import NumericsConfig, load, save
 from pbh.derived import NotHyperbolicError
@@ -603,7 +607,7 @@ def test_the_engine_is_a_configuration_switch_that_round_trips_and_defaults_to_n
 
 
 def test_importing_the_package_and_the_numpy_engine_does_not_load_the_extension():
-    code = "import sys, pbh, pbh.timestep, pbh.driver, pbh.config, pbh.cli; print('pbh._engine' in sys.modules)"
+    code = "import sys, pbh, pbh.timestep, pbh.driver, pbh.config, pbh.cli; print('pbh_engine' in sys.modules)"
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
     assert result.stdout.strip() == "False"
 
@@ -697,15 +701,15 @@ def frame_arrays(sch: Scheme, xi: float) -> dict[str, object]:
 def test_an_inconsistent_frame_is_refused_with_value_error_and_never_panics():
     sch = Scheme(RAD, SinhStretch(6.0, scale=2.0), Layout(20, 4), HeldAtFrw(), PRODUCTION_KERNELS)
     good = frame_arrays(sch, 0.3)
-    _engine.StageFrame(**good)  # pyright: ignore[reportArgumentType]
+    pbh_engine.StageFrame(**good)  # pyright: ignore[reportArgumentType]
     X, rate_U = cast(FloatArray, good["X"]), cast(FloatArray, good["rate_U"])
     for key, bad in (("j_e", 20), ("j_e", 40), ("X", X[:-3]), ("rate_U", rate_U[:-1])):
         with pytest.raises(ValueError, match=r"N >= 2|must have length"):
-            _engine.StageFrame(**(good | {key: bad}))  # pyright: ignore[reportArgumentType]
+            pbh_engine.StageFrame(**(good | {key: bad}))  # pyright: ignore[reportArgumentType]
     one: dict[str, object] = {k: (cast(FloatArray, v)[:1] if isinstance(v, np.ndarray) else v) for k, v in good.items()}
     one["j_e"] = 0
     with pytest.raises(ValueError, match="N >= 2"):
-        _engine.StageFrame(**one)  # pyright: ignore[reportArgumentType]
+        pbh_engine.StageFrame(**one)  # pyright: ignore[reportArgumentType]
 
 
 def stub_signature(node: ast.FunctionDef) -> str:
@@ -719,15 +723,18 @@ def stub_signature(node: ast.FunctionDef) -> str:
 
 
 def test_the_type_stubs_describe_the_compiled_extension():
-    stub = ast.parse((Path(__file__).parents[1] / "src" / "pbh" / "_engine.pyi").read_text())
-    public = {name for name in dir(_engine) if not name.startswith("_")}
+    stub = ast.parse((Path(__file__).parents[1] / "rust" / "pbh_engine.pyi").read_text())
+    # maturin installs the extension as pbh_engine.pbh_engine inside a package that re-exports all of it
+    compiled = importlib.import_module("pbh_engine.pbh_engine")
+    public = {name for name in dir(compiled) if not name.startswith("_")}
+    assert {name for name in dir(pbh_engine) if not name.startswith("_")} == public | {"pbh_engine"}
     stubbed = {node.name for node in stub.body if isinstance(node, (ast.ClassDef, ast.FunctionDef))}
     assert stubbed == public
     for node in stub.body:
         if isinstance(node, ast.FunctionDef):
-            assert stub_signature(node) == getattr(_engine, node.name).__text_signature__, node.name
+            assert stub_signature(node) == getattr(compiled, node.name).__text_signature__, node.name
         elif isinstance(node, ast.ClassDef):
-            cls = getattr(_engine, node.name)
+            cls = getattr(compiled, node.name)
             members = {m.name: m for m in node.body if isinstance(m, ast.FunctionDef)}
             init = members.pop("__init__", None)
             assert set(members) == {name for name in dir(cls) if not name.startswith("_")}, node.name
@@ -760,13 +767,13 @@ def stub_value_matches(value: object, annotation: str, classes: dict[str, ast.Cl
 def test_what_the_extension_returns_has_the_types_its_stubs_declare(monkeypatch: pytest.MonkeyPatch):
     from pbh import rust_engine
 
-    stub = ast.parse((Path(__file__).parents[1] / "src" / "pbh" / "_engine.pyi").read_text())
+    stub = ast.parse((Path(__file__).parents[1] / "rust" / "pbh_engine.pyi").read_text())
     classes = {node.name: node for node in stub.body if isinstance(node, ast.ClassDef)}
     returns = {node.name: node.returns for node in stub.body if isinstance(node, ast.FunctionDef)}
-    captured: list[_engine.StageOutput] = []
+    captured: list[pbh_engine.StageOutput] = []
     to_result = rust_engine.to_result
 
-    def capture(out: _engine.StageOutput) -> DerivsResult:
+    def capture(out: pbh_engine.StageOutput) -> DerivsResult:
         """Keep the raw output of each stage, and assemble it as the adapter does."""
         captured.append(out)
         return to_result(out)

@@ -1,6 +1,7 @@
 """Tests of pbh.timestep: the integrators, the deviation form on a moving map, the step rules, Bessel convergence."""
 
 import math
+import sys
 from collections.abc import Sequence
 from dataclasses import fields, is_dataclass, replace
 from fractions import Fraction
@@ -10,6 +11,7 @@ import numpy as np
 import pytest
 from modes import mode_errors
 
+import pbh
 from pbh.derived import NotHyperbolicError
 from pbh.eos import RADIATION, EquationOfState
 from pbh.equations import DerivsResult
@@ -25,6 +27,7 @@ from pbh.timestep import (
     MAX_HALVINGS,
     RK4,
     ButcherTableau,
+    Engine,
     FailureCause,
     Scheme,
     StepAbortError,
@@ -494,3 +497,28 @@ def test_the_chart_gets_two_halvings_and_a_passing_halving_is_accepted(monkeypat
     accepted = advance_checked(sch, xi, dy, 0.016, first)
     assert accepted.dxi == 0.008
     assert [f.cause for f in accepted.refused] == [FailureCause.STAGE_GAMMABAR2]
+
+
+# --- the engine switch without the optional Rust engine ---
+
+
+def without(monkeypatch: pytest.MonkeyPatch, module: str) -> None:
+    """Make `module` unimportable, and forget the adapter, so that a Scheme imports it afresh."""
+    monkeypatch.delitem(sys.modules, "pbh.rust_engine", raising=False)
+    monkeypatch.delattr(pbh, "rust_engine", raising=False)
+    monkeypatch.setitem(sys.modules, module, None)
+
+
+def test_asking_for_the_rust_engine_without_it_installed_says_how_to_install_it(monkeypatch: pytest.MonkeyPatch):
+    without(monkeypatch, "pbh_engine")
+    with pytest.raises(ModuleNotFoundError, match=r"pbh_engine is not installed: .*uv sync --group rust") as info:
+        Scheme(EOS, IdentityMap(4.0), Layout(8), HeldAtFrw(), CENTRED_SCHEME, engine=Engine.RUST)
+    assert info.value.name == "pbh_engine"
+    Scheme(EOS, IdentityMap(4.0), Layout(8), HeldAtFrw(), CENTRED_SCHEME)  # the numpy engine never needs it
+
+
+def test_a_missing_module_other_than_the_engine_is_not_reported_as_the_engine(monkeypatch: pytest.MonkeyPatch):
+    without(monkeypatch, "pbh.rust_engine")
+    with pytest.raises(ModuleNotFoundError) as info:
+        Scheme(EOS, IdentityMap(4.0), Layout(8), HeldAtFrw(), CENTRED_SCHEME, engine=Engine.RUST)
+    assert info.value.name == "pbh.rust_engine"

@@ -1,5 +1,5 @@
 //! The Rust engine of `pbh`: one stage of the semi-discrete equations (paper Section 7.3), called from
-//! `pbh.rust_engine`, which is the only Python that imports this module (`pbh._engine`).
+//! `pbh.rust_engine`, which is the only Python that imports this module (`pbh_engine`).
 //!
 //! This file is the boundary with Python and nothing else: the frame and the settings come in once and are kept here,
 //! a stage takes the packed deviation (or state) and the background scalars, and hands back every field the Python
@@ -64,7 +64,7 @@ fn to_numpy(py: Python<'_>, v: Vec<f64>) -> Py<PyArray1<f64>> {
 ///
 /// The constructor refuses, with `ValueError`, a layout the Python's `Layout` would refuse and any array whose length
 /// is not the one its name says; after that no index a stage takes can fall outside an array.
-#[pyclass(frozen, module = "pbh._engine")]
+#[pyclass(frozen, module = "pbh_engine")]
 pub struct StageFrame {
     geo: Geometry,
     w: StencilWeights,
@@ -175,7 +175,7 @@ impl StageFrame {
 }
 
 /// The Scheme's settings as a stage uses them: the equation of state's floats, the kernel switches and the closure.
-#[pyclass(frozen, module = "pbh._engine")]
+#[pyclass(frozen, module = "pbh_engine")]
 pub struct StageSettings {
     eos: EquationOfState,
     kernels: KernelSettings,
@@ -265,7 +265,7 @@ impl StageSettings {
 }
 
 /// The derived fields of one stage (`pbh.derived.Derived`), as numpy arrays.
-#[pyclass(frozen, module = "pbh._engine")]
+#[pyclass(frozen, module = "pbh_engine")]
 pub struct DerivedOutput {
     #[pyo3(get)]
     rho: Py<PyArray1<f64>>,
@@ -298,7 +298,7 @@ pub struct DerivedOutput {
 }
 
 /// The speeds of one stage (`pbh.equations.Speeds`), as numpy arrays.
-#[pyclass(frozen, module = "pbh._engine")]
+#[pyclass(frozen, module = "pbh_engine")]
 pub struct SpeedsOutput {
     #[pyo3(get)]
     drift: Py<PyArray1<f64>>,
@@ -313,7 +313,7 @@ pub struct SpeedsOutput {
 }
 
 /// What the kernels produced at one stage (`pbh.kernels.KernelResult`), as numpy arrays.
-#[pyclass(frozen, module = "pbh._engine")]
+#[pyclass(frozen, module = "pbh_engine")]
 pub struct KernelOutput {
     #[pyo3(get)]
     rho_L: Py<PyArray1<f64>>,
@@ -346,7 +346,7 @@ pub struct KernelOutput {
 }
 
 /// Everything one stage computed (`pbh.equations.DerivsResult`), as numpy arrays and floats.
-#[pyclass(frozen, module = "pbh._engine")]
+#[pyclass(frozen, module = "pbh_engine")]
 pub struct StageOutput {
     #[pyo3(get)]
     rate_E: Py<PyArray1<f64>>,
@@ -512,9 +512,9 @@ fn stage_state(
     run_stage(py, frame, settings, &bg, &state, &deviation)
 }
 
-/// The module `pbh._engine`.
+/// The module `pbh_engine`.
 #[pymodule]
-fn _engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn pbh_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<StageFrame>()?;
     m.add_class::<StageSettings>()?;
     m.add_class::<StageOutput>()?;

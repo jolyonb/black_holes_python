@@ -1,9 +1,11 @@
-"""The adapter between a `Scheme` and the Rust engine `pbh._engine` (the switch `numerics: {engine: rust}`).
+"""The adapter between a `Scheme` and the Rust engine `pbh_engine` (the switch `numerics: {engine: rust}`).
 
 The Rust engine computes one stage, `equations.calc_derivs` and everything it calls, with the same operations in the
-same order, one Rust function per Python function (`rust/src`). This module is the only Python that imports it, and
+same order, one Rust function per Python function (`rust/src`). It is a separate, optional package (`pbh-engine` in
+`rust/`, the dependency group `rust`), and `pbh` runs without it. This module is the only Python that imports it, and
 only a `Scheme` built with `Engine.RUST` imports this module, so that `import pbh` and the numpy engine never load the
-extension. It does three things:
+extension, and a Scheme asked for the Rust engine where it is not installed says how to install it. It does three
+things:
 
 * once per `Scheme`, `RustStage` hands the extension the settings: the floats of the equation of state, the kernel
   switches, and the outer closure with its parameters. Only the three closures of `outer.py` have Rust rows, and a
@@ -39,9 +41,9 @@ differ, and neither reaches a decision, since the driver tests finiteness only:
 """
 
 import numpy as np
+import pbh_engine
+from pbh_engine import StageFrame, StageOutput, StageSettings
 
-from pbh import _engine
-from pbh._engine import StageFrame, StageOutput, StageSettings
 from pbh.derived import Derived
 from pbh.eos import Background, EquationOfState
 from pbh.equations import DerivsResult, Speeds
@@ -147,12 +149,12 @@ class RustStage:
     def evaluate_deviation(self, frame: StageFrame, bg: Background, dy: FloatArray) -> DerivsResult:
         """`Scheme.evaluate_deviation` on the Rust engine: the stage at `y_FRW + delta y` from the packed deviation."""
         dy = self.packed(dy)
-        return to_result(_engine.stage_deviation(frame, self._settings, bg.Gammabar2, bg.c_s, bg.hubble, dy))
+        return to_result(pbh_engine.stage_deviation(frame, self._settings, bg.Gammabar2, bg.c_s, bg.hubble, dy))
 
     def evaluate(self, frame: StageFrame, bg: Background, y: FloatArray) -> DerivsResult:
         """`Scheme.evaluate` on the Rust engine: the stage at the packed whole state `y`."""
         y = self.packed(y)
-        return to_result(_engine.stage_state(frame, self._settings, bg.Gammabar2, bg.c_s, bg.hubble, y))
+        return to_result(pbh_engine.stage_state(frame, self._settings, bg.Gammabar2, bg.c_s, bg.hubble, y))
 
 
 def to_result(out: StageOutput) -> DerivsResult:

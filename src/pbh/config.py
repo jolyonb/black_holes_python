@@ -279,7 +279,7 @@ class NumericsConfig(Section):
     """
 
     engine: Engine = Field(default=Engine.PYTHON, strict=False)
-    """`python`, numpy (the reference and the default), or `rust`, the compiled stage of `pbh._engine`."""
+    """`python`, numpy (the reference and the default), or `rust`, the compiled stage of `pbh_engine` (optional)."""
 
 
 class SnapshotChoice(Enum):

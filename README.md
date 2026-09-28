@@ -14,20 +14,23 @@ the background (`rhotilde = rho / rho_FRW`, `Rtilde = R / (a R_H)`, `Utilde = U 
 
 ## Getting started
 
-The project is managed with [uv](https://docs.astral.sh/uv/) (0.8.6 or newer) and requires Python 3.14 and a Rust
-toolchain, 1.85 or newer, with clippy and rustfmt (`rustup`): `uv sync` builds the Rust engine `pbh._engine` with
-maturin, and fails at once, rather than download a toolchain, where there is no `cargo`. (That guard is
-`[tool.uv.extra-build-variables]` in `pyproject.toml`, which a uv older than 0.8.6 ignores: such a uv, on a machine
-without Rust, would let maturin download one, about 500 MB.) Without Rust the package does not install at all, even
-for the numpy engine: the error then reads `Call to maturin.build_editable failed ... Cargo metadata failed. Do you
-have cargo in your PATH?`, and the cure is to install Rust (`rustup`) and run `uv sync` again. A lean install may drop
-the `dev` and `analysis` groups (`uv sync --no-dev`), but not `build`, which holds maturin: with
-`--no-default-groups`, add `--group build`.
+The project is managed with [uv](https://docs.astral.sh/uv/) (0.8.6 or newer) and requires Python 3.14. `pbh` is
+pure Python and runs on its numpy engine alone. The Rust engine (`numerics: {engine: rust}`, the same stage compiled,
+about twice as fast) is a separate, optional package, `pbh-engine` in `rust/`, installed by the dependency group
+`rust`; building it needs a Rust toolchain, 1.85 or newer, with clippy and rustfmt (`rustup`).
 
 ```
-uv sync
+uv sync                     # pure Python: no Rust toolchain needed
+uv sync --group rust        # with the Rust engine (needs cargo); pass --group rust to `uv run` as well
 uv run pbh --help
 ```
+
+`uv sync` without `--group rust` removes the engine again, and `uv run` without it neither installs nor rebuilds it,
+so for work with the engine pass the flag to both (`uv run --group rust pytest`). Without the engine everything runs
+on numpy: the Rust engine's tests are skipped, and a configuration asking for `engine: rust` is refused with the
+command that installs it. Where there is no `cargo`, `--group rust` fails at once rather than download a toolchain
+(about 500 MB); that guard is `[tool.uv.extra-build-variables]` in `pyproject.toml`, which a uv older than 0.8.6
+ignores.
 
 A run is three files in one directory, named after the run: `NAME.config.yaml`, the configuration as the run saw it;
 `NAME.initial.h5`, the initial data; and `NAME.evolution.h5`, written as the run goes and readable while it does. A
@@ -129,8 +132,9 @@ src/pbh/
   records, output, h5                initial and snapshot records; the evolution file
   monitors, readout, summary         per-step monitors; the mass read-out; the run summary
   michel                             the Michel accretion flow, the late-time background and a test
-  rust_engine, _engine.pyi           the adapter to the Rust engine and its type stubs
-rust/src/                            the Rust engine: the stage of equations.py, one function per Python function
+  rust_engine                        the adapter to the Rust engine
+rust/                                the optional Rust engine, package pbh-engine (module pbh_engine, stubs pbh_engine.pyi)
+  src/                               the stage of equations.py, one function per Python function
 src/_old/                            the retired collocated code (2015-2026), kept for reference; not run
 ```
 
@@ -148,15 +152,18 @@ uv run ruff check . && uv run ruff format . && uv run pyright   # lint, format, 
 uv run pre-commit install   # all of the above on every commit, and cargo fmt and clippy on the Rust
 ```
 
-The Rust engine is rebuilt by any `uv sync` or `uv run` after a change to `rust/` (never `maturin develop`); its
-gates are `cargo fmt --check` and `cargo clippy -- -D warnings` in `rust/`, and it is tested from pytest against the
-numpy engine (`tests/test_rust_engine.py`). Run `uv sync` once before the cargo gates in a fresh clone: they build
-PyO3 against the project's own interpreter, the one in `.venv` (`.cargo/config.toml`), which `uv sync` creates.
-`pbh` is built in the project environment, with the maturin of the default group `build`, not in an isolated one
-(`no-build-isolation-package` in `pyproject.toml`), so that an edit to the engine recompiles only the engine. CI pins
-the Rust toolchain (`.github/workflows/ci.yml`) and also checks the crate on its declared minimum, 1.85; until that
-job has run, the minimum is declared, not tested (see `rust/Cargo.toml`).
-`rust/target/` is the build tree: ignored, and refused by a pre-commit hook if it is ever staged.
+The gates (pyright, and the pre-commit hook's 100 per cent coverage, which includes `pbh.rust_engine`) run with the
+Rust engine installed: the hooks pass `--group rust`. The engine is rebuilt by any `uv sync --group rust` or
+`uv run --group rust` after a change to `rust/` (never
+`maturin develop`; `cache-keys` in `rust/pyproject.toml`); its gates are `cargo fmt --check` and
+`cargo clippy -- -D warnings` in `rust/`, and it is tested from pytest against the numpy engine
+(`tests/test_rust_engine.py`). Run `uv sync --group rust` once before the cargo gates in a fresh clone: they build PyO3 against the
+project's own interpreter, the one in `.venv` (`.cargo/config.toml`), which `uv sync` creates. The engine is built in
+the project environment, with the `rust` group's maturin, not in an isolated one (`no-build-isolation-package` in
+`pyproject.toml`), so that an edit recompiles only the engine. CI runs the gates with the engine, and the test suite
+once more without it, on a pure-Python install; it pins the Rust toolchain (`.github/workflows/ci.yml`) and also
+checks the crate on its declared minimum, 1.85; until that job has run, the minimum is declared, not tested (see
+`rust/Cargo.toml`). `rust/target/` is the build tree: ignored, and refused by a pre-commit hook if it is ever staged.
 
 Style: flat pytest functions, pyright strict, explicit ABCs, and no computer algebra in the code or its tests (exact
 `Fraction` arithmetic where exactness is needed); the symbolic checks of the paper live with the paper.

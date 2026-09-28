@@ -549,9 +549,6 @@ analysis = [
     { name = "matplotlib" },
     { name = "sympy" },
 ]
-build = [
-    { name = "maturin" },
-]
 dev = [
     { name = "pre-commit" },
     { name = "pyright" },
@@ -560,6 +557,10 @@ dev = [
     { name = "ruff" },
     { name = "scipy-stubs" },
     { name = "types-pyyaml" },
+]
+rust = [
+    { name = "maturin" },
+    { name = "pbh-engine" },
 ]
 
 [package.metadata]
@@ -577,7 +578,6 @@ analysis = [
     { name = "matplotlib", specifier = ">=3.11.1" },
     { name = "sympy", specifier = ">=1.14.0" },
 ]
-build = [{ name = "maturin", specifier = ">=1.15,<2" }]
 dev = [
     { name = "pre-commit", specifier = ">=4.0" },
     { name = "pyright", specifier = ">=1.1.400" },
@@ -587,6 +587,21 @@ dev = [
     { name = "scipy-stubs", specifier = ">=1.18.1.0" },
     { name = "types-pyyaml", specifier = ">=6.0.12.20260906" },
 ]
+rust = [
+    { name = "maturin", specifier = ">=1.15,<2" },
+    { name = "pbh-engine", editable = "rust" },
+]
+
+[[package]]
+name = "pbh-engine"
+version = "0.1.0"
+source = { editable = "rust" }
+dependencies = [
+    { name = "numpy" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "numpy", specifier = ">=2.3" }]
 
 [[package]]
 name = "pillow"

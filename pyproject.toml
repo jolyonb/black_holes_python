@@ -18,9 +18,11 @@ dependencies = [
 pbh = "pbh.cli:main"
 
 [dependency-groups]
-# The build backend, in the environment because pbh is built without isolation ([tool.uv] below). A group of its own,
-# and a default one, so that `uv sync --no-dev` still builds pbh; `--no-default-groups` needs `--group build`.
-build = ["maturin>=1.15,<2"]
+# The optional Rust engine (rust/, the package pbh-engine), for `numerics: {engine: rust}`. pbh itself is pure Python
+# and runs without it, so the group is not a default one: `uv sync --group rust` (and `uv run --group rust`) installs
+# it, and the gates (pyright, the coverage of pbh.rust_engine; .pre-commit-config.yaml and CI) always ask for it.
+# maturin is here because the engine is built without isolation ([tool.uv] below).
+rust = ["maturin>=1.15,<2", "pbh-engine"]
 analysis = [
     "matplotlib>=3.11.1",
     "sympy>=1.14.0",
@@ -36,18 +38,11 @@ dev = [
 ]
 
 [build-system]
-requires = ["maturin>=1.15,<2"]
-build-backend = "maturin"
+requires = ["uv_build>=0.8,<0.12"]
+build-backend = "uv_build"
 
-[tool.maturin]
-# The mixed layout: the Python packages under src/, the Rust engine's crate under rust/, built as the extension
-# pbh._engine. `uv sync` (or any `uv run`) builds it; never `maturin develop`, never a copy out of rust/target.
-python-source = "src"
-python-packages = ["pbh", "_old"]
-module-name = "pbh._engine"
-manifest-path = "rust/Cargo.toml"
-profile = "release"  # the editable build too: the tests and the timings run the optimised engine
-exclude = ["**/__pycache__/**"]  # a wheel built outside git would otherwise pick up .pyc files
+[tool.uv.build-backend]
+module-name = ["pbh", "_old"]
 
 [tool.ruff]
 line-length = 120
@@ -121,21 +116,16 @@ skip_covered = false
 # The first uv that reads [tool.uv.extra-build-variables] below. An older uv cannot parse this table and ignores all of
 # it with a warning, this line included, so the README states the minimum as well.
 required-version = ">=0.8.6"
-default-groups = ["build", "dev", "analysis"]
-# Build pbh in the project's environment, with the build group's maturin, not in a fresh isolated one. An isolated build
-# runs from a new temporary directory each time, and maturin hands that interpreter's path to PyO3's build script, so
-# cargo would recompile pyo3 and numpy on every edit of the engine (about 6 s instead of 3). uv installs maturin first
-# on a fresh environment; `uv build` of a wheel is unaffected.
-no-build-isolation-package = ["pbh"]
-# What makes uv rebuild the project: the Rust sources as well as the Python metadata, so that `uv run pytest` always
-# tests the current engine.
-cache-keys = [
-    { file = "pyproject.toml" },
-    { file = "rust/Cargo.toml" },
-    { file = "rust/Cargo.lock" },
-    { file = "rust/src/**/*.rs" },
-]
+default-groups = ["dev", "analysis"]
+# Build the engine in the project's environment, with the rust group's maturin, not in a fresh isolated one. An isolated
+# build runs from a new temporary directory each time, and maturin hands that interpreter's path to PyO3's build
+# script, so cargo would recompile pyo3 and numpy on every edit of the engine (about 6 s instead of 3). What makes uv
+# rebuild it is rust/pyproject.toml's cache-keys.
+no-build-isolation-package = ["pbh-engine"]
+
+[tool.uv.sources]
+pbh-engine = { path = "rust", editable = true }
 
 [tool.uv.extra-build-variables]
 # Without a Rust toolchain maturin would download one (about 500 MB) during `uv sync`; fail at once instead.
-pbh = { MATURIN_NO_INSTALL_RUST = "1" }
+pbh-engine = { MATURIN_NO_INSTALL_RUST = "1" }

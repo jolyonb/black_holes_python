@@ -1,0 +1,30 @@
+[project]
+name = "pbh-engine"
+version = "0.1.0"
+description = "The optional Rust engine of pbh: one stage of the semi-discrete equations (paper Section 7.3)"
+authors = [{ name = "Jolyon Bloomfield" }]
+requires-python = ">=3.14"
+# pbh is not listed: the engine is loaded only by pbh.rust_engine, and it raises pbh's own exceptions from there.
+dependencies = ["numpy>=2.3"]
+
+[build-system]
+requires = ["maturin>=1.15,<2"]
+build-backend = "maturin"
+
+[tool.maturin]
+# A pure Rust package: the extension module pbh_engine, with pbh_engine.pyi beside this file as its stubs (maturin adds
+# py.typed). The pbh project installs it through its `rust` dependency group; `uv sync` (or any `uv run`) builds it
+# there. Never `maturin develop`, never a copy out of target/.
+module-name = "pbh_engine"
+profile = "release"  # the editable build too: the tests and the timings run the optimised engine
+
+[tool.uv]
+# What makes uv rebuild the engine: the Rust sources as well as the metadata, so that `uv run pytest` in the pbh
+# project always tests the current engine.
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "Cargo.toml" },
+    { file = "Cargo.lock" },
+    { file = "pbh_engine.pyi" },
+    { file = "src/**/*.rs" },
+]

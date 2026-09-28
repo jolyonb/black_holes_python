@@ -22,7 +22,9 @@ system Python 3.13. Here the retired code is `src/_old` and everything runs thro
 
 ```
 uv sync                      # Python 3.14; installs the dev and analysis groups (pytest, ruff, pyright, sympy, matplotlib)
-                             # and builds the Rust engine (rust/, maturin): Rust stable with clippy and rustfmt is required
+                             # pbh itself is pure Python. The Rust engine (package pbh-engine in rust/, maturin, Rust
+                             # stable with clippy and rustfmt) is the OPT-IN group rust: `uv sync --group rust` and
+                             # `uv run --group rust ...`; without it the Rust tests skip. The pre-commit gates pass it
 uv run pytest                # fast suite
 uv run pytest -m slow        # evolutions
 uv run pytest -m ''          # everything

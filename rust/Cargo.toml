@@ -12,7 +12,7 @@ description = "The Rust engine of pbh: one stage of the semi-discrete equations 
 publish = false
 
 [lib]
-name = "_engine"
+name = "pbh_engine"
 crate-type = ["cdylib"]
 
 [dependencies]

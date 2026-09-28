@@ -58,7 +58,8 @@ from pbh.stencils import StencilWeights
 from pbh.types import FloatArray, read_only
 
 if TYPE_CHECKING:  # the Rust engine is imported only when a Scheme asks for it (`Scheme.__post_init__`)
-    from pbh._engine import StageFrame
+    from pbh_engine import StageFrame
+
     from pbh.rust_engine import RustStage
 
 #: The Courant number of eq:num:cfl. RK4's stable limit on the production footprint is 0.865 (0.835 to x_max = 48).
@@ -131,7 +132,8 @@ class Engine(Enum):
     """numpy, `equations.calc_derivs`."""
 
     RUST = "rust"
-    """The compiled stage of `pbh._engine`, through `pbh.rust_engine`."""
+    """The compiled stage of `pbh_engine`, through `pbh.rust_engine`: an optional package (`rust/`, the `rust`
+    dependency group), which a Scheme on this engine imports and, when it is not installed, refuses by saying so."""
 
 
 #: How many frames a `Scheme` keeps: the three stage times of an RK4 step, `xi`, `xi + dxi / 2` and `xi + dxi`, and
@@ -201,8 +203,16 @@ class Scheme:
             raise ValueError("flat spacetime has no gravity, so no black hole to excise")
         rust = None
         if self.engine is Engine.RUST:
-            from pbh import rust_engine  # the extension is loaded only by a Scheme that runs it
-
+            try:
+                from pbh import rust_engine  # the extension is loaded only by a Scheme that runs it
+            except ModuleNotFoundError as error:
+                if error.name != "pbh_engine":
+                    raise
+                raise ModuleNotFoundError(
+                    "numerics.engine is rust, but the Rust engine pbh_engine is not installed: install it with "
+                    "`uv sync --group rust` (a Rust toolchain is required), or run with `engine: python`",
+                    name=error.name,
+                ) from error
             rust = rust_engine.RustStage(self.eos, self.settings, self.outer, self.layout)
         object.__setattr__(self, "_rust", rust)
         object.__setattr__(self, "_static_frame", self._new_frame(0.0) if self.map.is_static else None)

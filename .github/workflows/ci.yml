@@ -13,15 +13,16 @@ jobs:
       - uses: astral-sh/setup-uv@v10.2.0  # astral publishes no floating major tag
         with:
           enable-cache: true
-      # The Rust engine: `uv sync` builds it, and the hooks run cargo fmt and clippy on it. The toolchain is pinned, so
-      # that a new stable release's clippy lints cannot fail `-D warnings` with no change here: move the pin by hand.
+      # The Rust engine: `uv sync --group rust` builds it, and the hooks run cargo fmt and clippy on it. The toolchain
+      # is pinned, so that a new stable release's clippy lints cannot fail `-D warnings` with no change here: move the
+      # pin by hand.
       # The crate's declared minimum (rust-version in rust/Cargo.toml) is installed first and checked below; the
       # action makes the last toolchain it installs the default.
       - uses: dtolnay/rust-toolchain@1.85.0
       - uses: dtolnay/rust-toolchain@1.94.1
         with:
           components: rustfmt, clippy
-      - run: uv sync --frozen
+      - run: uv sync --frozen --group rust
       - run: cargo +1.85.0 check --locked --manifest-path rust/Cargo.toml  # the declared minimum still builds
       - uses: actions/cache@v6
         with:
@@ -29,4 +30,17 @@ jobs:
           key: pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}
       # Runs ruff, pyright and the fast test suite, exactly as the git hook does locally
       - run: uv run --frozen pre-commit run --all-files --show-diff-on-failure
-      - run: uv run --frozen pytest -m slow
+      - run: uv run --frozen --group rust pytest -m slow
+
+  # pbh without the optional Rust engine: a pure-Python install, on which everything but the engine's own tests runs.
+  # The runner image has cargo, so the engine's absence is asserted rather than assumed.
+  python-only:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          enable-cache: true
+      - run: uv sync --frozen
+      - run: uv run --frozen python -c "import importlib.util as u; assert u.find_spec('pbh_engine') is None"
+      - run: uv run --frozen pytest -m ''
