@@ -56,6 +56,7 @@ from pbh.geometry import Geometry
 from pbh.layout import Layout
 from pbh.maps import Map
 from pbh.state import State
+from pbh.timestep import Engine
 from pbh.types import FloatArray, nan_array
 
 
@@ -143,24 +144,89 @@ def crossing(h: FloatArray, j: int, first: int, last: int) -> float:
     return t
 
 
-def find_horizons(
-    state: State, d: Derived, geo: Geometry, bg: Background, eos: EquationOfState, map: Map, layout: Layout, xi: float
-) -> HorizonReport:
-    """Evaluate the trapping function on the retained faces and report every sign change and the margins."""
+@dataclass(frozen=True)
+class Trapping:
+    """The finder's numbers on one slice, before the map places its roots (`trapping`).
+
+    Attributes:
+        h: The trapping function `U + Gammabar` at the faces, NaN below the excision face.
+        trapped_faces: How many retained faces are trapped.
+        crossings: Every sign change `(j, t, outer)` from the origin outward: between faces `j` and `j + 1`, at the
+            fraction `t` of the cell (`crossing`), `outer` if the trapped side is inside.
+        margin, margin_face, core_margin, core_margin_face, outer_face_trapped: As in `HorizonReport`.
+    """
+
+    h: FloatArray
+    trapped_faces: int
+    crossings: tuple[tuple[int, float, bool], ...]
+    margin: float
+    margin_face: int
+    core_margin: float
+    core_margin_face: int
+    outer_face_trapped: bool
+
+
+def trapping(U: FloatArray, Gammabar2: FloatArray, layout: Layout) -> Trapping:
+    """The trapping function on the retained faces, its sign changes with their roots, and the margins.
+
+    The Rust engine computes the same numbers with the same operations (`pbh.rust_engine.trapping`).
+    """
     N, j_e = layout.N, layout.j_e
     faces = layout.faces
-    Gammabar = np.sqrt(d.Gammabar2[faces])
+    Gammabar = np.sqrt(Gammabar2[faces])
     h = nan_array(N + 1)
-    h[faces] = state.U[faces] + Gammabar
+    h[faces] = U[faces] + Gammabar
     trapped = h[faces] < 0.0
-    retained = np.arange(j_e, N + 1)
+    crossings = tuple(
+        (j_e + int(k), crossing(h, j_e + int(k), j_e, N), bool(trapped[k]))
+        for k in np.flatnonzero(trapped[:-1] != trapped[1:])
+    )
+    margin = nan_array(N + 1)
+    margin[faces] = 1.0 + U[faces] / Gammabar
+    k = int(np.nanargmin(margin))
+    expanding = np.flatnonzero(U[faces] > 0.0)
+    core_end = max(int(expanding[0]), 1) if expanding.size else N + 1 - j_e  # the central infall region, at least one
+    k_core = int(np.nanargmin(margin[j_e : j_e + core_end])) + j_e
+    return Trapping(
+        h=h,
+        trapped_faces=int(np.sum(trapped)),
+        crossings=crossings,
+        margin=float(margin[k]),
+        margin_face=k,
+        core_margin=float(margin[k_core]),
+        core_margin_face=k_core,
+        outer_face_trapped=bool(trapped[-1]),
+    )
+
+
+def find_horizons(
+    state: State,
+    d: Derived,
+    geo: Geometry,
+    bg: Background,
+    eos: EquationOfState,
+    map: Map,
+    layout: Layout,
+    xi: float,
+    engine: Engine = Engine.PYTHON,
+) -> HorizonReport:
+    """Evaluate the trapping function on the retained faces and report every sign change and the margins.
+
+    `engine` computes `trapping`, the finder's numbers; the radius at each root comes from the map, here.
+    """
+    N = layout.N
+    if engine is Engine.RUST:
+        from pbh import rust_engine  # loaded only on the Rust engine, as in `Scheme`
+
+        t = rust_engine.trapping(state.U, d.Gammabar2, layout)
+    else:
+        t = trapping(state.U, d.Gammabar2, layout)
 
     horizons: list[Horizon] = []
-    for k in np.flatnonzero(trapped[:-1] != trapped[1:]):
-        j = int(retained[k])
-        x = (j + crossing(h, j, j_e, N)) / N
+    for j, fraction, outer in t.crossings:
+        x = (j + fraction) / N
         X = float(map.radius_at(xi, np.array([x]))[0])
-        horizons.append(Horizon(j=j, x=x, X=X, outer=bool(trapped[k])))
+        horizons.append(Horizon(j=j, x=x, X=X, outer=outer))
     outer_boundaries = [horizon for horizon in horizons if horizon.outer]
     apparent = outer_boundaries[-1] if outer_boundaries else None
 
@@ -171,25 +237,18 @@ def find_horizons(
         M_at = d.M[j] + (apparent.x * N - j) * (d.M[j + 1] - d.M[j])  # the cumulative mass at the horizon's label
         residual = M_at / (apparent.X * bg.Gammabar2) - 1.0  # 2m/R = M / (X Gammabar_FRW^2) in the scaled variables
 
-    margin = nan_array(N + 1)
-    margin[faces] = 1.0 + state.U[faces] / Gammabar
-    k = int(np.nanargmin(margin))
-    expanding = np.flatnonzero(state.U[faces] > 0.0)
-    core_end = max(int(expanding[0]), 1) if expanding.size else N + 1 - j_e  # the central infall region, at least one
-    k_core = int(np.nanargmin(margin[j_e : j_e + core_end])) + j_e
-
     return HorizonReport(
-        h=h,
-        trapped_faces=int(np.sum(trapped)),
+        h=t.h,
+        trapped_faces=t.trapped_faces,
         horizons=tuple(horizons),
         apparent=apparent,
         M_AH=M_AH,
         residual=residual,
-        margin=float(margin[k]),
-        margin_face=k,
-        core_margin=float(margin[k_core]),
-        core_margin_face=k_core,
-        outer_face_trapped=bool(trapped[-1]),
+        margin=t.margin,
+        margin_face=t.margin_face,
+        core_margin=t.core_margin,
+        core_margin_face=t.core_margin_face,
+        outer_face_trapped=t.outer_face_trapped,
     )
 
 

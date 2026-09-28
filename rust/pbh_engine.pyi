@@ -328,3 +328,47 @@ def stage_state(
     frame: StageFrame, settings: StageSettings, Gammabar2: float, c_s: float, hubble: float, y: FloatArray
 ) -> StageOutput:
     """One stage at the packed whole state `y` (`Scheme.evaluate`); raises as `stage_deviation` does."""
+
+@final
+class TrappingOutput:
+    """The horizon finder's numbers on one slice (`pbh.horizon.Trapping`)."""
+
+    @property
+    def h(self) -> FloatArray:
+        """The trapping function `U + Gammabar` (faces), NaN below the excision face."""
+
+    @property
+    def trapped_faces(self) -> int:
+        """How many retained faces are trapped."""
+
+    @property
+    def crossings(self) -> list[tuple[int, float, bool]]:
+        """Every sign change `(j, t, outer)`, from the origin outward."""
+
+    @property
+    def margin(self) -> float:
+        """The smallest `1 + U / Gammabar` over the retained faces."""
+
+    @property
+    def margin_face(self) -> int:
+        """Where."""
+
+    @property
+    def core_margin(self) -> float:
+        """The same over the central infall region."""
+
+    @property
+    def core_margin_face(self) -> int:
+        """Where."""
+
+    @property
+    def outer_face_trapped(self) -> bool:
+        """Whether face `N` is trapped."""
+
+def trapping(U: FloatArray, Gammabar2: FloatArray, j_e: int) -> TrappingOutput:
+    """The trapping function on the retained faces `j_e..N` and what the finder reads from it (`horizon.trapping`).
+
+    Raises:
+        ValueError: If the arrays differ in length or are shorter than three, or `j_e > N - 2`.
+        TypeError: If either is not a one-dimensional native float64 array.
+    """

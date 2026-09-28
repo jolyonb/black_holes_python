@@ -410,7 +410,15 @@ class Run:
         """The horizon finder on the state, on the current layout and map."""
         frame = self.sch.frame(self.xi)
         return find_horizons(
-            state, result.derived, frame.geo, frame.bg, self.sch.eos, self.sch.map, self.layout, self.xi
+            state,
+            result.derived,
+            frame.geo,
+            frame.bg,
+            self.sch.eos,
+            self.sch.map,
+            self.layout,
+            self.xi,
+            self.sch.engine,
         )
 
     def examine(self, state: State, result: DerivsResult) -> Examination:

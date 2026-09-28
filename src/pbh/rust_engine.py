@@ -50,6 +50,7 @@ from pbh.derived import Derived
 from pbh.eos import Background, EquationOfState
 from pbh.equations import DerivsResult, Speeds
 from pbh.geometry import Geometry, check_radii
+from pbh.horizon import Trapping
 from pbh.kernels import KernelResult, KernelSettings
 from pbh.layout import Layout
 from pbh.outer import HeldAtFrw, HeldExterior, OuterClosure, OutgoingWave
@@ -234,4 +235,19 @@ def to_result(out: StageOutput) -> DerivsResult:
         F=out.F,
         delta_F=out.delta_F,
         kernels=kernels,
+    )
+
+
+def trapping(U: FloatArray, Gammabar2: FloatArray, layout: Layout) -> Trapping:
+    """`horizon.trapping` on the Rust engine: the same numbers, by the same operations (`rust/src/horizon.rs`)."""
+    out = pbh_engine.trapping(np.asarray(U, dtype=np.float64), np.asarray(Gammabar2, dtype=np.float64), layout.j_e)
+    return Trapping(
+        h=out.h,
+        trapped_faces=out.trapped_faces,
+        crossings=tuple(out.crossings),
+        margin=out.margin,
+        margin_face=out.margin_face,
+        core_margin=out.core_margin,
+        core_margin_face=out.core_margin_face,
+        outer_face_trapped=out.outer_face_trapped,
     )

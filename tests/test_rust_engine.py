@@ -51,12 +51,14 @@ import pbh_engine
 import yaml
 from violent import FAMILIES, SEEDS, W_CASES, Case, violent_case
 
+from pbh import rust_engine
 from pbh.cli import main
 from pbh.config import ConfigError, load, save
 from pbh.derived import NotHyperbolicError
 from pbh.driver import RunPaths
 from pbh.eos import RADIATION, EquationOfState, Spacetime
 from pbh.equations import DerivsResult
+from pbh.horizon import Trapping, find_horizons, trapping
 from pbh.kernels import CENTRED_SCHEME, PRODUCTION_KERNELS, DensityLimiter, KernelSettings, ViscousFlux
 from pbh.layout import Layout
 from pbh.maps import BlendMap, IdentityMap, Map, PinnedMap, SinhStretch, Zone
@@ -587,6 +589,92 @@ def test_a_collapse_runs_to_its_read_out_through_the_same_events_on_both_engines
     assert (a.engine, b.engine) == (Engine.PYTHON, Engine.RUST)
 
 
+# --- the horizon finder on both engines ---
+
+
+def assert_same_trapping(a: Trapping, b: Trapping, label: str) -> None:
+    """The two engines' finder numbers agree: `h` entry by entry (NaN in the same entries), the rest exactly."""
+    assert np.array_equal(a.h, b.h, equal_nan=True), label
+    assert a.crossings == b.crossings, label
+    assert (a.trapped_faces, a.margin, a.margin_face, a.core_margin, a.core_margin_face, a.outer_face_trapped) == (
+        b.trapped_faces,
+        b.margin,
+        b.margin_face,
+        b.core_margin,
+        b.core_margin_face,
+        b.outer_face_trapped,
+    ), label
+    assert all(type(j) is int and type(t) is float and type(o) is bool for j, t, o in b.crossings), label
+    assert (type(b.trapped_faces), type(b.margin), type(b.margin_face)) == (int, float, int), label
+
+
+def test_the_finder_computes_the_same_numbers_on_both_engines():
+    # trapping functions that change sign often, on grids from the smallest a layout allows, before and after
+    # excision: every root with its cubic, the linear roots beside the first retained and the outer face, the core
+    # ending at the first retained face or running to the outer face, a root exactly at a face (h = 0), and the
+    # central infall region of every length
+    rng = np.random.default_rng(23)
+    for N in (2, 3, 4, 7, 40, 400):
+        for j_e in sorted({0, 1, N // 3, N - 2} & set(range(N - 1))):
+            for trial in range(12):
+                layout = Layout(N, j_e)
+                Gammabar2 = rng.uniform(0.05, 4.0, N + 1)
+                wiggle = rng.uniform(-1.0, 1.0, N + 1) * rng.choice([0.02, 0.3, 2.0])
+                U = -np.sqrt(Gammabar2) * (1.0 + wiggle)
+                if trial % 4 == 1:
+                    U[j_e + 1 :] = np.abs(U[j_e + 1 :])  # the centre falls in, everything outside expands
+                elif trial % 4 == 2:
+                    U = -np.abs(U)  # the whole grid falls in
+                elif trial % 4 == 3 and N > 3:
+                    U[j_e + 1] = -np.sqrt(Gammabar2[j_e + 1])  # a root exactly on a face
+                U[:j_e] = np.nan
+                Gammabar2[:j_e] = np.nan
+                label = f"N={N} j_e={j_e} trial={trial}"
+                assert_same_trapping(trapping(U, Gammabar2, layout), rust_engine.trapping(U, Gammabar2, layout), label)
+
+
+def test_the_finder_reports_alike_on_violent_states_and_on_a_collapse():
+    # the whole report, with the radii from the map, on the violent states (the trapped and excised ones among them)
+    # and on the blob of a strong compression on a moving map
+    for family in FAMILIES:
+        for seed in SEEDS:
+            case = violent_case(family, seed)
+            pair = case_pair(case, PRODUCTION_KERNELS)
+            y = pair.numpy.layout.pack(case.state)
+            try:
+                result = pair.numpy.evaluate(case.xi, y)
+            except NotHyperbolicError, ValueError:
+                continue
+            frame = pair.numpy.frame(case.xi)
+            reports = [
+                find_horizons(
+                    case.state, result.derived, frame.geo, frame.bg, case.eos, case.map, case.layout, case.xi, e
+                )
+                for e in Engine
+            ]
+            a, b = reports
+            label = f"{family} {seed}"
+            assert np.array_equal(a.h, b.h, equal_nan=True), label
+            assert (a.horizons, a.apparent, a.trapped_faces) == (b.horizons, b.apparent, b.trapped_faces), label
+            assert (a.margin, a.margin_face, a.core_margin, a.core_margin_face) == (
+                b.margin,
+                b.margin_face,
+                b.core_margin,
+                b.core_margin_face,
+            ), label
+            assert np.array_equal([a.M_AH, a.residual], [b.M_AH, b.residual], equal_nan=True), label
+            assert a.outer_face_trapped == b.outer_face_trapped, label
+
+
+def test_the_rust_finder_refuses_what_it_cannot_read():
+    U, Gammabar2 = np.full(9, -1.0), np.ones(9)
+    for bad_U, bad_G, j_e in ((U, Gammabar2[:-1], 0), (U[:2], Gammabar2[:2], 0), (U, Gammabar2, 7)):
+        with pytest.raises(ValueError, match="the finder needs"):
+            pbh_engine.trapping(bad_U, bad_G, j_e)
+    with pytest.raises(ValueError, match="All-NaN slice encountered"):  # as `np.nanargmin` refuses
+        pbh_engine.trapping(np.full(9, np.nan), Gammabar2, 0)
+
+
 # --- the switch ---
 
 
@@ -787,8 +875,20 @@ def stub_value_matches(value: object, annotation: str, classes: dict[str, ast.Cl
         return any(stub_value_matches(value, option, classes) for option in annotation.split(" | "))
     if annotation == "None":
         return value is None
-    if annotation == "float":
-        return type(value) is float
+    if annotation in ("float", "int", "bool"):
+        return type(value).__name__ == annotation
+    if annotation == "list[tuple[int, float, bool]]":
+        entries = cast(list[object], value) if isinstance(value, list) else None
+        return entries is not None and all(
+            stub_value_matches(entry, "tuple[int, float, bool]", classes) for entry in entries
+        )
+    if annotation == "tuple[int, float, bool]":
+        if not isinstance(value, tuple):
+            return False
+        parts = cast(tuple[object, ...], value)
+        return len(parts) == 3 and all(
+            stub_value_matches(v, a, classes) for v, a in zip(parts, ("int", "float", "bool"), strict=True)
+        )
     if annotation == "FloatArray":
         if not isinstance(value, np.ndarray):
             return False
@@ -825,8 +925,16 @@ def test_what_the_extension_returns_has_the_types_its_stubs_declare(monkeypatch:
             sch.evaluate_deviation(0.3, np.zeros(sch.layout.size))
             sch.evaluate(0.3, sch.frw(0.3))
     assert len(captured) == 8
-    for name, annotation in returns.items():  # both stage functions return a StageOutput
+    for name in ("stage_deviation", "stage_state"):  # both stage functions return a StageOutput
+        annotation = returns.pop(name)
         assert annotation is not None
         for out in captured:
             assert stub_value_matches(out, ast.unparse(annotation), classes), name
+    annotation = returns.pop("trapping")  # the finder, with a root inside and one outside
+    assert annotation is not None
+    U = np.array([0.0, -2.0, -2.0, -2.0, 0.5, -2.0, -2.0, 0.5, 1.0])
+    out = pbh_engine.trapping(U, np.ones(9), 0)
+    assert len(out.crossings) == 4
+    assert stub_value_matches(out, ast.unparse(annotation), classes)
+    assert not returns  # every function is covered
     assert {out.kernels is None for out in captured} == {True, False}

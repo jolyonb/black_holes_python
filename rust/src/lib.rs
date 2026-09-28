@@ -13,6 +13,7 @@ mod derived;
 mod eos;
 mod equations;
 mod geometry;
+mod horizon;
 mod kernels;
 mod layout;
 mod numpy_like;
@@ -595,6 +596,78 @@ fn stage_state(
     run_stage(py, frame, settings, &bg, &state, &deviation)
 }
 
+/// The horizon finder's numbers on one slice (`pbh.horizon.Trapping`), read by the Python through the getters.
+#[pyclass(frozen, module = "pbh_engine")]
+pub struct TrappingOutput {
+    trapping: horizon::Trapping,
+}
+
+#[pymethods]
+impl TrappingOutput {
+    #[getter]
+    fn h(&self, py: Python<'_>) -> Py<PyArray1<f64>> {
+        to_numpy(py, self.trapping.h.clone())
+    }
+
+    #[getter]
+    fn trapped_faces(&self) -> usize {
+        self.trapping.trapped_faces
+    }
+
+    /// Every sign change `(j, t, outer)`, from the origin outward.
+    #[getter]
+    fn crossings(&self) -> Vec<(usize, f64, bool)> {
+        self.trapping.crossings.iter().map(|c| (c.j, c.t, c.outer)).collect()
+    }
+
+    #[getter]
+    fn margin(&self) -> f64 {
+        self.trapping.margin
+    }
+
+    #[getter]
+    fn margin_face(&self) -> usize {
+        self.trapping.margin_face
+    }
+
+    #[getter]
+    fn core_margin(&self) -> f64 {
+        self.trapping.core_margin
+    }
+
+    #[getter]
+    fn core_margin_face(&self) -> usize {
+        self.trapping.core_margin_face
+    }
+
+    #[getter]
+    fn outer_face_trapped(&self) -> bool {
+        self.trapping.outer_face_trapped
+    }
+}
+
+/// The trapping function on the retained faces `j_e..N` and what the finder reads from it (`horizon.trapping`), from
+/// the face velocities and `Gammabar^2`, both of length `N + 1`.
+#[pyfunction]
+#[pyo3(signature = (U, Gammabar2, j_e))]
+fn trapping(
+    U: PyReadonlyArray1<'_, f64>,
+    Gammabar2: PyReadonlyArray1<'_, f64>,
+    j_e: usize,
+) -> PyResult<TrappingOutput> {
+    let faces = U.len();
+    if Gammabar2.len() != faces || faces < 3 || j_e > faces - 3 {
+        return Err(PyValueError::new_err(format!(
+            "the finder needs U and Gammabar2 of one length N + 1 >= 3 and 0 <= j_e <= N - 2, got {} and {} with \
+             j_e = {j_e}",
+            faces,
+            Gammabar2.len()
+        )));
+    }
+    let result = horizon::trapping(&to_vec(&U), &to_vec(&Gammabar2), j_e).map_err(PyValueError::new_err)?;
+    Ok(TrappingOutput { trapping: result })
+}
+
 /// The module `pbh_engine`.
 #[pymodule]
 fn pbh_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -606,5 +679,7 @@ fn pbh_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<KernelOutput>()?;
     m.add_function(wrap_pyfunction!(stage_deviation, m)?)?;
     m.add_function(wrap_pyfunction!(stage_state, m)?)?;
+    m.add_class::<TrappingOutput>()?;
+    m.add_function(wrap_pyfunction!(trapping, m)?)?;
     Ok(())
 }
