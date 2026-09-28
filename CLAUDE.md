@@ -11,7 +11,8 @@ workspace map is `../CLAUDE.md`.
 |---|---|---|
 | `src/pbh/` | **The production code, being built** (since 2026-09-18) from paper sections 7-8 (`../analysis/v4/numerics.tex`, `numerics-excision.tex`) in reviewed bites. Module docstrings name the paper section and equations they implement. Pipeline: `maps`/`geometry`/`layout`/`state` (grid and variables) -> `stencils`/`kernels`/`derived`/`equations` (one stage, in deviation form) -> `outer` (SAT closure) -> `timestep` (RK4, checked stepper, step rules) -> `horizon`/`excision` -> `driver` (the `Run`), with `config`, `initial`/`profiles`, `records`/`output`/`h5`, `monitors`, `readout`/`summary`, `michel`, `cli`. | tracked |
 | `src/_old/` | **RETIRED** collocated code (the former `src/pbh`, moved 2026-09-18 with its unit tests deleted). Kept for reference, not run, not imported by `pbh`; still passes ruff and pyright strict. `ms.py` (Misner-Sharp EOMs, Eulerian and Lagrangian handlers), `base.py` (evolver + cached EOM handler), `derivs.py` (collocated stencils), `dopri5.py`, `initial.py` (2015 growing-mode data), `output.py`, `cli.py`. | tracked |
-| `tests/` | Flat pytest functions, one file per module; fast suite by default (667), evolutions `-m slow` (27). `whole_state.py` is the stage as printed, the cross-check of the deviation form. | tracked |
+| `tests/` | Flat pytest functions, one file per module; fast suite by default (782 with the Rust engine), evolutions `-m slow` (40). `whole_state.py` is the stage as printed, the cross-check of the deviation form. | tracked |
+| `benchmarks/` | `collapse.py`, the wall-clock benchmark of both engines (see Benchmarks below). | tracked |
 | `README.md` | The production code: worked example, configuration, the evolution file, module map. | tracked |
 | `../analysis/` | **Outside this repo.** Theory and numerics rebuild plus the paper sources; see `../analysis/CLAUDE.md`. | sibling repo |
 
@@ -56,6 +57,25 @@ cd ../analysis/phaseB && uv run --project ../../code python -m pytest tests -q -
 * Verification per change: the fast suite, the slow suite when evolutions are touched, the check scripts of the
   affected sections; any `pbh` API change also runs `../analysis/v4/checks/sec7_numerics.py`, the only analysis
   script that imports `pbh`.
+
+## Benchmarks (for catching a slowdown)
+
+`uv run --group rust python benchmarks/collapse.py` times a supercritical collapse (Gaussian `A = 0.2`, `ell = 2`,
+`Rtilde_max = 30`, sinh scale 3, `snapshots: milestones`) from its initial data to the mass read-out on both engines,
+best of 3, and checks that the two engines' records are identical. Rerun it after a change that could cost time and
+compare on the same machine, idle (the owner's machine is sometimes loaded, which moves timings 5-25 per cent).
+
+2026-09-28, commit `becad1f`, Apple M1 Pro, macOS 15.5, Python 3.14.6:
+
+|    N | steps | numpy | Rust | numpy per step | Rust per step | Rust faster | records |
+|---:|---:|---:|---:|---:|---:|---:|---|
+| 200 | 1798 | 1.93 s | 0.40 s | 1072 us | 224 us | 4.8x | identical |
+| 400 | 3553 | 3.97 s | 0.89 s | 1118 us | 250 us | 4.5x | identical |
+| 800 | 7080 | 9.17 s | 2.30 s | 1295 us | 325 us | 4.0x | identical |
+| 1600 | 14090 | 21.69 s | 6.76 s | 1539 us | 480 us | 3.2x | identical |
+
+The same collapse that morning, before the day's speed work: Rust 2.08 s at N = 400 and 12.81 s at N = 1600, numpy
+4.38 s and 24.05 s.
 
 ## Known numerics (why the rebuild exists)
 
