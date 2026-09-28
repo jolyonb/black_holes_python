@@ -36,6 +36,7 @@ every stage time for a moving one (Section 7.1), keeping the frames of the last 
 driver ask for repeatedly.
 """
 
+import functools
 import math
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -101,6 +102,11 @@ class ButcherTableau:
     def stages(self) -> int:
         """The number of stages, hence of right-hand-side evaluations per step."""
         return len(self.c)
+
+    @functools.cached_property
+    def floats(self) -> tuple[tuple[float, ...], tuple[tuple[float, ...], ...], tuple[float, ...]]:
+        """`(c, a, b)` as floats, converted once: the stepper takes them at every step."""
+        return tuple(map(float, self.c)), tuple(tuple(map(float, row)) for row in self.a), tuple(map(float, self.b))
 
 
 _HALF, _THIRD, _SIXTH = Fraction(1, 2), Fraction(1, 3), Fraction(1, 6)
@@ -423,7 +429,7 @@ def checked_step(
     `land`, if given, is the time the step arrives at, an output time the driver clipped it to: the result is evaluated
     there exactly, as a restart from that output time evaluates it, rather than at the rounded `xi + dxi`.
     """
-    tableau = RK4
+    c, a, b = RK4.floats
 
     def evaluate(xi_i: float, dy_i: FloatArray, stage: int) -> tuple[DerivsResult | None, StepFailure | None]:
         where = "stage" if stage else "result"
@@ -437,18 +443,18 @@ def checked_step(
 
     stages: list[Stage] = []
     k: list[FloatArray] = []
-    for n, (c_i, a_i) in enumerate(zip(tableau.c, tableau.a, strict=True)):
+    for n, (c_i, a_i) in enumerate(zip(c, a, strict=True)):
         dy_i = dy.copy()
         for a_ij, k_j in zip(a_i, k, strict=True):
             if a_ij:
-                dy_i += dxi * float(a_ij) * k_j
-        xi_i = xi + float(c_i) * dxi
+                dy_i += dxi * a_ij * k_j
+        xi_i = xi + c_i * dxi
         result, failure = (first, None) if n == 0 else evaluate(xi_i, dy_i, n + 1)
         if result is None:
             return Attempt(None, stages, None, failure)
         stages.append(Stage(xi=xi_i, y=scheme.frw(xi_i) + dy_i, result=result))
         k.append(scheme.layout.pack(result.deviation_rate))
-    dy_new = dy + dxi * sum(float(b_i) * k_i for b_i, k_i in zip(tableau.b, k, strict=True))
+    dy_new = dy + dxi * sum(b_i * k_i for b_i, k_i in zip(b, k, strict=True))
     result, failure = evaluate(xi + dxi if land is None else land, dy_new, 0)
     return Attempt(dy_new if result is not None else None, stages, result, failure)
 

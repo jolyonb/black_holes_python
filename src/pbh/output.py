@@ -84,18 +84,19 @@ class Table[R]:
         self.row_type = row_type
         self.fields = [f.name for f in dataclasses.fields(row_type)]  # type: ignore[reportArgumentType]
         self.lengths: dict[str, int] = {}  # the string columns and their capacities
+        self.columns: dict[str, h5.Dataset] = {}  # held, so that a flush does not look each one up by name
         self.pending: list[R] = []
         for f in dataclasses.fields(row_type):  # type: ignore[reportArgumentType]
             kind = f.type if isinstance(f.type, str) else f.type.__name__
             if kind in ("float", "int"):
-                h5.create_column(group, f.name, kind)
+                self.columns[f.name] = h5.create_column(group, f.name, kind)
             elif kind == "str":
                 self.lengths[f.name] = int(f.metadata.get("length", 64))
-                h5.create_column(group, f.name, "str", length=self.lengths[f.name])
+                self.columns[f.name] = h5.create_column(group, f.name, "str", length=self.lengths[f.name])
             elif kind == "FloatArray":
                 if widths is None or f.name not in widths:
                     raise ValueError(f"the array column {f.name!r} needs its width")
-                h5.create_column(group, f.name, "float", widths[f.name])
+                self.columns[f.name] = h5.create_column(group, f.name, "float", widths[f.name])
             else:
                 raise TypeError(f"a table column must be float, int, str or FloatArray, not {kind}")
 
@@ -112,7 +113,7 @@ class Table[R]:
         if not self.pending:
             return
         for name in self.fields:
-            h5.append_column(self.group, name, [getattr(row, name) for row in self.pending])
+            h5.append_column(self.columns[name], [getattr(row, name) for row in self.pending])
         self.pending.clear()
 
 

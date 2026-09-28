@@ -446,16 +446,16 @@ def emptying_rates(
     k = result.kernels
     if k is None:
         return rates
-    X2 = geo.X[: N + 1] ** 2
+    X2 = geo.X2
     Lp, Lm = k.Lam_plus, k.Lam_minus
     with np.errstate(invalid="ignore"):  # face 0 carries no flux, and the faces below j_e are not retained
         A = Lp * (k.v_L - Lm) / (Lp - Lm)
         B = -Lm * (Lp - k.v_R) / (Lp - Lm)
     loss = np.zeros(N)
-    c = np.arange(j_e, N - 1)
-    loss[c] += X2[c + 1] * A[c + 1] * k.rho_L[c + 1]  # through the outer face of cell c, its own value rho^+
-    c = np.arange(max(j_e, 1), N)
-    loss[c] += X2[c] * B[c] * k.rho_R[c]  # through its inner face, rho^-; the origin carries none
+    out = slice(j_e + 1, N)  # the outer faces of cells j_e .. N-2
+    loss[j_e : N - 1] += X2[out] * A[out] * k.rho_L[out]  # through the outer face of cell c, its own value rho^+
+    inner = slice(max(j_e, 1), N)  # the inner faces of cells max(j_e, 1) .. N-1; the origin carries none
+    loss[inner] += X2[inner] * B[inner] * k.rho_R[inner]  # through its inner face, rho^-
     loss[N - 1] += max(float(result.F[N]), 0.0)
     rates[j_e:] = loss[j_e:] / state.E[j_e:] - eos.energy_source_rate
     return rates

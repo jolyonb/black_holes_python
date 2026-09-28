@@ -340,7 +340,7 @@ class HorizonRow:
             F_e=f.F_e,
             R_e_over_M_AH=f.R_e_over_M_AH,
             physical_margin=f.physical_margin,
-            **dataclasses.asdict(near),
+            **{f.name: getattr(near, f.name) for f in dataclasses.fields(near)},  # floats: no deep copy
         )
 
 

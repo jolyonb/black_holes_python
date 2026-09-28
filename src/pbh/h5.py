@@ -16,6 +16,7 @@ from pbh.types import FloatArray
 
 type Group = h5py.Group
 type File = h5py.File
+type Dataset = h5py.Dataset
 
 
 def write_array(group: Group, name: str, values: FloatArray) -> None:
@@ -115,8 +116,8 @@ type Column = FloatArray | IntArray | list[str]
 """What a column reads back as: floats and arrays as float arrays, ints as an int array, strings as a list."""
 
 
-def create_column(group: Group, name: str, kind: ColumnKind, width: int | None = None, length: int = 64) -> None:
-    """Create an empty column: a dataset unlimited along the rows, chunked, of scalars or of arrays of `width`.
+def create_column(group: Group, name: str, kind: ColumnKind, width: int | None = None, length: int = 64) -> Dataset:
+    """Create an empty column and return it: a dataset unlimited along the rows, chunked, of scalars or of arrays.
 
     Strings are stored as fixed-length bytes of at most `length` characters: HDF5's variable-length strings cannot
     be read by another process while the file is being written.
@@ -124,14 +125,19 @@ def create_column(group: Group, name: str, kind: ColumnKind, width: int | None =
     dtype: object = {"float": np.float64, "int": np.int64, "str": f"S{length}"}[kind]
     shape: tuple[int, ...] = () if width is None else (width,)
     chunk = 256 if width is None else max(1, 65536 // (8 * width))  # about 2 KB of scalars or 512 KB of arrays
-    group.create_dataset(  # type: ignore[reportUnknownMemberType]
-        name, shape=(0, *shape), maxshape=(None, *shape), dtype=dtype, chunks=(chunk, *shape)
+    return cast(
+        h5py.Dataset,
+        group.create_dataset(  # type: ignore[reportUnknownMemberType]
+            name, shape=(0, *shape), maxshape=(None, *shape), dtype=dtype, chunks=(chunk, *shape)
+        ),
     )
 
 
-def append_column(group: Group, name: str, values: list[Any]) -> None:
-    """Append rows to a column and flush them, so that a reader can see them; strings are encoded."""
-    dataset = cast(h5py.Dataset, group[name])
+def append_column(dataset: Dataset, values: list[Any]) -> None:
+    """Append rows to a column, as `create_column` returned it, and flush them so that a reader can see them.
+
+    Strings are encoded.
+    """
     if cast(str, cast(Any, dataset).dtype.kind) == "S":
         values = [str(v).encode() for v in values]
     n = int(cast(Any, dataset).shape[0])
