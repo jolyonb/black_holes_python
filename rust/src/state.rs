@@ -1,5 +1,8 @@
 //! The evolved unknowns at one time, and the FRW reference on one geometry (`pbh/state.py`; paper Section 7.6).
 
+use crate::geometry::Geometry;
+use crate::numpy_like::c_pow;
+
 /// The evolved unknowns, or their rates, at one time (`pbh.state.State`).
 pub struct State {
     /// The cell energies `E_c` (cells), NaN below the excision face.
@@ -33,7 +36,7 @@ impl State {
     }
 }
 
-/// The background on one geometry, as a stage uses it (`pbh.state.FrwReference`), copied from the Python's.
+/// The background on one geometry, as a stage uses it (`pbh.state.FrwReference`), formed once per frame.
 pub struct FrwReference {
     /// The background state `frw_state(geo, j_e, h)`: `E = dV`, `U = h X`, `W = 0`, `M_e = X_je ** 3` (by `pow`).
     pub state: State,
@@ -43,6 +46,45 @@ pub struct FrwReference {
     pub frw_speed: Vec<f64>,
     /// The FRW energy flux `frw_speed X_j^2` (faces).
     pub F_frw: Vec<f64>,
+}
+
+impl FrwReference {
+    /// The reference on this geometry (`FrwReference.of`), for `alpha w h` the product `alpha * w * h` of the Python's
+    /// floats in its order, and `h` the background coefficient of `Background`.
+    ///
+    /// `frw_state` and `frw_rate` take `X_{j_e}^3` and `X_{j_e}^2` by the scalar power, the C library's `pow`, not the
+    /// products in `geo.X3` and `geo.X2`, which differ from it in the last bit (see `Geometry`).
+    pub fn of(geo: &Geometry, alpha_w_h: f64, j_e: usize, hubble: f64) -> FrwReference {
+        let faces = geo.X.len();
+        let mut U = vec![0.0; faces];
+        let mut U_rate = vec![0.0; faces];
+        let mut frw_speed = vec![0.0; faces];
+        let mut F_frw = vec![0.0; faces];
+        for j in 0..faces {
+            U[j] = hubble * geo.X[j];
+            U_rate[j] = hubble * geo.X_xi[j];
+            frw_speed[j] = alpha_w_h * geo.X[j] - geo.X_xi[j];
+            F_frw[j] = frw_speed[j] * geo.X2[j];
+        }
+        let X_e = geo.X[j_e];
+        let X_xi_e = geo.X_xi[j_e];
+        FrwReference {
+            state: State {
+                E: geo.dV.clone(),
+                U,
+                W: 0.0,
+                M_e: c_pow(X_e, 3.0),
+            },
+            rate: State {
+                E: geo.dV_xi.clone(),
+                U: U_rate,
+                W: 0.0,
+                M_e: 3.0 * c_pow(X_e, 2.0) * X_xi_e,
+            },
+            frw_speed,
+            F_frw,
+        }
+    }
 }
 
 /// The state `y_FRW + delta y` from the unpacked deviation (`Scheme.whole_state`): `reference.state.plus(deviation)`.

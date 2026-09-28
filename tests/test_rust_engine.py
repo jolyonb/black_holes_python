@@ -71,8 +71,9 @@ from pbh.outer import (
     PenaltyStrengths,
 )
 from pbh.output import RunReader
+from pbh.rust_engine import RustStage
 from pbh.state import State
-from pbh.timestep import AcceptedStep, Engine, Scheme, advance_checked, step_cap, step_size
+from pbh.timestep import AcceptedStep, Engine, Frame, Scheme, advance_checked, step_cap, step_size
 from pbh.types import FloatArray
 
 RAD = EquationOfState(RADIATION)
@@ -638,7 +639,7 @@ def test_a_closure_without_rust_rows_is_refused_when_the_scheme_is_built(outer: 
         Scheme(RAD, IdentityMap(4.0), Layout(8), outer, CENTRED_SCHEME, engine=Engine.RUST)
 
 
-def test_a_static_map_shares_one_rust_frame_and_a_moving_map_copies_one_per_time():
+def test_a_static_map_shares_one_rust_frame_and_a_moving_map_builds_one_per_time():
     static = Scheme(
         RAD, SinhStretch(6.0, scale=2.0), Layout(20), OutgoingWave(), PRODUCTION_KERNELS, engine=Engine.RUST
     )
@@ -683,39 +684,72 @@ def test_a_scheme_pickles_and_deep_copies_on_either_engine_and_evaluates_alike(e
         assert_same_result(other.evaluate_deviation(0.5, dy), before, f"{engine} copy")
 
 
-def frame_arrays(sch: Scheme, xi: float) -> dict[str, object]:
-    """The keyword arguments of a `StageFrame` for the scheme's frame at `xi`, as `RustStage.frame` passes them."""
-    f = sch.frame(xi)
-    geo, w, ref = f.geo, f.w, f.reference
+def frame_entries(f: Frame) -> dict[str, object]:
+    """Every number a frame holds: the geometry, the stencil weights, the FRW reference and the packed FRW state."""
+    ref = f.reference
     return {
-        "j_e": sch.layout.j_e,
-        **{k: getattr(geo, k) for k in ("X", "X_xi", "dV", "sbar", "dS", "dX", "Xm", "X2", "X3", "s_in", "s_out")},
-        **{k: getattr(w, k) for k in ("grad_s", "centred_U", "r_L", "r_R", "outer_U", "excision_U", "outer_rho")},
-        "state_E": ref.state.E,
-        "state_U": ref.state.U,
-        "state_M_e": ref.state.M_e,
-        "rate_E": ref.rate.E,
-        "rate_U": ref.rate.U,
-        "rate_M_e": ref.rate.M_e,
+        **{f"geo.{k}": getattr(f.geo, k) for k in (field.name for field in fields(f.geo))},
+        **{f"w.{k}": getattr(f.w, k) for k in (field.name for field in fields(f.w)) if k != "layout"},
+        "state.E": ref.state.E,
+        "state.U": ref.state.U,
+        "state.M_e": ref.state.M_e,
+        "rate.E": ref.rate.E,
+        "rate.U": ref.rate.U,
+        "rate.M_e": ref.rate.M_e,
         "frw_speed": ref.frw_speed,
         "F_frw": ref.F_frw,
-        "X_N_squared": 1.0,
-        "X_je_squared": 1.0,
+        "y_frw": f.y_frw,
     }
 
 
+def test_the_rust_engine_builds_the_same_frames_as_the_numpy_engine():
+    # every map family, moving and static, before and after excision, at every w the engines compare at, in FRW and
+    # flat spacetime: the frame Rust builds, read back into the Python's objects, holds the same numbers, NaN where the
+    # Python has NaN (the scalar powers of the reference included, which both take by the C library's `pow`)
+    zone = Zone(xi_on=0.4, tau_on=0.3, x_t=0.3, Delta_t=0.1)
+    maps: list[Map] = [
+        IdentityMap(4.0),
+        SinhStretch(24.0, 3.0),
+        PinnedMap(SinhStretch(8.0, 2.0), float(RAD.alpha), xi_on=0.2),
+        BlendMap(SinhStretch(6.0, scale=2.0), float(RAD.alpha), (zone,)),
+    ]
+    for eos in (RAD, EquationOfState(Fraction(1)), EquationOfState(Fraction(1, 5))):
+        for m in maps:
+            for N, j_e in ((2, 0), (3, 1), (40, 0), (40, 7), (41, 39), (400, 23)):
+                for spacetime in (Spacetime.FRW, Spacetime.FLAT) if j_e == 0 else (Spacetime.FRW,):
+                    for xi in (0.0, 0.45, 0.7, 2.5):
+                        schemes = [
+                            Scheme(eos, m, Layout(N, j_e), HeldAtFrw(), PRODUCTION_KERNELS, spacetime, engine)
+                            for engine in Engine
+                        ]
+                        a, b = (frame_entries(s.frame(xi)) for s in schemes)
+                        label = f"{eos.w} {m!r} N={N} j_e={j_e} {spacetime.name} xi={xi}"
+                        assert a.keys() == b.keys()
+                        for name, x in a.items():
+                            y = b[name]
+                            if isinstance(x, np.ndarray):
+                                x, y = cast(FloatArray, x), cast(FloatArray, y)
+                                assert x.shape == y.shape, (label, name)
+                                assert np.array_equal(x, y, equal_nan=True), (label, name)
+                                assert not y.flags.writeable, (label, name)
+                            else:
+                                assert x == y, (label, name, x, y)
+
+
 def test_an_inconsistent_frame_is_refused_with_value_error_and_never_panics():
-    sch = Scheme(RAD, SinhStretch(6.0, scale=2.0), Layout(20, 4), HeldAtFrw(), PRODUCTION_KERNELS)
-    good = frame_arrays(sch, 0.3)
-    pbh_engine.StageFrame(**good)  # pyright: ignore[reportArgumentType]
-    X, rate_U = cast(FloatArray, good["X"]), cast(FloatArray, good["rate_U"])
-    for key, bad in (("j_e", 19), ("j_e", 20), ("j_e", 40), ("X", X[:-3]), ("rate_U", rate_U[:-1])):
-        with pytest.raises(ValueError, match=r"N >= 2|must have length"):
-            pbh_engine.StageFrame(**(good | {key: bad}))  # pyright: ignore[reportArgumentType]
-    one: dict[str, object] = {k: (cast(FloatArray, v)[:1] if isinstance(v, np.ndarray) else v) for k, v in good.items()}
-    one["j_e"] = 0
-    with pytest.raises(ValueError, match="N >= 2"):
-        pbh_engine.StageFrame(**one)  # pyright: ignore[reportArgumentType]
+    stage = RustStage(RAD, PRODUCTION_KERNELS, HeldAtFrw(), Layout(20, 4))
+    X, X_xi = SinhStretch(6.0, scale=2.0).radii(0.3, 20)
+    stage.frame(X, X_xi, 1.0)
+    for bad_X, bad_X_xi, match in (
+        (X[:5], X_xi[:5], "0 <= j_e <= N - 2"),  # N = 3 cells, fewer than the layout's excision face allows
+        (X[:3], X_xi[:3], "N \\+ 2 >= 4"),  # a single cell
+        (X, X_xi[:-1], "as many velocities"),
+    ):
+        with pytest.raises(ValueError, match=match):
+            stage.frame(bad_X, bad_X_xi, 1.0)
+    for bad in (np.concatenate(([1e-3], X[1:])), X[::-1].copy()):  # refused before Rust, as `Geometry.of` refuses
+        with pytest.raises(ValueError, match=r"X_0 = 0 exactly|increase strictly"):
+            stage.frame(bad, X_xi, 1.0)
 
 
 def stub_signature(node: ast.FunctionDef) -> str:

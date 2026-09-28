@@ -80,3 +80,11 @@ pub fn minmod3(first: f64, second: f64, third: f64) -> f64 {
         0.0
     }
 }
+
+/// Python's `x ** y` on a float or a numpy scalar: the C library's `pow`, which is not always the correctly rounded
+/// product (`X ** 2` differs from `X * X` in the last bit at about one face in a thousand here, `X ** 3` from
+/// `X * X * X` at about a quarter; see `pbh.geometry.Geometry`). The exponent passes through `black_box` so that the
+/// compiler cannot rewrite `pow(x, 2.0)` as `x * x`, as it otherwise may.
+pub fn c_pow(x: f64, y: f64) -> f64 {
+    x.powf(std::hint::black_box(y))
+}

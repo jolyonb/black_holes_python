@@ -1,9 +1,10 @@
 //! The Rust engine of `pbh`: one stage of the semi-discrete equations (paper Section 7.3), called from
 //! `pbh.rust_engine`, which is the only Python that imports this module (`pbh_engine`).
 //!
-//! This file is the boundary with Python and nothing else: the frame and the settings come in once and are kept here,
-//! a stage takes the packed deviation (or state) and the background scalars, and hands back every field the Python
-//! `DerivsResult` carries, as fresh numpy arrays. The arithmetic lives in the modules below, one per Python module and
+//! This file is the boundary with Python and nothing else: the settings come in once and are kept here, a frame is
+//! built here from the map at the faces and its arrays handed back to the Python, and a stage takes the packed
+//! deviation (or state) and the background scalars, and hands back every field the Python `DerivsResult` carries, as
+//! fresh numpy arrays. The arithmetic lives in the modules below, one per Python module and
 //! one function per Python function, so that the two can be read side by side. A stage outside the hyperbolic domain
 //! raises the Python's own `pbh.derived.NotHyperbolicError`; a closure's refusal raises `ValueError` with the Python's
 //! message, at the point where the Python raises it.
@@ -30,6 +31,7 @@ use crate::equations::{DerivsResult, StageError, calc_derivs};
 use crate::geometry::Geometry;
 use crate::kernels::{DensityLimiter, KernelSettings, Kernels, ViscousFlux};
 use crate::layout::Layout;
+use crate::numpy_like::c_pow;
 use crate::outer::OuterClosure;
 use crate::state::{FrwReference, State, deviation_from_frw, whole_state};
 use crate::stencils::StencilWeights;
@@ -42,28 +44,21 @@ fn to_vec(a: &PyReadonlyArray1<'_, f64>) -> Vec<f64> {
     a.as_array().to_vec()
 }
 
-/// A frame array's entries, copied, refused with `ValueError` unless it has the `length` its name says: `N` for a cell
-/// field, `N + 1` for a face field (and for `sbar`, whose entry `N` is the virtual outer cell).
-fn frame_array(name: &str, a: &PyReadonlyArray1<'_, f64>, length: usize) -> PyResult<Vec<f64>> {
-    if a.len() != length {
-        return Err(PyValueError::new_err(format!(
-            "the frame's {name} must have length {length}, got {}",
-            a.len()
-        )));
-    }
-    Ok(to_vec(a))
-}
-
 /// A fresh numpy array handed the vector without a copy.
 fn to_numpy(py: Python<'_>, v: Vec<f64>) -> Py<PyArray1<f64>> {
     PyArray1::from_vec(py, v).unbind()
 }
 
 /// What a stage needs at one time that does not depend on the state: the geometry, the stencil weights and the FRW
-/// reference of one Python `Frame`, copied once, and the two scalar squares the Python forms by `pow`.
+/// reference of one Python `Frame`, built here from the map at the faces, and the two scalar squares the Python
+/// forms by `pow`.
 ///
-/// The constructor refuses, with `ValueError`, a layout the Python's `Layout` would refuse and any array whose length
-/// is not the one its name says; after that no index a stage takes can fall outside an array.
+/// Built once per frame (`Geometry.of`, `StencilWeights.of` and `FrwReference.of`, with the same operations in the
+/// same order) and read back by the Python through the getters, each a fresh numpy array (or float), so that the
+/// Python's `Frame` holds the same numbers the stages use. The constructor refuses, with `ValueError`, a layout the
+/// Python's `Layout` would refuse and map values of mismatched lengths; after that no index a stage takes can fall
+/// outside an array. What `Geometry.of` checks of the radii themselves (`X_0 = 0`, strictly increasing) the Python
+/// checks before calling (`pbh.geometry.check_radii`).
 #[pyclass(frozen, module = "pbh_engine")]
 pub struct StageFrame {
     geo: Geometry,
@@ -75,95 +70,40 @@ pub struct StageFrame {
 
 #[pymethods]
 impl StageFrame {
+    /// The frame at one time from the map at the `N + 2` faces `0..N+1` (`Map.radii`), for the excision face `j_e`
+    /// and the background coefficient `hubble` (`Background.hubble`).
     #[new]
-    #[pyo3(signature = (
-        *, j_e, X, X_xi, dV, sbar, dS, dX, Xm, X2, X3, s_in, s_out,
-        grad_s, centred_U, r_L, r_R, outer_U, excision_U, outer_rho,
-        state_E, state_U, state_M_e, rate_E, rate_U, rate_M_e, frw_speed, F_frw,
-        X_N_squared, X_je_squared,
-    ))]
+    #[pyo3(signature = (settings, *, j_e, X, X_xi, hubble))]
     fn new(
+        settings: &StageSettings,
         j_e: usize,
         X: PyReadonlyArray1<'_, f64>,
         X_xi: PyReadonlyArray1<'_, f64>,
-        dV: PyReadonlyArray1<'_, f64>,
-        sbar: PyReadonlyArray1<'_, f64>,
-        dS: PyReadonlyArray1<'_, f64>,
-        dX: PyReadonlyArray1<'_, f64>,
-        Xm: PyReadonlyArray1<'_, f64>,
-        X2: PyReadonlyArray1<'_, f64>,
-        X3: PyReadonlyArray1<'_, f64>,
-        s_in: PyReadonlyArray1<'_, f64>,
-        s_out: PyReadonlyArray1<'_, f64>,
-        grad_s: PyReadonlyArray1<'_, f64>,
-        centred_U: PyReadonlyArray1<'_, f64>,
-        r_L: PyReadonlyArray1<'_, f64>,
-        r_R: PyReadonlyArray1<'_, f64>,
-        outer_U: (f64, f64, f64),
-        excision_U: f64,
-        outer_rho: (f64, f64, f64),
-        state_E: PyReadonlyArray1<'_, f64>,
-        state_U: PyReadonlyArray1<'_, f64>,
-        state_M_e: f64,
-        rate_E: PyReadonlyArray1<'_, f64>,
-        rate_U: PyReadonlyArray1<'_, f64>,
-        rate_M_e: f64,
-        frw_speed: PyReadonlyArray1<'_, f64>,
-        F_frw: PyReadonlyArray1<'_, f64>,
-        X_N_squared: f64,
-        X_je_squared: f64,
+        hubble: f64,
     ) -> PyResult<Self> {
         // The Python's Layout refuses anything else, and every loop below trusts it: check once, here, so that an
         // inconsistent frame is a ValueError and never an index out of bounds (which pyo3 raises as a PanicException,
         // a BaseException) or a wrapped subtraction.
-        let N = dV.len();
-        if N < 2 || j_e > N - 2 {
+        let faces_and_virtual = X.len();
+        if faces_and_virtual < 4 || X_xi.len() != faces_and_virtual {
             return Err(PyValueError::new_err(format!(
-                "a frame needs N >= 2 cells and 0 <= j_e <= N - 2, got N = {N} and j_e = {j_e}"
+                "the map values must be N + 2 >= 4 radii and as many velocities, got {} and {}",
+                X.len(),
+                X_xi.len()
             )));
         }
-        let cells = N;
-        let faces = N + 1;
-        let layout = Layout { N, j_e };
-        let geo = Geometry {
-            X: frame_array("X", &X, faces)?,
-            X_xi: frame_array("X_xi", &X_xi, faces)?,
-            dV: frame_array("dV", &dV, cells)?,
-            sbar: frame_array("sbar", &sbar, faces)?,
-            dS: frame_array("dS", &dS, faces)?,
-            dX: frame_array("dX", &dX, cells)?,
-            Xm: frame_array("Xm", &Xm, cells)?,
-            X2: frame_array("X2", &X2, faces)?,
-            X3: frame_array("X3", &X3, faces)?,
-            s_in: frame_array("s_in", &s_in, cells)?,
-            s_out: frame_array("s_out", &s_out, cells)?,
-        };
-        let w = StencilWeights {
-            layout,
-            grad_s: frame_array("grad_s", &grad_s, faces)?,
-            centred_U: frame_array("centred_U", &centred_U, faces)?,
-            outer_U: [outer_U.0, outer_U.1, outer_U.2],
-            excision_U,
-            outer_rho: [outer_rho.0, outer_rho.1, outer_rho.2],
-            r_L: frame_array("r_L", &r_L, cells)?,
-            r_R: frame_array("r_R", &r_R, cells)?,
-        };
-        let reference = FrwReference {
-            state: State {
-                E: frame_array("state_E", &state_E, cells)?,
-                U: frame_array("state_U", &state_U, faces)?,
-                W: 0.0,
-                M_e: state_M_e,
-            },
-            rate: State {
-                E: frame_array("rate_E", &rate_E, cells)?,
-                U: frame_array("rate_U", &rate_U, faces)?,
-                W: 0.0,
-                M_e: rate_M_e,
-            },
-            frw_speed: frame_array("frw_speed", &frw_speed, faces)?,
-            F_frw: frame_array("F_frw", &F_frw, faces)?,
-        };
+        let N = faces_and_virtual - 2;
+        if j_e > N - 2 {
+            return Err(PyValueError::new_err(format!(
+                "a frame needs 0 <= j_e <= N - 2, got N = {N} and j_e = {j_e}"
+            )));
+        }
+        let geo = Geometry::of(&to_vec(&X), &to_vec(&X_xi));
+        let w = StencilWeights::of(&geo, Layout { N, j_e });
+        let eos = &settings.eos;
+        let reference = FrwReference::of(&geo, eos.alpha_float * eos.w_float * hubble, j_e, hubble);
+        let X_N_squared = c_pow(geo.X[N], 2.0); // the closures' `X_N ** 2` on the float `X_N`
+        let X_je_squared = c_pow(geo.X[j_e], 2.0); // `kernels.viscous_pressure`'s `X[j_e] ** 2` on the numpy scalar
         Ok(StageFrame {
             geo,
             w,
@@ -171,6 +111,149 @@ impl StageFrame {
             X_N_squared,
             X_je_squared,
         })
+    }
+
+    // --- the geometry (`Geometry`) ---
+
+    #[getter]
+    fn X(&self, py: Python<'_>) -> Py<PyArray1<f64>> {
+        to_numpy(py, self.geo.X.clone())
+    }
+
+    #[getter]
+    fn X_xi(&self, py: Python<'_>) -> Py<PyArray1<f64>> {
+        to_numpy(py, self.geo.X_xi.clone())
+    }
+
+    #[getter]
+    fn dV(&self, py: Python<'_>) -> Py<PyArray1<f64>> {
+        to_numpy(py, self.geo.dV.clone())
+    }
+
+    #[getter]
+    fn dV_xi(&self, py: Python<'_>) -> Py<PyArray1<f64>> {
+        to_numpy(py, self.geo.dV_xi.clone())
+    }
+
+    #[getter]
+    fn sbar(&self, py: Python<'_>) -> Py<PyArray1<f64>> {
+        to_numpy(py, self.geo.sbar.clone())
+    }
+
+    #[getter]
+    fn dS(&self, py: Python<'_>) -> Py<PyArray1<f64>> {
+        to_numpy(py, self.geo.dS.clone())
+    }
+
+    #[getter]
+    fn dX(&self, py: Python<'_>) -> Py<PyArray1<f64>> {
+        to_numpy(py, self.geo.dX.clone())
+    }
+
+    #[getter]
+    fn Xm(&self, py: Python<'_>) -> Py<PyArray1<f64>> {
+        to_numpy(py, self.geo.Xm.clone())
+    }
+
+    #[getter]
+    fn X2(&self, py: Python<'_>) -> Py<PyArray1<f64>> {
+        to_numpy(py, self.geo.X2.clone())
+    }
+
+    #[getter]
+    fn X3(&self, py: Python<'_>) -> Py<PyArray1<f64>> {
+        to_numpy(py, self.geo.X3.clone())
+    }
+
+    #[getter]
+    fn s_in(&self, py: Python<'_>) -> Py<PyArray1<f64>> {
+        to_numpy(py, self.geo.s_in.clone())
+    }
+
+    #[getter]
+    fn s_out(&self, py: Python<'_>) -> Py<PyArray1<f64>> {
+        to_numpy(py, self.geo.s_out.clone())
+    }
+
+    // --- the stencil weights (`StencilWeights`) ---
+
+    #[getter]
+    fn grad_s(&self, py: Python<'_>) -> Py<PyArray1<f64>> {
+        to_numpy(py, self.w.grad_s.clone())
+    }
+
+    #[getter]
+    fn centred_U(&self, py: Python<'_>) -> Py<PyArray1<f64>> {
+        to_numpy(py, self.w.centred_U.clone())
+    }
+
+    #[getter]
+    fn r_L(&self, py: Python<'_>) -> Py<PyArray1<f64>> {
+        to_numpy(py, self.w.r_L.clone())
+    }
+
+    #[getter]
+    fn r_R(&self, py: Python<'_>) -> Py<PyArray1<f64>> {
+        to_numpy(py, self.w.r_R.clone())
+    }
+
+    #[getter]
+    fn outer_U(&self) -> (f64, f64, f64) {
+        let [a, b, c] = self.w.outer_U;
+        (a, b, c)
+    }
+
+    #[getter]
+    fn excision_U(&self) -> f64 {
+        self.w.excision_U
+    }
+
+    #[getter]
+    fn outer_rho(&self) -> (f64, f64, f64) {
+        let [a, b, c] = self.w.outer_rho;
+        (a, b, c)
+    }
+
+    // --- the FRW reference (`FrwReference`) ---
+
+    #[getter]
+    fn state_E(&self, py: Python<'_>) -> Py<PyArray1<f64>> {
+        to_numpy(py, self.reference.state.E.clone())
+    }
+
+    #[getter]
+    fn state_U(&self, py: Python<'_>) -> Py<PyArray1<f64>> {
+        to_numpy(py, self.reference.state.U.clone())
+    }
+
+    #[getter]
+    fn state_M_e(&self) -> f64 {
+        self.reference.state.M_e
+    }
+
+    #[getter]
+    fn rate_E(&self, py: Python<'_>) -> Py<PyArray1<f64>> {
+        to_numpy(py, self.reference.rate.E.clone())
+    }
+
+    #[getter]
+    fn rate_U(&self, py: Python<'_>) -> Py<PyArray1<f64>> {
+        to_numpy(py, self.reference.rate.U.clone())
+    }
+
+    #[getter]
+    fn rate_M_e(&self) -> f64 {
+        self.reference.rate.M_e
+    }
+
+    #[getter]
+    fn frw_speed(&self, py: Python<'_>) -> Py<PyArray1<f64>> {
+        to_numpy(py, self.reference.frw_speed.clone())
+    }
+
+    #[getter]
+    fn F_frw(&self, py: Python<'_>) -> Py<PyArray1<f64>> {
+        to_numpy(py, self.reference.F_frw.clone())
     }
 }
 

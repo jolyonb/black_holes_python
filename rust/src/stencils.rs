@@ -11,9 +11,11 @@
 //!
 //! At the origin `<f>_0 = f_0` and `(D_s f)_0 = 0`; at an excision face `<f>_je = f_je`, no pressure gradient, and the
 //! velocity gradient the one retained difference; at the outer face the density is the last cell's theta-limited
-//! reconstruction and the velocity gradient the three-point one-sided row. The weights are the Python's
-//! (`StencilWeights.of`), copied once per frame. Outputs are face arrays, NaN where the operator is not defined.
+//! reconstruction and the velocity gradient the three-point one-sided row. The weights are formed once per frame
+//! (`StencilWeights::of`, the Python's `StencilWeights.of`). Outputs are face arrays, NaN where the operator is not
+//! defined.
 
+use crate::geometry::Geometry;
 use crate::layout::Layout;
 use crate::numpy_like::{maximum, minimum};
 
@@ -56,6 +58,41 @@ pub struct ThetaLimited {
 }
 
 impl StencilWeights {
+    /// The weights for this geometry and these retained faces (`StencilWeights.of`).
+    pub fn of(geo: &Geometry, layout: Layout) -> StencilWeights {
+        let N = layout.N;
+        let j_e = layout.j_e;
+        let X = &geo.X;
+        let dS = &geo.dS;
+        let mut grad_s = vec![f64::NAN; N + 1];
+        let mut centred_U = vec![f64::NAN; N + 1];
+        for j in 1..N {
+            grad_s[j] = 2.0 * X[j] / dS[j];
+            centred_U[j] = 1.0 / (X[j + 1] - X[j - 1]);
+        }
+        let outer_U = one_sided_three_point(geo.dX[N - 1], geo.dX[N - 2]);
+        let excision_U = 1.0 / geo.dX[j_e]; // the one retained difference at an excision face
+        let outer_rho = [dS[N - 1], geo.s_in[N - 1], geo.s_out[N - 1]];
+        // The mc ratios over the cells with two faces inside the grid: the difference quotient across each face over
+        // that face's offset in `s`. The negation is taken first, as the Python takes it: `-dS / s_in`.
+        let mut r_L = vec![f64::NAN; N];
+        let mut r_R = vec![f64::NAN; N];
+        for c in 1..N - 1 {
+            r_L[c] = -dS[c] / geo.s_in[c];
+            r_R[c] = dS[c + 1] / geo.s_out[c];
+        }
+        StencilWeights {
+            layout,
+            grad_s,
+            centred_U,
+            outer_U,
+            excision_U,
+            outer_rho,
+            r_L,
+            r_R,
+        }
+    }
+
     /// The face value `<f>_j` of a cell field (eq:num:stencils, first line; eq:numbh:rows1 at `j_e`): the two-cell
     /// average inside, `f_0` at the origin, the cell behind an excision face, NaN at face `N`.
     pub fn face_average(&self, f: &[f64]) -> Vec<f64> {
@@ -134,4 +171,15 @@ pub fn theta_limited_faces(delta_rho: f64, off_in: f64, off_out: f64, theta: f64
         delta_in: delta_rho + t * off_in,
         delta_out: delta_rho + t * off_out,
     }
+}
+
+/// The coefficients of the derivative at the end of three points with spacings `Delta_1` (nearest) and `Delta_2`
+/// (`StencilWeights._one_sided_three_point`): the fourth line of eq:num:stencils, written for the outer face,
+/// `(D_U U)_N = a_0 U_N + a_1 U_{N-1} + a_2 U_{N-2}`.
+fn one_sided_three_point(Delta_1: f64, Delta_2: f64) -> [f64; 3] {
+    [
+        (2.0 * Delta_1 + Delta_2) / (Delta_1 * (Delta_1 + Delta_2)),
+        -(Delta_1 + Delta_2) / (Delta_1 * Delta_2),
+        Delta_1 / (Delta_2 * (Delta_1 + Delta_2)),
+    ]
 }

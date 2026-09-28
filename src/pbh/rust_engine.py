@@ -10,13 +10,15 @@ things:
 * once per `Scheme`, `RustStage` hands the extension the settings: the floats of the equation of state, the kernel
   switches, and the outer closure with its parameters. Only the three closures of `outer.py` have Rust rows, and a
   closure is matched by its exact type, so that a subclass cannot silently run its parent's rows;
-* once per frame, `RustStage.frame` copies the frame's geometry, stencil weights and FRW reference into Rust, with the
-  two scalar squares the Python forms by the C library's `pow` (`X_N ** 2` of the closures, `X[j_e] ** 2` of the
-  viscous pressure's excision row; see `Geometry`), formed here by the same expressions, so that Rust never forms
-  them itself. The one power Rust does form is the lapse of a general `w` (neither radiation nor the stiff fluid),
-  `rho ** lapse_exponent` with `expm1` and `log1p`: Rust calls the platform's C library there, which is what numpy
-  calls on macOS, but numpy may use its own SIMD versions elsewhere, so for such a `w` the engines can differ there by
-  an ulp or so (`rust/src/numpy_like.rs`);
+* once per frame, `RustStage.frame` hands Rust the map at the faces, and Rust builds the frame: the geometry, the
+  stencil weights and the FRW reference (`Geometry.of`, `StencilWeights.of`, `FrwReference.of`, the same operations in
+  the same order), with the scalar powers the Python takes by the C library's `pow` (`X_{j_e} ** 3` and `** 2` of the
+  reference, `X_N ** 2` of the closures, `X[j_e] ** 2` of the viscous pressure's excision row; see `Geometry`) taken by
+  that same `pow`. The Python's `Frame` then holds Rust's numbers, read back as numpy arrays. Every other power Rust
+  forms is the lapse of a general `w` (neither radiation nor the stiff fluid), `rho ** lapse_exponent` with `expm1`
+  and `log1p`: Rust calls the platform's C library there, which is what numpy calls on macOS, but numpy may use its
+  own SIMD versions elsewhere, so for such a `w` the engines can differ there by an ulp or so
+  (`rust/src/numpy_like.rs`);
 * per stage, it passes the packed deviation (or the packed state), as native float64 after `Layout.unpack`'s shape
   check, and the background scalars, and assembles the returned arrays into the `DerivsResult`, `Derived`, `Speeds`,
   `KernelResult` and `State`s that every consumer reads.
@@ -47,13 +49,13 @@ from pbh_engine import StageFrame, StageOutput, StageSettings
 from pbh.derived import Derived
 from pbh.eos import Background, EquationOfState
 from pbh.equations import DerivsResult, Speeds
-from pbh.geometry import Geometry
+from pbh.geometry import Geometry, check_radii
 from pbh.kernels import KernelResult, KernelSettings
 from pbh.layout import Layout
 from pbh.outer import HeldAtFrw, HeldExterior, OuterClosure, OutgoingWave
 from pbh.state import FrwReference, State
 from pbh.stencils import StencilWeights
-from pbh.types import FloatArray
+from pbh.types import FloatArray, read_only
 
 
 class RustStage:
@@ -77,6 +79,7 @@ class RustStage:
         else:
             raise ValueError(f"the rust engine has no rows for {outer!r}")
         self._layout = layout
+        self._eos = eos
         self._settings = StageSettings(
             w_float=eos.w_float,
             alpha_float=eos.alpha_float,
@@ -98,40 +101,64 @@ class RustStage:
             ephi_N=ephi_N,
         )
 
-    def frame(self, geo: Geometry, w: StencilWeights, reference: FrwReference) -> StageFrame:
-        """Copy one frame into Rust: its geometry, stencil weights and FRW reference, and the two scalar squares."""
-        N, j_e = geo.N, self._layout.j_e
-        return StageFrame(
-            j_e=j_e,
-            X=geo.X,
-            X_xi=geo.X_xi,
-            dV=geo.dV,
-            sbar=geo.sbar,
-            dS=geo.dS,
-            dX=geo.dX,
-            Xm=geo.Xm,
-            X2=geo.X2,
-            X3=geo.X3,
-            s_in=geo.s_in,
-            s_out=geo.s_out,
-            grad_s=w.grad_s,
-            centred_U=w.centred_U,
-            r_L=w.r_L,
-            r_R=w.r_R,
-            outer_U=w.outer_U,
-            excision_U=w.excision_U,
-            outer_rho=w.outer_rho,
-            state_E=reference.state.E,
-            state_U=reference.state.U,
-            state_M_e=reference.state.M_e,
-            rate_E=reference.rate.E,
-            rate_U=reference.rate.U,
-            rate_M_e=reference.rate.M_e,
-            frw_speed=reference.frw_speed,
-            F_frw=reference.F_frw,
-            X_N_squared=float(geo.X[N]) ** 2,  # the closures' `X_N**2` on the float X_N
-            X_je_squared=float(geo.X[j_e] ** 2),  # `kernels.viscous_pressure`'s `X[j_e] ** 2` on the numpy scalar
+    def frame(
+        self, X: FloatArray, X_xi: FloatArray, hubble: float
+    ) -> tuple[Geometry, StencilWeights, FrwReference, StageFrame]:
+        """Build one frame in Rust from the map at the `N + 2` faces, and the Python's objects from its arrays.
+
+        The Rust frame is `Geometry.of`, `StencilWeights.of` and `FrwReference.of` with the same operations in the same
+        order (tests/test_rust_engine.py asserts every array equal); the `Geometry`, `StencilWeights` and
+        `FrwReference` returned hold its numbers, for the finder, the monitors and the step rules to read. The radii
+        are checked here as `Geometry.of` checks them.
+
+        Raises:
+            ValueError: As `Geometry.of` raises it, with the same message.
+        """
+        check_radii(X)
+        f = StageFrame(self._settings, j_e=self._layout.j_e, X=X, X_xi=X_xi, hubble=hubble)
+        geo = Geometry(
+            X=f.X,
+            X_xi=f.X_xi,
+            dV=f.dV,
+            dV_xi=f.dV_xi,
+            sbar=f.sbar,
+            dS=f.dS,
+            dX=f.dX,
+            Xm=f.Xm,
+            X2=f.X2,
+            X3=f.X3,
+            s_in=f.s_in,
+            s_out=f.s_out,
         )
+        w = StencilWeights(
+            layout=self._layout,
+            grad_s=f.grad_s,
+            centred_U=f.centred_U,
+            outer_U=f.outer_U,
+            excision_U=f.excision_U,
+            outer_rho=f.outer_rho,
+            r_L=f.r_L,
+            r_R=f.r_R,
+        )
+        reference = FrwReference(
+            geo=geo,
+            eos=self._eos,
+            j_e=self._layout.j_e,
+            hubble=hubble,
+            state=State(E=f.state_E, U=f.state_U, W=0.0, M_e=f.state_M_e),
+            rate=State(E=f.rate_E, U=f.rate_U, W=0.0, M_e=f.rate_M_e),
+            frw_speed=f.frw_speed,
+            F_frw=f.F_frw,
+        )
+        read_only(
+            reference.state.E,
+            reference.state.U,
+            reference.rate.E,
+            reference.rate.U,
+            reference.frw_speed,
+            reference.F_frw,
+        )
+        return geo, w, reference, f
 
     def packed(self, y: FloatArray) -> FloatArray:
         """The packed vector as the extension takes it: native float64, after `Layout.unpack`'s shape check.

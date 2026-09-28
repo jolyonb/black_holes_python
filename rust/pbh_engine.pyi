@@ -17,42 +17,69 @@ type FloatArray = NDArray[np.float64]  # pbh.types.FloatArray, restated so that 
 
 @final
 class StageFrame:
-    """One frame copied into Rust: the geometry, the stencil weights, the FRW reference and two scalar squares."""
+    """One frame built in Rust from the map at the faces: the geometry, the stencil weights and the FRW reference.
 
-    def __init__(
-        self,
-        *,
-        j_e: int,
-        X: FloatArray,
-        X_xi: FloatArray,
-        dV: FloatArray,
-        sbar: FloatArray,
-        dS: FloatArray,
-        dX: FloatArray,
-        Xm: FloatArray,
-        X2: FloatArray,
-        X3: FloatArray,
-        s_in: FloatArray,
-        s_out: FloatArray,
-        grad_s: FloatArray,
-        centred_U: FloatArray,
-        r_L: FloatArray,
-        r_R: FloatArray,
-        outer_U: tuple[float, float, float],
-        excision_U: float,
-        outer_rho: tuple[float, float, float],
-        state_E: FloatArray,
-        state_U: FloatArray,
-        state_M_e: float,
-        rate_E: FloatArray,
-        rate_U: FloatArray,
-        rate_M_e: float,
-        frw_speed: FloatArray,
-        F_frw: FloatArray,
-        X_N_squared: float,
-        X_je_squared: float,
-    ) -> None:
-        """Copy the frame's arrays; `X_N_squared` and `X_je_squared` are the Python's `pow` of `X_N` and `X_je`."""
+    The getters hand each array back as a fresh numpy array: those of `Geometry`, `StencilWeights` and
+    `FrwReference` (the reference's state and rate as `state_E`, `state_U`, `state_M_e` and `rate_E`, `rate_U`,
+    `rate_M_e`), formed as the Python forms them.
+    """
+
+    def __init__(self, settings: StageSettings, *, j_e: int, X: FloatArray, X_xi: FloatArray, hubble: float) -> None:
+        """Build the frame from `X_j` and `(d_xi X)_j` at the `N + 2` faces `0..N+1` (`Map.radii`)."""
+    @property
+    def X(self) -> FloatArray: ...
+    @property
+    def X_xi(self) -> FloatArray: ...
+    @property
+    def dV(self) -> FloatArray: ...
+    @property
+    def dV_xi(self) -> FloatArray: ...
+    @property
+    def sbar(self) -> FloatArray: ...
+    @property
+    def dS(self) -> FloatArray: ...
+    @property
+    def dX(self) -> FloatArray: ...
+    @property
+    def Xm(self) -> FloatArray: ...
+    @property
+    def X2(self) -> FloatArray: ...
+    @property
+    def X3(self) -> FloatArray: ...
+    @property
+    def s_in(self) -> FloatArray: ...
+    @property
+    def s_out(self) -> FloatArray: ...
+    @property
+    def grad_s(self) -> FloatArray: ...
+    @property
+    def centred_U(self) -> FloatArray: ...
+    @property
+    def r_L(self) -> FloatArray: ...
+    @property
+    def r_R(self) -> FloatArray: ...
+    @property
+    def outer_U(self) -> tuple[float, float, float]: ...
+    @property
+    def excision_U(self) -> float: ...
+    @property
+    def outer_rho(self) -> tuple[float, float, float]: ...
+    @property
+    def state_E(self) -> FloatArray: ...
+    @property
+    def state_U(self) -> FloatArray: ...
+    @property
+    def state_M_e(self) -> float: ...
+    @property
+    def rate_E(self) -> FloatArray: ...
+    @property
+    def rate_U(self) -> FloatArray: ...
+    @property
+    def rate_M_e(self) -> float: ...
+    @property
+    def frw_speed(self) -> FloatArray: ...
+    @property
+    def F_frw(self) -> FloatArray: ...
 
 @final
 class StageSettings:

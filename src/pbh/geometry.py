@@ -61,6 +61,20 @@ def shell_volumes(X: FloatArray) -> FloatArray:
     return (X_plus - X_minus) * (X_minus**2 + X_minus * X_plus + X_plus**2) / 3.0
 
 
+def check_radii(X: FloatArray) -> None:
+    """Refuse radii that are not a map's: `X_0` must be exactly zero and the radii strictly increasing (Section 7.1).
+
+    `Geometry.of` checks them, and the Rust engine's frame (`pbh.rust_engine`) through this same function.
+
+    Raises:
+        ValueError: If the radii do not start at zero or are not strictly increasing.
+    """
+    if X[0] != 0.0:
+        raise ValueError(f"the origin face must have X_0 = 0 exactly, got {X[0]!r}")
+    if not np.all(np.diff(X) > 0.0):
+        raise ValueError("the face radii must increase strictly: the map has d_x X > 0")
+
+
 @dataclass(frozen=True)
 class Geometry:
     """The map at the faces and the exact cell geometry built from it, at one time.
@@ -130,10 +144,7 @@ class Geometry:
         Raises:
             ValueError: If the radii do not start at zero or are not strictly increasing.
         """
-        if X[0] != 0.0:
-            raise ValueError(f"the origin face must have X_0 = 0 exactly, got {X[0]!r}")
-        if not np.all(np.diff(X) > 0.0):
-            raise ValueError("the face radii must increase strictly: the map has d_x X > 0")
+        check_radii(X)
         # Every cell, the virtual one included: the pair (X_-, X_+) of eq:num:geom is (X[:-1], X[1:]). The volume is
         # written as (X_+ - X_-) times a quadratic rather than as a difference of cubes, and the mean-square radius as
         # the ratio of a quartic to that same quadratic with the factor (X_+ - X_-) cancelled by hand, so that the only

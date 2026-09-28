@@ -157,7 +157,8 @@ class Frame:
         reference: The reference solution `y_FRW` on this geometry (the fluid at rest in flat spacetime), unpacked,
             with its rate and flux.
         y_frw: `reference.state` packed by the layout: the vector to which the integrator adds its deviation.
-        rust: The same frame copied into the Rust engine, when the Scheme runs it; `None` on the numpy engine.
+        rust: The same frame as the Rust engine holds it, when the Scheme runs it (the Rust engine builds the frame,
+            and the fields above hold its numbers); `None` on the numpy engine.
     """
 
     geo: Geometry
@@ -231,15 +232,19 @@ class Scheme:
 
     def _new_frame(self, xi: float) -> Frame:
         """The frame at time `xi` built from the map: every stage time on a moving map, once on a static one."""
-        geo = Geometry.of(*self.map.radii(xi, self.layout.N))
-        w = StencilWeights.of(geo, self.layout)
+        X, X_xi = self.map.radii(xi, self.layout.N)
         bg = Background.at(self.eos, xi, self.spacetime)
-        reference = FrwReference.of(geo, self.eos, self.layout.j_e, bg.hubble)  # makes its own arrays read-only
+        rust = None
+        if self._rust is None:
+            geo = Geometry.of(X, X_xi)
+            w = StencilWeights.of(geo, self.layout)
+            reference = FrwReference.of(geo, self.eos, self.layout.j_e, bg.hubble)  # makes its own arrays read-only
+        else:  # built in Rust, the same numbers (`RustStage.frame`)
+            geo, w, reference, rust = self._rust.frame(X, X_xi, bg.hubble)
         y_frw = self.layout.pack(reference.state)
         # Shared by every stage and caller that asks for this time (`frame`): read-only, so a stray write raises.
         read_only(geo.X, geo.X_xi, geo.dV, geo.dV_xi, geo.sbar, geo.dS, geo.dX, geo.Xm, geo.X2, geo.X3)
         read_only(geo.s_in, geo.s_out, w.grad_s, w.centred_U, w.r_L, w.r_R, y_frw)
-        rust = None if self._rust is None else self._rust.frame(geo, w, reference)
         return Frame(geo=geo, bg=bg, w=w, reference=reference, y_frw=y_frw, rust=rust)
 
     def frame(self, xi: float) -> Frame:
