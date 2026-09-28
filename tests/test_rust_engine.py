@@ -58,6 +58,7 @@ from pbh.derived import NotHyperbolicError
 from pbh.driver import RunPaths
 from pbh.eos import RADIATION, EquationOfState, Spacetime
 from pbh.equations import DerivsResult
+from pbh.geometry import check_radii
 from pbh.horizon import Trapping, find_horizons, near_zone, near_zone_numbers, trapping
 from pbh.kernels import CENTRED_SCHEME, PRODUCTION_KERNELS, DensityLimiter, KernelSettings, ViscousFlux
 from pbh.layout import Layout
@@ -974,6 +975,48 @@ def test_the_near_zone_row_is_the_same_on_both_engines():
     assert rows > 0  # rows with a horizon were compared
 
 
+def test_the_rust_radius_check_is_check_radii():
+    # admissible radii from every map family refused by neither, and inadmissible ones refused by both: a nonzero
+    # origin (either sign, a subnormal), two equal faces, a decreasing pair, a NaN, an infinity inside the grid, and
+    # two equal last faces
+    zone = Zone(xi_on=0.4, tau_on=0.3, x_t=0.3, Delta_t=0.1)
+    maps: list[Map] = [
+        IdentityMap(4.0),
+        SinhStretch(24.0, 3.0),
+        PinnedMap(SinhStretch(8.0, 2.0), 0.5, xi_on=0.2),
+        BlendMap(SinhStretch(6.0, scale=2.0), 0.5, (zone,)),
+    ]
+    good = [m.radii(xi, N)[0] for m in maps for N in (2, 40, 1600) for xi in (0.0, 0.7)]
+    X = good[4]
+    bad = [X.copy() for _ in range(8)]
+    bad[0][0], bad[1][0], bad[2][0] = 1e-3, -1e-3, 5e-324
+    bad[3][5] = bad[3][4]
+    bad[4][5], bad[4][6] = bad[4][6], bad[4][5]
+    bad[5][7], bad[6][7] = math.nan, math.inf  # an infinite last face passes both: only its difference is tested
+    bad[7][-1] = bad[7][-2]
+    for radii, admissible in [(x, True) for x in good] + [(x, False) for x in bad]:
+        assert pbh_engine.radii_admissible(radii) == admissible
+        if admissible:
+            check_radii(radii)
+        else:
+            with pytest.raises(ValueError, match=r"X_0 = 0 exactly|increase strictly"):
+                check_radii(radii)
+    assert not pbh_engine.radii_admissible(np.zeros(0))
+
+
+def test_a_frame_whose_radii_the_engines_judge_differently_is_refused(monkeypatch: pytest.MonkeyPatch):
+    # the Rust check refusing radii that check_radii accepts cannot happen; if it did, no frame is built
+    stage = RustStage(RAD, PRODUCTION_KERNELS, HeldAtFrw(), Layout(20))
+    X, X_xi = SinhStretch(6.0, scale=2.0).radii(0.3, 20)
+
+    def refuse(X: FloatArray) -> bool:
+        return False
+
+    monkeypatch.setattr(rust_engine.pbh_engine, "radii_admissible", refuse)
+    with pytest.raises(AssertionError, match="the engines disagree"):
+        stage.stage_frame(X, X_xi, 1.0)
+
+
 def test_an_inconsistent_frame_is_refused_with_value_error_and_never_panics():
     stage = RustStage(RAD, PRODUCTION_KERNELS, HeldAtFrw(), Layout(20, 4))
     X, X_xi = SinhStretch(6.0, scale=2.0).radii(0.3, 20)
@@ -1139,5 +1182,8 @@ def test_what_the_extension_returns_has_the_types_its_stubs_declare(monkeypatch:
     d = result.derived
     fields = (geo.Xm[cells], geo.X[faces], d.ephi[cells], d.rho[cells], case.state.U[faces], d.Gammabar2[faces])
     assert stub_value_matches(rust_engine.near_zone(*fields, [1.0, 2.0]), ast.unparse(annotation), classes)
+    annotation = returns.pop("radii_admissible")
+    assert annotation is not None
+    assert stub_value_matches(pbh_engine.radii_admissible(np.arange(4.0)), ast.unparse(annotation), classes)
     assert not returns  # every function is covered
     assert {out.kernels is None for out in captured} == {True, False}

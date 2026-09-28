@@ -116,10 +116,15 @@ class RustStage:
     def stage_frame(self, X: FloatArray, X_xi: FloatArray, hubble: float) -> StageFrame:
         """The Rust frame alone from the map at the `N + 2` faces, the radii checked as `Geometry.of` checks them.
 
+        The check is made in Rust (`radii_admissible`, the same two tests in one pass); only radii it refuses go to
+        `check_radii`, which raises with `Geometry.of`'s message, so that the message is written in one place.
+
         Raises:
             ValueError: As `Geometry.of` raises it, with the same message.
         """
-        check_radii(X)
+        if not pbh_engine.radii_admissible(X):
+            check_radii(X)
+            raise AssertionError("the engines disagree on whether the radii are a map's")
         return StageFrame(self._settings, j_e=self._layout.j_e, X=X, X_xi=X_xi, hubble=hubble)
 
     def frame(

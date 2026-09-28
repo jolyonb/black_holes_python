@@ -879,6 +879,13 @@ fn near_zone(
     ))
 }
 
+/// Whether the radii are a map's (`geometry.check_radii`, which the Python calls to raise when they are not).
+#[pyfunction]
+#[pyo3(signature = (X))]
+fn radii_admissible(X: PyReadonlyArray1<'_, f64>) -> bool {
+    geometry::radii_admissible(&view(&X))
+}
+
 /// The horizon finder's numbers on one slice (`pbh.horizon.Trapping`), read by the Python through the getters.
 #[pyclass(frozen, module = "pbh_engine")]
 pub struct TrappingOutput {
@@ -968,6 +975,7 @@ fn pbh_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(blend_radii, m)?)?;
     m.add_function(wrap_pyfunction!(emptying_rates, m)?)?;
     m.add_function(wrap_pyfunction!(near_zone, m)?)?;
+    m.add_function(wrap_pyfunction!(radii_admissible, m)?)?;
     m.add_function(wrap_pyfunction!(trapping, m)?)?;
     Ok(())
 }

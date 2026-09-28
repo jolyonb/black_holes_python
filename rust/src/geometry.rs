@@ -5,6 +5,12 @@
 //! arrays have `N + 1` entries indexed by `j`, cell arrays `N` entries indexed by `c`, and `sbar` has the virtual outer
 //! cell appended as entry `N`.
 
+/// Whether the radii are a map's (`pbh.geometry.check_radii`): `X_0 = 0` exactly and every difference `X_(j+1) - X_j`
+/// positive, formed as numpy forms `np.diff(X) > 0` (a NaN or an infinity fails, as there).
+pub fn radii_admissible(X: &[f64]) -> bool {
+    !X.is_empty() && X[0] == 0.0 && X.windows(2).all(|pair| pair[1] - pair[0] > 0.0)
+}
+
 /// The map at the faces and the cell geometry built from it (`pbh.geometry.Geometry`).
 pub struct Geometry {
     /// The scaled areal radius `X_j` of each face (faces); `X_0 = 0`.

@@ -414,6 +414,9 @@ def near_zone(
         ValueError: If the cell and face arrays do not match.
     """
 
+def radii_admissible(X: FloatArray) -> bool:
+    """Whether the radii are a map's (`geometry.check_radii`): `X_0 = 0` and every `X_(j+1) - X_j > 0`."""
+
 @final
 class TrappingOutput:
     """The horizon finder's numbers on one slice (`pbh.horizon.Trapping`)."""
