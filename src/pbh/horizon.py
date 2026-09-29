@@ -42,6 +42,11 @@ horizon is chosen over a radius further in because the excision face follows it 
 no radius inside that can be read. The radius `R = k M_AH`, in units of `R_H`, is the label radius
 `X = k M_AH e^(-alpha xi)`; the cell fields are interpolated linearly between cell midpoints, the ratio between faces,
 and a radius off the retained grid gives NaN.
+
+Once excised, the table carries the face's monitors and the fold monitor's evaluation (`FaceValues`, `FoldValues`),
+which `excision.py` forms: between the face and `2 M_AH`, the fronts detected, the largest density jump, and for the
+worst front (or, with none, the largest jump) its compression, the pre-shock state, its Taub velocity, the threshold of
+the boost law and their ratio.
 """
 
 import dataclasses
@@ -288,6 +293,18 @@ class HorizonRow:
     F_e: float
     R_e_over_M_AH: float
     physical_margin: float
+    # the fold monitor (Section 8.3, `FoldValues`), NaN, 0 or -1 while unexcised
+    fold_X_zone: float
+    fold_fronts: int
+    fold_jump: float
+    fold_cell: int
+    fold_X: float
+    fold_compression: float
+    fold_U1: float
+    fold_Gammabar1: float
+    fold_v12: float
+    fold_threshold: float
+    fold_ratio: float
     # the near zone and the lapse (Section 8.5)
     lapse_AH: float
     v_AH: float
@@ -312,6 +329,7 @@ class HorizonRow:
         a = report.apparent
         ratio = a.x / zone_inner_edge if a is not None and zone_inner_edge is not None else float("nan")
         f = face if face is not None else UNEXCISED
+        fold = f.fold
         return cls(
             step=step,
             xi=xi,
@@ -340,6 +358,17 @@ class HorizonRow:
             F_e=f.F_e,
             R_e_over_M_AH=f.R_e_over_M_AH,
             physical_margin=f.physical_margin,
+            fold_X_zone=fold.X_zone,
+            fold_fronts=fold.fronts,
+            fold_jump=fold.jump,
+            fold_cell=fold.cell,
+            fold_X=fold.X,
+            fold_compression=fold.compression,
+            fold_U1=fold.U1,
+            fold_Gammabar1=fold.Gammabar1,
+            fold_v12=fold.v12,
+            fold_threshold=fold.threshold,
+            fold_ratio=fold.ratio,
             **{f.name: getattr(near, f.name) for f in dataclasses.fields(near)},  # floats: no deep copy
         )
 
@@ -455,9 +484,52 @@ def interpolate(x: float, xp: FloatArray, fp: FloatArray) -> float:
     return linear(x, xp, j, inside, (float(fp[j]), float(fp[j + 1]) if inside else math.nan))
 
 
+NAN = float("nan")
+
+
+@dataclass(frozen=True)
+class FoldValues:
+    """The fold monitor of one excised slice (Section 8.3, `excision.fold_monitor`), the `fold_` columns of the row.
+
+    The front reported is the detected front of largest `ratio`, the one an abort names; with none detected, the
+    cell of the largest jump, measured as if it were one, so that every row says how near the slice came.
+
+    Attributes:
+        X_zone: The label radius of `R = 2 M_AH`, the zone's outer end.
+        fronts: The fronts detected in the zone: runs of adjacent cells whose jump exceeds the detection level.
+        jump: The largest jump `rho_(c-1) / rho_(c+1)` across a cell `c` of the zone, the denser side inside; NaN if
+            the zone has no such cell.
+        cell: The cell of the reported front's largest jump, `-1` if the zone has none; `X` its midpoint label radius.
+        compression: The front's compression `rho_2 / rho_1`, measured across it.
+        U1: `Utilde_1`, the velocity at the pre-shock face, and `Gammabar1` there.
+        v12: The relative velocity across the front, from the compression by the Taub relation eq:eul:taubeta.
+        threshold: `Gammabar_1 / |Utilde_1|` of eq:eul:boost, infinite where `Utilde_1 >= 0`.
+        ratio: `v12 / threshold`; a detected front at one or above folds the slice, and the run ends.
+    """
+
+    X_zone: float
+    fronts: int
+    jump: float
+    cell: int
+    X: float
+    compression: float
+    U1: float
+    Gammabar1: float
+    v12: float
+    threshold: float
+    ratio: float
+
+
+NO_FOLD = FoldValues(NAN, 0, NAN, -1, NAN, NAN, NAN, NAN, NAN, NAN, NAN)
+"""The fold columns while unexcised."""
+
+
 @dataclass(frozen=True)
 class FaceValues:
-    """The excision face's monitors as the horizon table stores them; `excision.py` produces them."""
+    """The excision face's monitors as the horizon table stores them, the fold monitor's among them.
+
+    `excision.py` produces them.
+    """
 
     j_e: int
     mu: float
@@ -470,8 +542,8 @@ class FaceValues:
     F_e: float
     R_e_over_M_AH: float
     physical_margin: float
+    fold: FoldValues = NO_FOLD
 
 
-NAN = float("nan")
 UNEXCISED = FaceValues(-1, NAN, NAN, NAN, NAN, (NAN, NAN, NAN), -1, NAN, NAN, NAN, NAN)
 """The face columns while there is no excision face."""

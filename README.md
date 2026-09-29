@@ -51,8 +51,8 @@ The run stops once the mass is read, here at `xi = 7.3`, 3.4 e-folds after forma
 an error bar under one per cent. `pbh summary` recomputes everything from the evolution file (nothing derived is
 stored): the core before any horizon (formed, bounced or undecided; the peak of the physical central density and the
 resolution there), the quoted reading, the long-run reference, when the bar crossed 5, 1 and 0.3 per cent, a fit of the
-accretion law, and the enclosed-mass cross-check on spheres of fixed physical radius. `--export FILE.json` writes it
-with its series.
+accretion law, the enclosed-mass cross-check on spheres of fixed physical radius, and the fold monitor's nearest approach
+after excision. `--export FILE.json` writes it with its series.
 
 `pbh restart SOURCE NAME [--snapshot K] [--config OTHER.yaml]` starts a new run from any snapshot of another, with its
 configuration or a different one: every snapshot is a restart point, and a restart carries the read-out's history.
@@ -97,7 +97,7 @@ HDF5, in single-writer multiple-reader mode, with four tables that share nothing
 | `steps` | one per step | `xi`, `dxi`, what limited the step, refused attempts, and the monitors (conservation, the outer boundary, stability, positivity, resolution) |
 | `events` | one per event | a kind and a JSON payload: `formation`, `switch_on`, `re_excision`, `readout`, `bounce`, `rejection`, `abort`, `end`, ... |
 | `snapshots` | one per output time | the integrator's variables only (deviations from FRW), from which every derived field is recomputed |
-| `horizon` | one per step | the finder's report: `M_AH`, `X_AH`, the trapping margins, the excision face, the near-zone monitors |
+| `horizon` | one per step | the finder's report: `M_AH`, `X_AH`, the trapping margins, the excision face, the fold monitor, the near-zone monitors |
 
 ```python
 from pathlib import Path
@@ -118,7 +118,8 @@ alongside the paper (`PRODUCTION_OUTPUT_SPEC.md`).
 A run ends in one of three ways, each recorded as the `end` event: completed (at `xi_end`, when the mass was read,
 or when the core bounced); aborted, with a named cause (a cell below `5e-13` of the background, where the fluid-orthogonal slicing and
 the arithmetic both end; a chart failure, named by case; a switch-on transition that cannot fit, naming the
-radius it needs); or interrupted, by an exception (Ctrl-C included), after a final flush.
+radius it needs; an excision face that is no longer an outflow boundary, or its three faces no longer trapped; the fold
+monitor, a shock behind which the slice folds, naming the cure, to excise further out); or interrupted, by an exception (Ctrl-C included), after a final flush.
 
 ## The code
 

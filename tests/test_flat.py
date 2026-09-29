@@ -4,7 +4,8 @@ With the background coefficient `h = 0` the reference is the fluid at rest, the 
 hydrodynamics of `P = w rho` in spherical symmetry, and the geometry, the origin and the kernels are the production
 ones. The checks: the fluid at rest is an exact fixed point; the stage is the printed stage with the flat terms struck
 (`whole_state.py`); energy is conserved exactly inside a rigid wall; the linear standing wave in a rigid sphere, an
-exact Bessel mode, converges at second order through the origin; and the closures and layouts that need gravity refuse.
+exact Bessel mode, converges at second order through the origin; the closures and layouts that need gravity refuse;
+and a captured front is what the fold monitor of Section 8.3 detects and measures.
 """
 
 import math
@@ -16,6 +17,7 @@ from whole_state import whole_state_rate
 
 from pbh.eos import RADIATION, Background, EquationOfState, Spacetime
 from pbh.equations import calc_derivs
+from pbh.excision import ExcisionError, check_fold, fold_numbers, taub_velocity
 from pbh.geometry import Geometry
 from pbh.kernels import CENTRED_SCHEME, PRODUCTION_KERNELS, KernelSettings
 from pbh.layout import Layout
@@ -234,3 +236,41 @@ def test_a_diverging_shock_is_captured_in_three_cells_and_keeps_its_books():
     assert abs(np.sum(final.E) / np.sum(E0) - 1.0) <= 1e-14
     assert np.all(final.U[-200:] == 0.0)
     assert np.max(np.abs(rho[-200:] - 1.0)) <= 1e-15
+
+
+def test_the_fold_monitor_detects_a_captured_front_and_measures_its_compression():
+    # Rest data 40 | 1 across R0 = 6.25, to xi = 2: the outgoing front, captured by the production kernels over three
+    # to four cells, has a compression near 5.8, where the largest face jump of the limited reconstruction is only 1.2,
+    # below the detection level. The monitor detects it by the jump across a cell and measures it across its cells to
+    # the plateaux. Flat spacetime has no trapped region, so the pre-shock velocity and Gammabar are prescribed, to put
+    # the threshold either side of the Taub velocity of the front's compression.
+    N, R0 = 400, 6.25
+    sch = flat_scheme(IdentityMap(20.0), N, PRODUCTION_KERNELS)
+    geo = sch.frame(0.0).geo
+    rho0 = np.where(geo.Xm < R0, 40.0, 1.0)
+    final, halvings = evolve_flat(sch, State(E=rho0 * geo.dV, U=np.zeros(N + 1), W=0.0), 2.0)
+    assert halvings == 0
+    rho = final.E / geo.dV
+    j0 = int(np.searchsorted(geo.Xm, R0))
+    front = j0 + int(np.argmin(np.diff(rho[j0:])))  # the steepest fall outside R0: the rarefaction runs inward
+    kernels = sch.evaluate(2.0, sch.layout.pack(final)).kernels
+    assert kernels is not None
+    assert np.max(kernels.rho_L[front - 5 : front + 6] / kernels.rho_R[front - 5 : front + 6]) < 1.25
+    compression = float(np.max(rho[front - 10 : front]) / rho[front + 10])  # behind the front over ahead of it
+    assert 5.5 < compression < 6.0
+    v12 = taub_velocity(compression, EOS.w_float)
+    layout, X_zone = Layout(N, j_e=front - 10), float(geo.X[front + 10])  # a zone around the front only
+    U = np.full(N + 1, -1.0)
+    for margin, folds in ((1.05, False), (0.95, True)):
+        Gammabar2 = np.full(N + 1, (margin * v12) ** 2)  # the threshold Gammabar_1 / |U_1| = margin v12
+        fold = fold_numbers(rho, U, Gammabar2, geo, layout, X_zone, EOS.w_float)
+        assert (fold.fronts, fold.X_zone) == (1, X_zone)
+        assert abs(fold.cell - front) <= 1
+        assert fold.jump > 3.0
+        assert fold.compression == pytest.approx(compression, rel=2e-3)
+        assert fold.threshold == pytest.approx(margin * v12, rel=1e-15)
+        if folds:
+            with pytest.raises(ExcisionError, match=r"the slice folds behind a shock of compression 5\.7"):
+                check_fold(fold)
+        else:
+            check_fold(fold)

@@ -8,6 +8,10 @@ First, for every run, the core before any horizon (`collapse.py`): the outcome (
 the run ended before either), the peak of the physical central density and when, the smallest core margin, and the
 resolution of the core at the peak, from the step row nearest it that carries the second-tier monitors.
 
+Then, for a run that excised, the fold monitor of Section 8.3 over its excised steps: the largest density jump the
+monitor saw between the excision face and `2 M_AH`, the steps on which it detected a front, and the nearest approach
+to a fold, the largest `v_12 / threshold`, with when, where, and whether it was a detected front.
+
 Then, for each epoch of the run (the stretch after a formation, or after a larger trapped region engulfed the hole):
 
 * the read-out series of `readout.py`, and the reading the run quoted if it quoted one;
@@ -284,11 +288,38 @@ class CoreSummary:
 
 
 @dataclass(frozen=True)
+class FoldSummary:
+    """The fold monitor over the excised steps (Section 8.3), from the horizon table's `fold_` columns.
+
+    Attributes:
+        steps: The excised steps, each an evaluation.
+        jump_max: The largest density jump across a cell in the monitor's zone.
+        steps_with_front: The steps on which a front was detected.
+        ratio_max: The largest `v_12 / threshold`, detected front or not (a run ends at one on a detected front); NaN if
+            no step measured one. `ratio_xi`, `ratio_cell` and `ratio_compression` where and when, and `ratio_detected`
+            whether it was a detected front.
+    """
+
+    steps: int
+    jump_max: float
+    steps_with_front: int
+    ratio_max: float
+    ratio_xi: float
+    ratio_cell: int
+    ratio_compression: float
+    ratio_detected: bool
+
+
+@dataclass(frozen=True)
 class RunSummary:
-    """The whole run: the core before formation (`None` if no step preceded it) and every epoch after."""
+    """The whole run: the core before formation, every epoch after, and the fold monitor.
+
+    `core` is `None` if no step preceded formation, `fold` if the run never excised.
+    """
 
     core: CoreSummary | None
     epochs: list[EpochSummary]
+    fold: FoldSummary | None = None
 
 
 def core_summary(reader: RunReader) -> CoreSummary | None:
@@ -319,9 +350,32 @@ def core_summary(reader: RunReader) -> CoreSummary | None:
     return CoreSummary(outcome, history, resolution)
 
 
+def fold_summary(reader: RunReader) -> FoldSummary | None:
+    """The fold monitor over the excised steps of the horizon table; `None` if the run never excised."""
+    h = reader.horizon
+    excised = np.asarray(h["j_e"], dtype=np.int64) >= 0
+    if not np.any(excised):
+        return None
+    ratio = np.asarray(h["fold_ratio"], dtype=float)[excised]
+    fronts = np.asarray(h["fold_fronts"], dtype=np.int64)[excised]
+    jump = np.asarray(h["fold_jump"], dtype=float)[excised]
+    k = int(np.argmax(np.where(np.isfinite(ratio), ratio, -np.inf)))  # the first row if none measured: NaN there
+    finite = jump[np.isfinite(jump)]  # NaN where the zone had no cell
+    return FoldSummary(
+        steps=int(np.sum(excised)),
+        jump_max=float(finite.max()) if finite.size else math.nan,
+        steps_with_front=int(np.sum(fronts > 0)),
+        ratio_max=float(ratio[k]),
+        ratio_xi=float(np.asarray(h["xi"], dtype=float)[excised][k]),
+        ratio_cell=int(np.asarray(h["fold_cell"], dtype=np.int64)[excised][k]),
+        ratio_compression=float(np.asarray(h["fold_compression"], dtype=float)[excised][k]),
+        ratio_detected=bool(fronts[k] > 0),
+    )
+
+
 def summarise(reader: RunReader) -> RunSummary:
-    """The core before formation and every epoch of the run, summarised."""
-    return RunSummary(core_summary(reader), epoch_summaries(reader))
+    """The core before formation, every epoch of the run and the fold monitor, summarised."""
+    return RunSummary(core_summary(reader), epoch_summaries(reader), fold_summary(reader))
 
 
 def epoch_summaries(reader: RunReader) -> list[EpochSummary]:
@@ -365,7 +419,8 @@ def as_json(summary: RunSummary) -> dict[str, Any]:
                 "series": series,
             }
         )
-    return {"core": core_json, "epochs": result}
+    fold = None if summary.fold is None else summary.fold.__dict__
+    return {"core": core_json, "epochs": result, "fold": fold}
 
 
 def reference_json(ref: Reference) -> dict[str, Any]:
@@ -396,9 +451,24 @@ def describe_core(core: CoreSummary | None) -> list[str]:
     return lines
 
 
+def describe_fold(fold: FoldSummary | None) -> list[str]:
+    """A readable account of the fold monitor; nothing if the run never excised."""
+    if fold is None:
+        return []
+    nearest = (
+        f"nearest approach v_12/threshold = {fold.ratio_max:.3g} at xi = {fold.ratio_xi:.4f}, cell {fold.ratio_cell}, "
+        f"compression {fold.ratio_compression:.3g} ({'a detected front' if fold.ratio_detected else 'no front'})"
+    )
+    return [
+        f"fold monitor: {fold.steps} excised steps, largest jump {fold.jump_max:.3g}, "
+        f"a front detected on {fold.steps_with_front}",
+        f"  {nearest}",
+    ]
+
+
 def describe(summary: RunSummary) -> str:
     """A readable account of the summary."""
-    lines = describe_core(summary.core)
+    lines = [*describe_core(summary.core), *describe_fold(summary.fold)]
     if not summary.epochs:
         return "\n".join([*lines, "no horizon formed"])
     for n, s in enumerate(summary.epochs):

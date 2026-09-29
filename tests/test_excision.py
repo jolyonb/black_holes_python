@@ -3,6 +3,7 @@ assertions, re-excision, and the packing of an excised deviation."""
 
 import dataclasses
 import math
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
@@ -15,28 +16,45 @@ from pbh.derived import derive
 from pbh.driver import READOUT_CHECK, RunPaths, run
 from pbh.eos import RADIATION, Background, EquationOfState
 from pbh.excision import (
+    FOLD_DETECTION,
     OUTER_STATIC_LABEL,
     ExcisionError,
     SwitchAttempt,
     attempt_switch_on,
     check_face,
+    check_fold,
     excise,
+    fold_monitor,
+    fold_numbers,
     label_of,
     outflow_margin,
     packed_deviation,
     place_transition,
     re_excision_face,
+    taub_velocity,
     zone_needs_extension,
 )
 from pbh.geometry import Geometry
-from pbh.horizon import UNEXCISED, FaceValues, Horizon, HorizonReport, HorizonRow, find_horizons, near_zone
+from pbh.horizon import (
+    NO_FOLD,
+    UNEXCISED,
+    FaceValues,
+    FoldValues,
+    Horizon,
+    HorizonReport,
+    HorizonRow,
+    find_horizons,
+    near_zone,
+)
 from pbh.kernels import PRODUCTION_KERNELS
 from pbh.layout import Layout
 from pbh.maps import BlendMap, IdentityMap, SinhStretch, Zone
+from pbh.michel import michel_flow
 from pbh.output import RunReader
 from pbh.records import read_initial
 from pbh.state import frw_state
 from pbh.stencils import StencilWeights
+from pbh.summary import as_json, describe, summarise
 from pbh.timestep import Scheme
 
 THETA = PRODUCTION_KERNELS.theta  # the theta-limiter fraction, which fixes the outer face density
@@ -251,10 +269,28 @@ def test_the_face_assertions_pass_inside_the_trapped_region_and_fail_outside_it(
     assert face.F_e == float(result.F[attempt.j_e])
     assert 0.0 < face.R_e_over_M_AH < 2.0  # inside the horizon, whose radius is 2 M_AH
     assert face.physical_margin > 0.0
+    # no shock inside the horizon on the smooth collapse: the fold monitor measures its largest jump, the infall across
+    # the few cells to the horizon at N = 200, just short of the detection level and less than half way to a fold
+    fold = face.fold
+    assert fold == fold_monitor(excised, d_e, geo, RAD, excised_layout, report_e.M_AH, record.xi)
+    assert fold.X_zone == pytest.approx(2.0 * report_e.M_AH * math.exp(-RAD.alpha_float * record.xi), rel=1e-15)
+    assert fold.fronts == 0
+    assert 1.0 <= fold.jump < FOLD_DETECTION
+    assert attempt.j_e < fold.cell
+    assert fold.X < fold.X_zone
+    assert 1.0 <= fold.compression < 2.5
+    assert fold.U1 < 0.0 < fold.Gammabar1
+    assert 0.0 < fold.ratio < 0.5
     near = near_zone(excised, d_e, geo, report_e, RAD, excised_layout, record.xi)
     row = HorizonRow.of(5, record.xi, report_e, None, near, face)
     assert (row.j_e, row.mu, row.h_e2) == (face.j_e, face.mu, face.h[2])
-    assert HorizonRow.of(5, record.xi, report_e, None, near).j_e == UNEXCISED.j_e == -1
+    assert (row.fold_fronts, row.fold_jump, row.fold_cell, row.fold_ratio) == (0, fold.jump, fold.cell, fold.ratio)
+    assert (row.fold_X_zone, row.fold_X, row.fold_U1) == (fold.X_zone, fold.X, fold.U1)
+    assert (row.fold_Gammabar1, row.fold_compression, row.fold_v12) == (fold.Gammabar1, fold.compression, fold.v12)
+    unexcised = HorizonRow.of(5, record.xi, report_e, None, near)
+    assert unexcised.j_e == UNEXCISED.j_e == -1
+    assert (unexcised.fold_fronts, unexcised.fold_cell) == (NO_FOLD.fronts, NO_FOLD.cell) == (0, -1)
+    assert math.isnan(unexcised.fold_jump)
     # a face outside the trapped region fails the trapped-stencil assertion ...
     outside, outside_layout = excise(state, layout, attempt.j_star + 3)
     sch_out = Scheme(RAD, config.grid.build(), outside_layout, config.outer.build(), config.shocks.build())
@@ -282,6 +318,151 @@ def test_an_excised_frw_face_fails_the_margin_assertion():
     report = find_horizons(state, result.derived, geo, bg, RAD, sch.map, layout, 0.5)
     with pytest.raises(ExcisionError, match="mu > 0"):
         check_face(report, state, result.derived, result.speeds, 0.0, geo, bg, RAD, layout, 0.5)
+
+
+# --- the fold monitor (Section 8.3) ---
+
+
+def test_the_taub_velocity_is_the_relation_the_paper_prints_at_every_w():
+    # exactly: v_12^2 = s^2 / (1 + s^2), s^2 = w (r - 1)^2 / ((1 + w)^2 r), in Fractions
+    for w, r in ((Fraction(1, 3), Fraction(4)), (Fraction(1, 3), Fraction(9, 5)), (Fraction(1, 10), Fraction(7, 2))):
+        s2 = w * (r - 1) ** 2 / ((1 + w) ** 2 * r)
+        assert taub_velocity(float(r), float(w)) ** 2 == pytest.approx(float(s2 / (1 + s2)), rel=1e-15)
+    assert taub_velocity(4.0, 1.0 / 3.0) ** 2 == pytest.approx(27.0 / 91.0, rel=1e-15)
+    assert taub_velocity(1.8, 1.0 / 3.0) == pytest.approx(0.25, rel=1e-15)
+    assert taub_velocity(1.0, 1.0 / 3.0) == 0.0
+    # against the shock-frame speeds of Section 8.6, v_1 = [w (r + w) / (1 + w r)]^(1/2), v_1 v_2 = w, composed
+    for w in (0.1, 1.0 / 3.0, 0.5, 0.9):  # at w = 1 every front runs at light speed, v_1 = v_2 = 1
+        for r in (1.2, 2.0, 5.5, 40.0):
+            v1 = math.sqrt(w * (r + w) / (1.0 + w * r))
+            v2 = w / v1
+            assert taub_velocity(r, w) == pytest.approx((v1 - v2) / (1.0 - v1 * v2), rel=1e-13)
+
+
+def compression_at(v12: float) -> float:
+    """The radiation compression whose Taub velocity is `v12`, by bisection."""
+    lo, hi = 1.0, 100.0
+    for _ in range(100):
+        mid = 0.5 * (lo + hi)
+        lo, hi = (mid, hi) if taub_velocity(mid, 1.0 / 3.0) < v12 else (lo, mid)
+    return lo
+
+
+def test_the_fold_thresholds_are_the_compressions_the_paper_quotes():
+    # Trapped, on the Michel background: Gammabar/|U| = 1/|v| is 1 at 2M, 0.64 at 1.4M and 0.43 at M, which takes a
+    # compression of about 5.5 at 1.4M and 2.85 at M (Section 6.2); anti-trapped, 1/(HR) at 1.5, 2 and 4 Hubble radii
+    # takes 6.1, 3.5 and 1.8.
+    flow = michel_flow(np.array([2.0, 1.4, 1.0]))
+    threshold = flow.N / np.abs(flow.U)
+    assert threshold == pytest.approx([1.0, 0.64, 0.43], abs=5e-3)
+    assert round(compression_at(float(threshold[1])), 1) == 5.5
+    assert round(compression_at(float(threshold[2])), 2) == 2.85
+    assert [round(compression_at(1.0 / radius), 1) for radius in (1.5, 2.0, 4.0)] == [6.1, 3.5, 1.8]
+
+
+FOLD_N, FOLD_JE = 40, 5
+FOLD_GEO = Geometry.of(*IdentityMap(4.0).radii(0.0, FOLD_N))  # X_j = j / 10
+FOLD_LAYOUT = Layout(FOLD_N, j_e=FOLD_JE)
+
+
+def front(post: float, middle: float | None = None, at: int = 20, outward: bool = True) -> np.ndarray:
+    """Cell densities with a front at face `at`: `post` inside, `1` outside, one intermediate cell if `middle`."""
+    rho = np.full(FOLD_N, np.nan)
+    rho[FOLD_JE:at], rho[at:] = (post, 1.0) if outward else (1.0, post)
+    if middle is not None:
+        rho[at] = middle
+    return rho
+
+
+def fold_of(rho: np.ndarray, Gammabar: float = 0.5, U: float = -1.0, X_zone: float = 3.0) -> FoldValues:
+    """The fold monitor on the cell densities `rho`, with `Gammabar` and `U` uniform."""
+    U_f = np.full(FOLD_N + 1, U)
+    Gammabar2 = np.full(FOLD_N + 1, Gammabar**2)
+    return fold_numbers(rho, U_f, Gammabar2, FOLD_GEO, FOLD_LAYOUT, X_zone, 1.0 / 3.0)
+
+
+def test_a_front_is_detected_by_the_jump_across_a_cell_and_measured_across_its_cells():
+    # a weak front, 1.4 across two cells, is below the detection level: it is measured, but no front is reported
+    weak = fold_of(front(1.4, 1.2))
+    assert (weak.fronts, weak.jump, weak.cell) == (0, pytest.approx(1.4), 20)
+    assert weak.compression == pytest.approx(1.4)
+    assert weak.ratio == weak.v12 / 0.5 < 1.0
+    check_fold(weak)
+    # a front of compression 4 captured over two cells: detected by the jump of 4 across the intermediate cell, one
+    # front of three detected cells 19 .. 21, measured across them, the pre-shock state at the outer face of cell 22
+    strong = fold_of(front(4.0, 2.5))
+    assert (strong.fronts, strong.jump, strong.cell) == (1, 4.0, 20)
+    assert strong.X == FOLD_GEO.Xm[20]
+    assert strong.compression == 4.0
+    assert strong.v12 == taub_velocity(4.0, 1.0 / 3.0)
+    assert (strong.U1, strong.Gammabar1, strong.threshold) == (-1.0, 0.5, 0.5)
+    assert strong.ratio == strong.v12 / 0.5
+    # a sharp front: the jump is the compression
+    sharp = fold_of(front(3.0))
+    assert (sharp.fronts, sharp.jump, sharp.cell, sharp.compression) == (1, 3.0, 19, 3.0)
+    # an inward-facing front (denser outside) cannot fold a trapped slice and is not sought
+    assert fold_of(front(4.0, outward=False)).fronts == 0
+    # a front beyond 2 M_AH is outside the zone; a zone with no cell beyond the excision face has nothing to measure
+    assert fold_of(front(4.0, at=32)).fronts == 0
+    empty = fold_of(front(4.0), X_zone=0.55)
+    assert (empty.X_zone, empty.fronts, empty.cell) == (0.55, 0, -1)
+    assert all(math.isnan(v) for v in (empty.jump, empty.X, empty.compression, empty.threshold, empty.ratio))
+    check_fold(empty)
+    # a front whose pre-shock side expands raises Gammabar: no threshold
+    expanding = fold_of(front(4.0), U=0.3)
+    assert (expanding.threshold, expanding.ratio) == (math.inf, 0.0)
+
+
+def test_the_pre_shock_state_is_read_at_the_first_face_clear_of_the_front():
+    # Gammabar / |U| rising outward, as ahead of an outward-facing shock in a trapped region: the threshold is the one
+    # at the outer face of the first cell outside the detected run, not further out, where it is larger
+    Gammabar2 = (0.02 * np.arange(FOLD_N + 1.0)) ** 2
+    for rho, p in ((front(4.0, 2.5), 23), (front(3.0), 22)):
+        fold = fold_numbers(rho, np.full(FOLD_N + 1, -1.0), Gammabar2, FOLD_GEO, FOLD_LAYOUT, 3.0, 1.0 / 3.0)
+        assert fold.threshold == pytest.approx(0.02 * p, rel=1e-15)
+
+
+def test_the_fold_monitor_aborts_at_and_above_the_threshold_and_not_below_it():
+    # The sharp front of compression 3 has v_12 = 1/sqrt(5); the threshold Gammabar_1/|U_1| is set just either side.
+    v12 = taub_velocity(3.0, 1.0 / 3.0)
+    below = fold_of(front(3.0), Gammabar=v12 * (1.0 + 1e-9))
+    assert below.ratio < 1.0
+    check_fold(below)
+    for Gammabar in (v12 * (1.0 - 1e-9), v12):  # at the threshold itself Gammabar_2 = 0: the fold begins
+        above = fold_of(front(3.0), Gammabar=Gammabar)
+        assert above.ratio >= 1.0
+        with pytest.raises(ExcisionError, match=r"fold monitor.*excise further out") as failure:
+            check_fold(above)
+        assert (failure.value.face, failure.value.value) == (19, above.ratio)
+    # a measured ratio above one without a detected front is not a fold: only a detected front aborts
+    check_fold(dataclasses.replace(below, fronts=0, ratio=2.0))
+    # of two fronts, the one nearer the threshold is reported
+    two = front(4.0, 2.5)
+    two[FOLD_JE:12] = 12.0  # a second front, of compression 3, at face 12, detected in cells 11 and 12
+    U = np.full(FOLD_N + 1, -1.0)
+    U[14] = -10.0  # the inner front's pre-shock face, the outer face of cell 13, is deep in the trapped region
+    fold = fold_numbers(two, U, np.full(FOLD_N + 1, 0.25), FOLD_GEO, FOLD_LAYOUT, 3.0, 1.0 / 3.0)
+    assert (fold.fronts, fold.cell, fold.compression, fold.threshold) == (2, 11, 3.0, 0.05)
+
+
+def test_the_fold_monitor_refuses_values_that_are_not_finite():
+    rho = front(3.0)
+    rho[25] = np.nan
+    with pytest.raises(ExcisionError, match="a density in the zone is not finite"):
+        fold_of(rho)
+    with pytest.raises(ExcisionError, match="the radius 2 M_AH is not finite"):
+        fold_of(front(3.0), X_zone=math.nan)
+
+
+def test_the_fold_monitor_sees_nothing_on_excised_frw():
+    geo = Geometry.of(*IdentityMap(4.0).radii(0.5, 40))
+    layout = Layout(40, j_e=5)
+    state = frw_state(geo, 5)
+    d = derive(state, geo, Background.at(RAD, 0.5), RAD, StencilWeights.of(geo, layout), THETA)
+    fold = fold_monitor(state, d, geo, RAD, layout, 2.0 * math.exp(RAD.alpha_float * 0.5), 0.5)  # 2 M_AH at X = 4
+    assert fold.X_zone == pytest.approx(4.0, rel=1e-15)
+    assert (fold.fronts, fold.jump, fold.compression) == (0, pytest.approx(1.0, abs=1e-14), pytest.approx(1.0))
+    assert fold.ratio == 0.0  # FRW expands: no threshold
 
 
 # --- re-excision and zone extension, on prescribed trapping functions ---
@@ -473,6 +654,20 @@ def test_a_restart_from_an_excised_snapshot_reproduces_the_run_bit_for_bit(excis
     ]
 
 
+def test_an_excised_state_is_refused_by_a_configuration_that_disables_excision(
+    excised: tuple[RunReader, Path, Path], capsys: pytest.CaptureFixture[str]
+):
+    # continuing an excised state without excision would still re-excise and pin zones: refused before anything is run
+    reader, path, directory = excised
+    disabled = directory / "disabled.yaml"
+    disabled.write_text(path.read_text() + "excision: {enabled: false}\n")
+    index = excised_index(reader)
+    args = ["restart", "bh", "refused", "--dir", str(directory), "--snapshot", str(index), "--config", str(disabled)]
+    assert main(args) == 1
+    assert "the initial state is excised" in capsys.readouterr().err
+    assert not RunPaths.of(directory, "refused").evolution.exists()
+
+
 def test_a_restart_from_the_switch_on_snapshot_throws_the_switch_again_with_the_stored_zone(
     excised: tuple[RunReader, Path, Path],
 ):
@@ -623,6 +818,111 @@ def test_a_failed_face_assertion_aborts_the_run_as_a_result(
     assert end.payload["status"] == "aborted"
     abort = next(e for e in resumed.events if e.kind == "abort")
     assert abort.payload == {"field": "the outflow margin mu > 0", "index": 17, "value": -0.1}
+
+
+def test_every_excised_step_records_the_fold_monitor_and_the_summary_reports_it(
+    excised: tuple[RunReader, Path, Path],
+):
+    # Every excised row carries an evaluation, and no unexcised row does. The collapse captures no shock inside the
+    # horizon, but at N = 200 the switch-on leaves only four or five cells between the face and the horizon, and the
+    # smooth infall across them reads above the detection level for a fifth of an e-fold: fronts are detected there,
+    # measured across the gradient, and none comes near a fold. Resolution, not a shock; the ratio decides.
+    reader = excised[0]
+    table = reader.horizon
+    rows = np.asarray(table["j_e"], dtype=np.int64) >= 0
+    xi = np.asarray(table["xi"], dtype=np.float64)
+    fronts = np.asarray(table["fold_fronts"], dtype=np.int64)
+    ratio = np.asarray(table["fold_ratio"], dtype=np.float64)
+    for name in ("fold_X_zone", "fold_jump", "fold_X", "fold_compression", "fold_U1", "fold_Gammabar1", "fold_v12"):
+        column = np.asarray(table[name], dtype=np.float64)
+        assert np.all(np.isnan(column[~rows]))
+        assert np.all(np.isfinite(column[rows]))
+    assert np.all(fronts[~rows] == 0)
+    assert np.all(np.asarray(table["fold_cell"], dtype=np.int64)[rows] > np.asarray(table["j_e"])[rows])
+    detected = rows & (fronts > 0)
+    switch_on = next(e.xi for e in reader.events if e.kind == "switch_on")
+    assert np.sum(detected) > 0
+    assert np.all(xi[detected] < switch_on + 0.2)
+    assert np.all(np.asarray(table["faces_to_horizon"], dtype=np.int64)[detected] <= 5)
+    assert np.all((0.0 <= ratio[rows]) & (ratio[rows] < 0.7))
+    # the summary: the evaluations, the steps with a front, and the nearest approach to a fold
+    fold = summarise(reader).fold
+    assert fold is not None
+    assert (fold.steps, fold.steps_with_front) == (int(np.sum(rows)), int(np.sum(detected)))
+    assert fold.jump_max == float(np.max(np.asarray(table["fold_jump"], dtype=np.float64)[rows]))
+    k = int(np.argmax(np.where(rows, ratio, -np.inf)))
+    assert (fold.ratio_max, fold.ratio_xi, fold.ratio_cell) == (ratio[k], xi[k], int(table["fold_cell"][k]))
+    assert fold.ratio_detected == bool(fronts[k] > 0)
+    text = describe(summarise(reader))
+    assert f"fold monitor: {fold.steps} excised steps" in text
+    assert f"a front detected on {fold.steps_with_front}" in text
+    assert as_json(summarise(reader))["fold"]["steps"] == fold.steps
+
+
+def test_a_fold_aborts_the_run_with_the_row_written_naming_the_fold_and_the_cure(
+    excised: tuple[RunReader, Path, Path], monkeypatch: pytest.MonkeyPatch
+):
+    import pbh.excision as excision_module
+
+    reader, path, directory = excised
+    index = excised_index(reader)
+    folded = FoldValues(
+        X_zone=0.5,
+        fronts=1,
+        jump=2.0,
+        cell=23,
+        X=0.4,
+        compression=6.0,
+        U1=-1.0,
+        Gammabar1=0.6,
+        v12=0.66,
+        threshold=0.6,
+        ratio=1.1,
+    )
+
+    def folding(*args: Any, **kwargs: Any) -> FoldValues:
+        return folded
+
+    monkeypatch.setattr(excision_module, "fold_monitor", folding)
+    resumed = restart_short(directory, path, "folded", index, reader.snapshot(index).xi + 0.05)
+    end = resumed.end
+    assert end is not None
+    assert end.payload["status"] == "aborted"
+    assert "the slice folds behind a shock of compression 6" in end.payload["reason"]
+    assert "excise further out" in end.payload["reason"]
+    abort = next(e for e in resumed.events if e.kind == "abort")
+    field = "the fold monitor v_12 < Gammabar_1/|Utilde_1|"
+    assert abort.payload == {"field": field, "index": 23, "value": 1.1, "fold": dataclasses.asdict(folded)}
+    # the evaluation that ended the run is the last row of the horizon table, at the abort's step
+    table = resumed.horizon
+    assert (int(table["step"][-1]), float(table["xi"][-1])) == (abort.step, abort.xi)
+    assert (int(table["fold_cell"][-1]), float(table["fold_ratio"][-1])) == (23, 1.1)
+
+
+def test_an_excised_step_without_a_trapped_face_ends_the_run_at_the_face_assertion(
+    excised: tuple[RunReader, Path, Path], monkeypatch: pytest.MonkeyPatch
+):
+    # A finder that reports no trapped face once excised: the step is not waved through as an unexcised one, but goes
+    # to the face assertions, which fail at the face, no longer trapped.
+    import pbh.driver as driver_module
+
+    reader, path, directory = excised
+    real = driver_module.find_horizons
+
+    def untrapped(*args: Any, **kwargs: Any) -> HorizonReport:
+        report = real(*args, **kwargs)
+        h = np.where(np.isnan(report.h), np.nan, np.abs(report.h) + 1.0)
+        return dataclasses.replace(report, h=h, trapped_faces=0, horizons=(), apparent=None, M_AH=math.nan)
+
+    monkeypatch.setattr(driver_module, "find_horizons", untrapped)
+    index = excised_index(reader)
+    resumed = restart_short(directory, path, "untrapped", index, reader.snapshot(index).xi + 0.05)
+    end = resumed.end
+    assert end is not None
+    assert end.payload["status"] == "aborted"
+    abort = next(e for e in resumed.events if e.kind == "abort")
+    assert abort.payload["field"] == "the faces j_e .. j_e + 2 trapped"
+    assert abort.payload["index"] == reader.snapshot(index).j_e
 
 
 # --- the mass read out of the excised collapse (Section 8.5) ---

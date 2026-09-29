@@ -12,9 +12,10 @@ sits on the grid that gives, saves the configuration with its provenance, and th
 3. record the step's monitors, the full row when the step ends on a snapshot or the configuration asks for it every
    step;
 4. examine the state arrived at: run the horizon finder, record formation at the first trapped face, and, with
-   excision enabled, throw the switch when its four tests pass, assert the face every excised step, move the face
-   outward by re-excision, and pin a further zone when the horizon approaches the transition; record the horizon
-   row, write the snapshot when due, flush the step record on its cadence;
+   excision enabled, throw the switch when its four tests pass, assert the face and form the fold monitor every
+   excised step, move the face outward by re-excision, and pin a further zone when the horizon approaches the
+   transition; record the horizon row, then assert the fold monitor on it, write the snapshot when due, flush the
+   step record on its cadence;
 5. read the mass (Section 8.5, `readout.py`): the apparent-horizon mass of every step is collected by epoch, a new
    one beginning when a trapped region appears outside the apparent horizon (an `epoch` event), and every
    `READOUT_CHECK` in `xi` from the floor on the read-out is tried on the epoch's series; the first reading with its
@@ -57,6 +58,7 @@ from pbh.excision import (
     SwitchAttempt,
     attempt_switch_on,
     check_face,
+    check_fold,
     excise,
     packed_deviation,
     re_excision_face,
@@ -129,14 +131,18 @@ class RunResult:
 
 
 class AbortError(Exception):
-    """Raised inside the loop to end the run as a result; the driver records it and returns."""
+    """Raised inside the loop to end the run as a result; the driver records it and returns.
 
-    def __init__(self, field: str, index: int, value: float, reason: str) -> None:
+    `detail` joins the `abort` event's payload: for the fold monitor, the evaluation that failed (`FoldValues`).
+    """
+
+    def __init__(self, field: str, index: int, value: float, reason: str, detail: dict[str, Any] | None = None) -> None:
         super().__init__(reason)
         self.field = field
         self.index = index
         self.value = value
         self.reason = reason
+        self.detail = detail if detail is not None else {}
 
 
 #: A retained cell whose density falls below this fraction of the background ends the run (owner, 2026-09-23). In
@@ -338,7 +344,11 @@ class Run:
     # --- the horizon row and the mass ---
 
     def record_horizon(self, report: HorizonReport, result: DerivsResult, face: FaceValues | None) -> HorizonRow:
-        """Write the step's horizon row, with the near-zone monitors, and add its apparent horizon to the epoch."""
+        """Write the step's horizon row, with the near-zone monitors, and add its apparent horizon to the epoch.
+
+        Then, once excised, assert the fold monitor: a violation ends the run with the row written, and its evaluation
+        is the `abort` event's payload too (output specification, Section 7).
+        """
         frame = self.sch.frame(self.xi)
         state, eos = self.state(), self.sch.eos
         near = near_zone(state, result.derived, frame.geo, report, eos, self.layout, self.xi, self.sch.engine)
@@ -353,6 +363,12 @@ class Run:
             if self.epoch is None:
                 self.epoch = Epoch(xi_start=self.xi_form if self.xi_form is not None else self.xi)
             self.epoch.add(self.xi, report.M_AH, a.X)
+        if face is not None:
+            try:
+                check_fold(face.fold)
+            except ExcisionError as failure:
+                detail = {"fold": dataclasses.asdict(face.fold)}
+                raise AbortError(failure.check, failure.face, failure.value, str(failure), detail) from failure
         return row
 
     def watch_core(self, rho_0: float, row: HorizonRow) -> bool:
@@ -447,11 +463,11 @@ class Run:
             a = report.apparent
             assert a is not None  # a trapped face has an outer boundary once face N is untrapped
             self.event("formation", {"j_star": a.j, "x_AH": a.x, "X_AH": a.X, "M_AH": report.M_AH})
+        if self.layout.excised:  # with or without a trapped face: without one, the face assertion ends the run
+            return self.excised_step(state, result, report)
         if not self.config.excision.enabled or report.trapped_faces == 0:
             return result, report, None
-        if not self.layout.excised:
-            return self.consider_switch_on(state, result, report)
-        return self.excised_step(state, result, report)
+        return self.consider_switch_on(state, result, report)
 
     def consider_switch_on(self, state: State, result: DerivsResult, report: HorizonReport) -> Examination:
         """Unexcised with a trapped face: attempt the switch, and throw it if the four tests pass."""
@@ -525,7 +541,10 @@ class Run:
         return result, report, self.assert_face(state, result, report)
 
     def assert_face(self, state: State, result: DerivsResult, report: HorizonReport) -> FaceValues:
-        """The two assertions of every excised step, an abort if either fails."""
+        """The two assertions of every excised step, an abort if either fails.
+
+        The fold monitor is formed with them and asserted once the row is written (`record_horizon`).
+        """
         frame = self.sch.frame(self.xi)
         try:
             return check_face(
@@ -596,6 +615,11 @@ def run(
     `history` is the epoch the initial state is in, with its series of `M_AH`, and `core` the core's watch
     (`core_watch`), when it continues another run. `engine` evaluates the stages, and is recorded in both files.
     """
+    if initial.j_e > 0 and not config.excision.enabled:
+        raise ValueError(
+            f"the initial state is excised (j_e = {initial.j_e}) but the configuration disables excision: an excised "
+            "state can only continue with excision on (excision.enabled: true)"
+        )
     layout = Layout(config.grid.N, j_e=initial.j_e)
     sch = config.scheme(run_map(config, initial.zones), layout, engine)
     xi = initial.xi
@@ -716,7 +740,7 @@ def run(
             abort = step_abort(failure, r.evaluate(), r.state(), r.sch.frame(r.xi), refused_switch_on)
         except AbortError as failure:
             abort = failure
-        r.event("abort", {"field": abort.field, "index": abort.index, "value": abort.value})
+        r.event("abort", {"field": abort.field, "index": abort.index, "value": abort.value, **abort.detail})
         r.snapshot()  # the last good state
         out.close(r.step, r.xi, "aborted", reason=abort.reason)
         return RunResult(status="aborted", steps=r.step, xi=r.xi, paths=paths)

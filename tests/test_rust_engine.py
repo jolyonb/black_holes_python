@@ -63,6 +63,7 @@ from pbh.derived import NotHyperbolicError
 from pbh.driver import RunPaths
 from pbh.eos import RADIATION, EquationOfState, Spacetime
 from pbh.equations import DerivsResult
+from pbh.excision import fold_monitor
 from pbh.geometry import check_radii
 from pbh.horizon import Trapping, find_horizons, near_zone, near_zone_numbers, trapping
 from pbh.kernels import CENTRED_SCHEME, PRODUCTION_KERNELS, DensityLimiter, KernelSettings, ViscousFlux
@@ -1001,6 +1002,27 @@ def test_the_near_zone_row_is_the_same_on_both_engines():
             assert np.array_equal(astuple(a), astuple(b), equal_nan=True), f"{family} {seed}"
             rows += report.apparent is not None
     assert rows > 0  # rows with a horizon were compared
+
+
+def test_the_fold_monitor_reads_the_same_numbers_on_both_engines():
+    # The monitor is Python on both engines, reading each engine's stage: the cell density and `Gammabar^2` are formed
+    # alike to the bit, so the monitor is too. The zone is the whole grid, to reach the fronts.
+    detected = 0
+    for family in ("excised", "shock", "pinned"):
+        for seed in SEEDS:
+            case = violent_case(family, seed)
+            pair = case_pair(case, PRODUCTION_KERNELS)
+            y = pair.numpy.layout.pack(case.state)
+            try:
+                a, b = (sch.evaluate(case.xi, y) for sch in (pair.numpy, pair.rust))
+            except NotHyperbolicError, ValueError:
+                continue
+            geo = pair.numpy.frame(case.xi).geo
+            M_AH = 0.5 * float(geo.X[-1]) * math.exp(case.eos.alpha_float * case.xi)  # 2 M_AH beyond the outer face
+            folds = [fold_monitor(case.state, r.derived, geo, case.eos, case.layout, M_AH, case.xi) for r in (a, b)]
+            assert np.array_equal(astuple(folds[0]), astuple(folds[1]), equal_nan=True), f"{family} {seed}"
+            detected += folds[0].fronts > 0
+    assert detected > 0  # fronts were detected and measured on both
 
 
 def test_the_rust_radius_check_is_check_radii():

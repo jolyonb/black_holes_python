@@ -28,6 +28,13 @@ mass inside is reset to the cumulative sum at the new face, non-decreasing by co
 the face to a horizon that appears further out, whatever lies between (the multi-scale decision): causality
 depends only on the face.
 
+Every excised step also runs the fold monitor (Section 8.3): a front captured between the face and `2 M_AH`, a density
+jump above `1.5` across a cell, is held against the threshold `Gammabar_1 / |Utilde_1|` of the boost law eq:eul:boost
+ahead of it, with the relative velocity from the front's compression by the Taub relation eq:eul:taubeta. Above it the
+slice folds behind the front, the areal radius decreasing outward: the run has left the formulation, and it ends, the
+cure being to excise further out. Every completed evaluation is in the horizon table, the aborting one included,
+which the driver writes before it ends the run.
+
 A switch-on is repeatable. A second one is triggered when the horizon approaches its zone's transition through
 accretion, or jumps past it to a new trapped region, and pins a further zone outside the existing ones; the
 four tests apply again, and the new zone must not overlap the old.
@@ -43,7 +50,7 @@ from pbh.derived import Derived
 from pbh.eos import Background, EquationOfState
 from pbh.equations import Speeds
 from pbh.geometry import Geometry
-from pbh.horizon import FaceValues, HorizonReport
+from pbh.horizon import FaceValues, FoldValues, HorizonReport
 from pbh.layout import Layout
 from pbh.maps import Map, Zone
 from pbh.state import State
@@ -51,13 +58,25 @@ from pbh.types import FloatArray
 
 OUTER_STATIC_LABEL = 0.8
 """The transition must end below this label, so that the outer face sits on the static part of the map."""
+FOLD_DETECTION = 1.5
+"""The fold monitor's detection level: a density jump `rho_(c-1) / rho_(c+1)` across a cell above it is a front."""
+FOLD_SPAN = 3
+"""The cells to either side of a front over which its compression is measured: with mc on the density and minmod on
+the velocity a captured front is monotone in two to three cells (Section 7.7), and three reach its plateaux."""
+FOLD_ZONE = 2.0
+"""The fold monitor's outer radius, `R = 2 M_AH`, in units of the apparent-horizon mass (Section 8.3)."""
+FOLD_CHECK = "the fold monitor v_12 < Gammabar_1/|Utilde_1|"
+"""The fold monitor's name in an abort."""
 
 
 class ExcisionError(Exception):
-    """An assertion of the excised scheme failed: the run has left the regime the closure is certified in."""
+    """An assertion of the excised scheme failed: the run has left the regime the closure is certified in.
 
-    def __init__(self, check: str, face: int, value: float) -> None:
-        super().__init__(f"{check} failed at face {face}: {value!r}")
+    `detail`, if given, follows the failure in the message: what it means and the cure.
+    """
+
+    def __init__(self, check: str, face: int, value: float, detail: str = "") -> None:
+        super().__init__(f"{check} failed at face {face}: {value!r}" + (f"; {detail}" if detail else ""))
         self.check = check
         self.face = face
         self.value = value
@@ -262,16 +281,18 @@ def check_face(
     layout: Layout,
     xi: float,
 ) -> FaceValues:
-    """Assert `mu > 0` at the face and the three faces trapped, and collect the face monitors.
+    """Assert `mu > 0` at the face and the three faces trapped, and collect the face monitors and the fold monitor.
 
     The values (output specification, Section 8): the light-cone margin `mu`; the outflow margin for sound
     `-(Theta + a)`; `a / |Theta|`, below `sqrt(w)` in the certified regime; `Lambda^+ = max(Theta + a, 0)`, which
     must vanish for the flux to be fully upwind; the trapping function at the three faces; the faces to the
     horizon; the mass inside the face and the flux through it; the face's radius in units of the horizon mass;
-    and the margin in physical units, eq:exc:marginphys.
+    and the margin in physical units, eq:exc:marginphys; and `fold`, the fold monitor's evaluation (`fold_monitor`),
+    formed once the assertions hold, which the driver asserts (`check_fold`) after the step's row is written.
 
     Raises:
-        ExcisionError: If either assertion fails; the run ends, since no admissible move is inward.
+        ExcisionError: If either assertion fails, the run ends, since no admissible move is inward; so it does if the
+            fold monitor meets a value that is not finite.
     """
     j_e, N = layout.j_e, layout.N
     mu = outflow_margin(j_e, state, d, geo, eos, layout)
@@ -298,7 +319,126 @@ def check_face(
         F_e=F_e,
         R_e_over_M_AH=float(geo.X[j_e]) * math.exp(alpha * xi) / report.M_AH if apparent is not None else float("nan"),
         physical_margin=physical,
+        fold=fold_monitor(state, d, geo, eos, layout, report.M_AH, xi),
     )
+
+
+# --- the fold monitor ---
+
+
+def taub_velocity(r: float, w: float) -> float:
+    """The relative velocity `|v_12| = tanh(vartheta)` across a shock of compression `r = rho_2 / rho_1`, `P = w rho`.
+
+    The Taub relation eq:eul:taubeta, `sinh(vartheta) = sqrt(w) (r - 1) / ((1 + w) sqrt(r))`, for any `w`; `tanh`
+    from `sinh` as `s / sqrt(1 + s^2)`.
+    """
+    s = math.sqrt(w) * (r - 1.0) / ((1.0 + w) * math.sqrt(r))
+    return s / math.sqrt(1.0 + s * s)
+
+
+def fold_monitor(
+    state: State, d: Derived, geo: Geometry, eos: EquationOfState, layout: Layout, M_AH: float, xi: float
+) -> FoldValues:
+    """The fold monitor of Section 8.3 on an excised slice, out to the label radius of `R = 2 M_AH`.
+
+    The zone's radius is `X = 2 M_AH e^(-alpha xi)`, as `horizon.near_zone` forms its radii; `fold_numbers` does the
+    rest.
+    """
+    X_zone = FOLD_ZONE * M_AH * math.exp(-eos.alpha_float * xi)
+    return fold_numbers(d.rho, state.U, d.Gammabar2, geo, layout, X_zone, eos.w_float)
+
+
+def fold_numbers(
+    rho: FloatArray,
+    U: FloatArray,
+    Gammabar2: FloatArray,
+    geo: Geometry,
+    layout: Layout,
+    X_zone: float,
+    w: float,
+) -> FoldValues:
+    """The fold monitor's numbers (Section 8.3, eq:eul:boost, eq:eul:taubeta).
+
+    The zone is the retained cells `c` from `j_e + 1` whose inner face lies inside `X_zone`, each with a neighbour to
+    either side. A front is detected by the jump `rho_(c-1) / rho_(c+1)` across a cell, above `FOLD_DETECTION`: a
+    ratio of cell densities two cells apart, not a face's reconstruction, which sees only a fraction of a front
+    captured over two to three cells (a compression of 6 shows face jumps of 1.2, and two-cell jumps of 3.8). Only one
+    orientation is sought, the denser side inside: a fold needs an outward-facing shock, whose unshocked side is the
+    outer one (`v_12 > 0` with `Utilde_1 < 0`); an inward-facing shock only raises `Gammabar`.
+
+    A front is a run `a..b` of adjacent detected cells. Its compression is measured across it, `rho_2 / rho_1` with
+    `rho_2` the densest of the cells `a - FOLD_SPAN .. b` and `rho_1` the least dense of `a .. b + FOLD_SPAN`, which
+    reaches the plateaux to either side of a captured front. The pre-shock state is read at the outer face of cell
+    `b + 1`, the first face clear of the detected cells, as near the front as its capture allows: what remains of the
+    smear there lowers `Gammabar / |Utilde|`, which falls through an outward-facing shock in a trapped region
+    (eq:eul:boost), so the reading errs toward an abort. With no front detected, the cell of the largest jump is
+    measured as a front `c..c`, so that the row says how near the slice came; only a detected front can abort.
+
+    Under-resolution reads as a front: the smooth infall of Michel's solution itself exceeds the detection level at
+    `R = M` once a cell there is wider than about `0.12 M`, and is then measured across as though it were one.
+
+    Raises:
+        ExcisionError: If the zone's radius or a density in the zone is not finite.
+    """
+    N, j_e = layout.N, layout.j_e
+    if not math.isfinite(X_zone):
+        raise ExcisionError(FOLD_CHECK, j_e, X_zone, "the radius 2 M_AH is not finite")
+    last = min(int(geo.X.searchsorted(X_zone, side="right")) - 1, N - 2)  # the zone's last cell
+    if last <= j_e:
+        return FoldValues(X_zone, 0, math.nan, -1, math.nan, math.nan, math.nan, math.nan, math.nan, math.nan, math.nan)
+    jumps = rho[j_e:last] / rho[j_e + 2 : last + 2]  # across the cells j_e + 1 .. last
+    k = int(jumps.argmax())  # the first NaN if there is one
+    jump = float(jumps[k])
+    if not math.isfinite(jump):
+        raise ExcisionError(FOLD_CHECK, j_e + 1 + k, jump, "a density in the zone is not finite")
+
+    def front(a: int, b: int, c: int, fronts: int) -> FoldValues:
+        lo = max(a - FOLD_SPAN, j_e)
+        cells: list[float] = rho[lo : min(b + FOLD_SPAN, N - 1) + 1].tolist()  # a few cells: Python is quicker
+        rho_2, rho_1 = max(cells[: b + 1 - lo]), min(cells[a - lo :])
+        p = b + 2  # the outer face of cell b + 1; b <= N - 2
+        U_1, Gammabar_1 = float(U[p]), math.sqrt(float(Gammabar2[p]))  # Gammabar^2 > 0 on an accepted state
+        threshold = Gammabar_1 / -U_1 if U_1 < 0.0 else math.inf
+        v12 = taub_velocity(rho_2 / rho_1, w)
+        X_c = float(geo.Xm[c])
+        return FoldValues(X_zone, fronts, jump, c, X_c, rho_2 / rho_1, U_1, Gammabar_1, v12, threshold, v12 / threshold)
+
+    if not jump > FOLD_DETECTION:  # the usual case, at every step without a front
+        return front(j_e + 1 + k, j_e + 1 + k, j_e + 1 + k, 0)
+    detected = np.flatnonzero(jumps > FOLD_DETECTION)
+    breaks = np.flatnonzero(np.diff(detected) > 1)  # the runs of adjacent detected cells
+    starts, ends = np.concatenate(([0], breaks + 1)), np.concatenate((breaks, [detected.size - 1]))
+    worst: FoldValues | None = None
+    for s, e in zip(starts.tolist(), ends.tolist(), strict=True):
+        run = detected[s : e + 1]
+        peak = int(run[np.argmax(jumps[run])])
+        fold = front(j_e + 1 + int(run[0]), j_e + 1 + int(run[-1]), j_e + 1 + peak, len(starts))
+        if worst is None or fold.ratio > worst.ratio:
+            worst = fold
+    assert worst is not None
+    return worst
+
+
+def check_fold(fold: FoldValues) -> None:
+    """Abort if the slice folds behind a detected front: `v_12 >= Gammabar_1 / |Utilde_1|` (Section 8.3).
+
+    Behind such a front `Gammabar` of eq:eul:boost is negative, the areal radius decreases outward and the fields are
+    two-valued in it: the run has left the formulation, not failed in its arithmetic. The cure is to excise further
+    out, toward `2 M`, where no subluminal boost reaches the threshold. Equality counts as a fold: there `Gammabar_2`
+    vanishes, and the fold begins.
+
+    Raises:
+        ExcisionError: On a violation, with `face` the front's cell and `value` the ratio `v_12 / threshold`.
+    """
+    if fold.fronts > 0 and not fold.ratio < 1.0:
+        raise ExcisionError(
+            FOLD_CHECK,
+            fold.cell,
+            fold.ratio,
+            f"the slice folds behind a shock of compression {fold.compression:.4g} at X = {fold.X:.4g} (v_12 = "
+            f"{fold.v12:.4g} against {fold.threshold:.4g}): the areal radius decreases outward there and the run has "
+            "left the formulation; excise further out, toward 2 M_AH (raise excision.eta and eta_r)",
+        )
 
 
 # --- moving the face outward ---

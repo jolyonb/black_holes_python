@@ -67,6 +67,7 @@ def test_the_summary_recovers_the_hole_the_file_was_made_from(tmp_path: Path):
     reader = RunReader(synthetic_run(tmp_path, flagged=False))
     summary = summarise(reader)
     assert summary.core is None  # the synthetic file has no steps before formation
+    assert summary.fold is None  # nor any excised step
     first, second = summary.epochs
     assert first.xi_start == XI_FORM
     assert first.quoted is not None
@@ -114,6 +115,8 @@ def test_the_summary_prints_exports_and_says_when_nothing_formed(tmp_path: Path,
     assert len(epochs[0]["series"]["M_est"]) == len(epochs[0]["series"]["xi"])
     assert epochs[1]["reference"] is None
     assert data["core"] is None
+    assert data["fold"] is None
+    assert "fold monitor" not in printed
     assert describe(RunSummary(None, [])) == "core: no steps before formation\nno horizon formed"
 
 
