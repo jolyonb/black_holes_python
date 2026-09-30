@@ -60,5 +60,6 @@ output:
   monitor_every_step: false     # the full monitor record every step rather than only at snapshots (costs ~20%)
 
 evolution:
-  xi_end: 6.0                   # the run starts at the time its initial data carry
+  xi_start: 0.0                 # when the run began: its initial data are at this time (a restart's later)
+  xi_end: 6.0
   stop_on_bounce: false         # end the run once the core has bounced (central density halved and held 0.5 in xi)

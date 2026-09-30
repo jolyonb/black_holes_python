@@ -4,8 +4,9 @@ Every command works on a run directory and a run name, and a run is its three fi
 `name.initial.h5` and `name.evolution.h5`:
 
     pbh validate CONFIG                              parse a configuration and print it with every default filled in
-    pbh initial gaussian NAME --config CONFIG --A A --ell ELL [--xi0 XI]
-                                                     write NAME.initial.h5: the growing mode of a Gaussian delta_m
+    pbh initial gaussian NAME --config CONFIG --A A --ell ELL
+                                                     write NAME.initial.h5: the growing mode of a Gaussian delta_m,
+                                                     given at the configuration's xi_start
     pbh run CONFIG NAME [--engine E]                 run CONFIG from NAME.initial.h5, writing the other two files
     pbh restart SOURCE NAME [--snapshot I] [--config CONFIG] [--engine E]
                                                      start the run NAME from a snapshot of the run SOURCE (the last
@@ -90,11 +91,14 @@ def gaussian(
     config: Annotated[Path, Parameter(help="The configuration whose grid and fluid the data are made for.")],
     A: Annotated[float, Parameter(name="--A", help="The amplitude of delta_m = A exp(-X^2 / 2 ell^2).")],
     ell: Annotated[float, Parameter(help="The width.")],
-    xi0: Annotated[float, Parameter(help="The time the profile is given at; the run begins there.")] = 0.0,
     dir: Directory = Path(),
 ) -> None:
-    """Write the growing mode of a Gaussian mass profile, the paper's standard perturbation (Section 7.9)."""
+    """Write the growing mode of a Gaussian mass profile, the paper's standard perturbation (Section 7.9).
+
+    The profile is given at the configuration's `evolution.xi_start`, where the run begins.
+    """
     parsed = load(config)
+    xi0 = parsed.evolution.xi_start
     paths = RunPaths.of(dir, name)
     sch = parsed.scheme()
     if not sch.eos.is_radiation:

@@ -197,6 +197,13 @@ def test_a_milestones_run_writes_the_initial_state_the_formation_and_the_end_and
     reader = RunReader(RunPaths.of(tmp_path, "dev").evolution)
     formation = next(e for e in reader.events if e.kind == "formation")
     assert [s.xi for s in reader.snapshots] == [0.0, formation.xi, 5.0]
+    reach = formation.payload["isolation"]  # the apparent horizon at formation, against the boundary acting since 0
+    assert reach["r"] == formation.payload["X_AH"]
+    assert reach["since"] == 0.0
+    assert reach["needed_sound"] == pytest.approx(reach["r"] + (math.exp(formation.xi / 2) - 1) / math.sqrt(3))
+    end = reader.end
+    assert end is not None
+    assert end.payload["isolation"]["r"] == 0.0  # the origin at the end
     assert [str(v) for v in reader.steps["limit"]].count("output_clip") <= 1  # the end, at most
 
 

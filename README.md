@@ -47,16 +47,18 @@ uv run pbh run collapse.yaml collapse                                      # for
 uv run pbh summary collapse                                                # what the run says about its hole
 ```
 
-The run stops once the mass is read, here at `xi = 7.3`, 3.4 e-folds after formation, with `M_est = 11.14 R_H` and
-an error bar under one per cent. `pbh summary` recomputes everything from the evolution file (nothing derived is
-stored): the core before any horizon (formed, bounced or undecided; the peak of the physical central density and the
-resolution there), the quoted reading, the long-run reference, when the bar crossed 5, 1 and 0.3 per cent, a fit of the
-accretion law, the enclosed-mass cross-check on spheres of fixed physical radius, and the fold monitor's nearest approach
-after excision. `--export FILE.json` writes it with its series.
+The run stops once the mass is read, here at `xi = 7.3`, 3.4 e-folds after formation, with `M_est = 11.14 R_H` and an
+error bar under one per cent. `pbh summary` recomputes everything from the evolution file (nothing derived is stored):
+the core before any horizon (formed, bounced or undecided; the peak of the physical central density and the resolution
+there), the quoted reading, the long-run reference, when the bar crossed 5, 1 and 0.3 per cent, a fit of the accretion
+law, the enclosed-mass cross-check on spheres of fixed physical radius, the fold monitor's nearest approach after
+excision, and the outer boundary's reach: the `Rtilde_max` that keeps the apparent horizon (at formation and at the
+reading) and the origin (at the end) out of the boundary's sound and light cones, and whether the run's clears it.
+`--export FILE.json` writes it with its series.
 
-A profile may be given long before horizon entry, even far below round-off of the background (`--xi0 -30` puts a
-collapse-sized Gaussian at `delta_m ~ 1e-14`): the data are built and recorded as their deviation from FRW, so nothing
-is lost, and the early steps are few, since there the step cap and not the sound speed sets them.
+A profile may be given long before horizon entry, even far below round-off of the background (`evolution: {xi_start:
+-30}` puts a collapse-sized Gaussian at `delta_m ~ 1e-14`): the data are built and recorded as their deviation from FRW,
+so nothing is lost, and the early steps are few, since there the step cap and not the sound speed sets them.
 
 `pbh restart SOURCE NAME [--snapshot K] [--config OTHER.yaml]` starts a new run from any snapshot of another, with its
 configuration or a different one: every snapshot is a restart point, and a restart carries the read-out's history.
@@ -140,6 +142,7 @@ src/pbh/
   config, initial, profiles          the configuration; initial data (the growing mode of a mass profile)
   records, output, h5                initial and snapshot records; the evolution file
   monitors, readout, summary         per-step monitors; the mass read-out; the run summary
+  causal                             how far the outer boundary can have reached, on sound and on light
   michel                             the Michel accretion flow, the late-time background and a test
   rust_engine                        the adapter to the Rust engine
 rust/                                the optional Rust engine, package pbh-engine (module pbh_engine, stubs pbh_engine.pyi)

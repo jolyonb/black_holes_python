@@ -236,7 +236,12 @@ class RunWriter[R: StepRow]:
     """
 
     def __init__(
-        self, path: Path, config: RunConfig, N: int, row_type: type[R], engine: Engine = Engine.PYTHON
+        self,
+        path: Path,
+        config: RunConfig,
+        N: int,
+        row_type: type[R],
+        engine: Engine = Engine.PYTHON,
     ) -> None:
         self.file = h5.create_file(path)
         h5.write_text(self.file, "format", FORMAT)

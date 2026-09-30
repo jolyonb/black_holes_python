@@ -149,6 +149,10 @@ def test_bad_keys_and_values_are_refused_by_name(tmp_path: Path, extra: str, mes
             "grid: {N: 4, Rtilde_max: 4.0, scale: 1.0, map: uniform}\nevolution: {xi_end: 1.0}\n",
             "grid\n  Value error, scale has no meaning for the uniform map",
         ),
+        (
+            "grid: {N: 4, Rtilde_max: 4.0, scale: 1.0}\nevolution: {xi_start: 1.0, xi_end: 1.0}\n",
+            "evolution\n  Value error, xi_end = 1.0 is not after xi_start = 1.0",
+        ),
         ("- a list\n", "must be a mapping of sections"),
     ],
 )

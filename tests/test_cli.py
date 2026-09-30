@@ -70,6 +70,10 @@ def test_initial_gaussian_then_run_then_restart(tmp_path: Path, capsys: pytest.C
     assert "completed" in capsys.readouterr().out
     again = read_initial(tmp_path / "h.initial.h5")
     assert again.xi == 0.1
+    continued = RunReader(tmp_path / "h.evolution.h5")
+    end = continued.end
+    assert end is not None
+    assert end.payload["isolation"]["since"] == 0.0  # the source's start, from its configuration, not the snapshot's
     assert again.provenance["source"] == "g.evolution.h5"
     assert [s.xi for s in RunReader(tmp_path / "h.evolution.h5").snapshots] == [0.1, 0.2]
 
@@ -98,6 +102,18 @@ def test_a_gaussian_the_reconstruction_refuses_is_an_error(tmp_path: Path, capsy
 def test_a_missing_initial_file_is_an_error(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
     assert main(["run", str(write_config(tmp_path)), "nothing", "--dir", str(tmp_path)]) == 1
     assert "nothing.initial.h5" in capsys.readouterr().err
+
+
+def test_a_run_whose_initial_data_precede_its_configured_start_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    config = write_config(tmp_path)
+    args = ["initial", "gaussian", "g", "--config", str(config), "--A", "0.05", "--ell", "2.0", "--dir", str(tmp_path)]
+    assert main(args) == 0
+    later = tmp_path / "later.yaml"
+    later.write_text(CONFIG.replace("evolution: {xi_end: 0.2}", "evolution: {xi_start: 0.1, xi_end: 0.2}"))
+    assert main(["run", str(later), "g", "--dir", str(tmp_path)]) == 1
+    assert "before the configuration's xi_start = 0.1" in capsys.readouterr().err
 
 
 def test_the_gaussian_datum_exists_for_radiation_only(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
@@ -142,9 +158,10 @@ def test_the_module_can_be_run_directly():
 
 
 def test_a_perturbation_far_below_round_off_of_the_background_reaches_the_file(tmp_path: Path):
-    config = write_config(tmp_path)
+    config = tmp_path / "early.yaml"
+    config.write_text(CONFIG.replace("evolution: {xi_end: 0.2}", "evolution: {xi_start: -30.0, xi_end: -29.0}"))
     A = f"{1e-3 * math.e / 8.0 * math.exp(-30.0)!r}"  # delta_m ~ 3e-17: 1 + delta_m is 1 to the bit
-    args = ["initial", "gaussian", "t", "--config", str(config), "--A", A, "--ell", "2.0", "--xi0", "-30"]
+    args = ["initial", "gaussian", "t", "--config", str(config), "--A", A, "--ell", "2.0"]
     assert main([*args, "--dir", str(tmp_path)]) == 0
     initial = read_initial(tmp_path / "t.initial.h5")
     mass = 3.0 * np.cumsum(initial.delta_E) / initial.X[1:] ** 3
@@ -154,16 +171,16 @@ def test_a_perturbation_far_below_round_off_of_the_background_reaches_the_file(t
 WIDE = """
 grid: {N: 200, Rtilde_max: 30.0, scale: 3.0}
 output: {snapshots: milestones}
-evolution: {xi_end: XI_END}
+evolution: {xi_start: XI_START, xi_end: XI_END}
 """
 
 
 def run_gaussian(tmp_path: Path, name: str, C: float, xi0: float, xi_end: float) -> None:
     """Write a Gaussian (ell = 2) of peak compaction C at xi0 and run it to xi_end."""
     config = tmp_path / f"{name}.yaml"
-    config.write_text(WIDE.replace("XI_END", repr(xi_end)))
+    config.write_text(WIDE.replace("XI_START", repr(xi0)).replace("XI_END", repr(xi_end)))
     A = repr(C * math.e / 8.0 * math.exp(xi0))
-    args = ["initial", "gaussian", name, "--config", str(config), "--A", A, "--ell", "2.0", "--xi0", repr(xi0)]
+    args = ["initial", "gaussian", name, "--config", str(config), "--A", A, "--ell", "2.0"]
     assert main([*args, "--dir", str(tmp_path)]) == 0
     assert main(["run", str(config), name, "--dir", str(tmp_path)]) == 0
 

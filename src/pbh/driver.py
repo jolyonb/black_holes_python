@@ -49,6 +49,7 @@ from typing import Any, Literal
 
 import numpy as np
 
+from pbh.causal import isolation
 from pbh.collapse import CoreWatch
 from pbh.config import RunConfig, SnapshotChoice, save
 from pbh.derived import NotHyperbolicError
@@ -293,6 +294,10 @@ class Run:
         """Record an event at the current step and time."""
         self.writer.event(self.step, self.xi, kind, payload)
 
+    def isolation(self, xi: float, r: float) -> dict[str, Any]:
+        """The domains that keep the radius `r` out of the outer face's reach until `xi` (`causal.py`)."""
+        return isolation(self.sch.eos, self.config.evolution.xi_start, xi, r, self.config.grid.Rtilde_max)
+
     # --- the operations of Section 8.2 and 8.3 ---
 
     def remap(self, layout: Layout, state: State) -> DerivsResult:
@@ -409,16 +414,17 @@ class Run:
             return False
         epoch.read = True
         efficiency = float(r.efficiency[i])
+        xi_reading, M_AH = float(r.xi[i]), float(r.M_AH[i])  # the apparent horizon then: M_AH = e^(alpha xi) X_AH / 2
         michel = michel_flow(np.array([HORIZON, eos.sonic_radius_over_mass])) if eos.is_radiation else None
         self.event(
             "readout",
             {
                 "epoch_start": epoch.xi_start,
-                "xi_reading": float(r.xi[i]),
+                "xi_reading": xi_reading,
                 "M_est": float(r.M_est[i]),
                 "bar": float(r.bar[i]),
                 "systematic": float(r.systematic[i]),
-                "M_AH": float(r.M_AH[i]),
+                "M_AH": M_AH,
                 "omega": float(r.omega[i]),
                 "lambda_c_eps": float(r.lambda_c_eps[i]),
                 "efficiency": efficiency,
@@ -433,6 +439,7 @@ class Run:
                 },
                 "outflow_margin": row.mu,
                 "min_lapse": row.min_lapse,
+                "isolation": self.isolation(xi_reading, 2.0 * M_AH * math.exp(-eos.alpha_float * xi_reading)),
                 "settings": readout.model_dump(),
             },
         )
@@ -468,7 +475,8 @@ class Run:
             self.xi_form = self.xi
             a = report.apparent
             assert a is not None  # a trapped face has an outer boundary once face N is untrapped
-            self.event("formation", {"j_star": a.j, "x_AH": a.x, "X_AH": a.X, "M_AH": report.M_AH})
+            payload = {"j_star": a.j, "x_AH": a.x, "X_AH": a.X, "M_AH": report.M_AH}
+            self.event("formation", {**payload, "isolation": self.isolation(self.xi, a.X)})
         if self.layout.excised:  # with or without a trapped face: without one, the face assertion ends the run
             return self.excised_step(state, result, report)
         if not self.config.excision.enabled or report.trapped_faces == 0:
@@ -635,6 +643,11 @@ def run(
     xi_end = config.evolution.xi_end
     if not xi_end > xi:
         raise ValueError(f"the initial time {xi} is not before the end {xi_end}")
+    if xi < config.evolution.xi_start:
+        raise ValueError(
+            f"the initial time {xi} is before the configuration's xi_start = {config.evolution.xi_start}: a run starts "
+            "at xi_start, or continues one that did"
+        )
     save(config, paths.config, engine)
     cap = config.stepping.cap(sch.eos)
     weights = tuple(float(b) for b in RK4.b)
@@ -735,7 +748,7 @@ def run(
             if not at_snapshot:
                 r.snapshot()  # the end is always a snapshot, to continue from
             reason = {"reason": "the mass was read"} if read else {"reason": "the core bounced"} if bounced else {}
-            out.close(r.step, r.xi, "completed", **reason)
+            out.close(r.step, r.xi, "completed", **reason, isolation=r.isolation(r.xi, 0.0))
             return RunResult(status="completed", steps=r.step, xi=r.xi, paths=paths)
         except NotHyperbolicError as failure:
             abort = AbortError(failure.field, failure.index, failure.value, str(failure))
@@ -748,5 +761,5 @@ def run(
             abort = failure
         r.event("abort", {"field": abort.field, "index": abort.index, "value": abort.value, **abort.detail})
         r.snapshot()  # the last good state
-        out.close(r.step, r.xi, "aborted", reason=abort.reason)
+        out.close(r.step, r.xi, "aborted", reason=abort.reason, isolation=r.isolation(r.xi, 0.0))
         return RunResult(status="aborted", steps=r.step, xi=r.xi, paths=paths)

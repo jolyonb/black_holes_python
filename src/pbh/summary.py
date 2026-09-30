@@ -312,14 +312,18 @@ class FoldSummary:
 
 @dataclass(frozen=True)
 class RunSummary:
-    """The whole run: the core before formation, every epoch after, and the fold monitor.
+    """The whole run: the core before formation, every epoch after, the fold monitor and the outer boundary's reach.
 
-    `core` is `None` if no step preceded formation, `fold` if the run never excised.
+    `core` is `None` if no step preceded formation, `fold` if the run never excised. `formation` and `end` are the
+    causal isolation of the apparent horizon at the first formation and of the origin at the end (`causal.py`),
+    `None` if the run did not form a hole or has not ended; the reading's is in each epoch's `quoted`.
     """
 
     core: CoreSummary | None
     epochs: list[EpochSummary]
     fold: FoldSummary | None = None
+    formation: dict[str, Any] | None = None
+    end: dict[str, Any] | None = None
 
 
 def core_summary(reader: RunReader) -> CoreSummary | None:
@@ -374,8 +378,17 @@ def fold_summary(reader: RunReader) -> FoldSummary | None:
 
 
 def summarise(reader: RunReader) -> RunSummary:
-    """The core before formation, every epoch of the run and the fold monitor, summarised."""
-    return RunSummary(core_summary(reader), epoch_summaries(reader), fold_summary(reader))
+    """The core before formation, every epoch of the run, the fold monitor and the boundary's reach, summarised."""
+    events = reader.events
+    formed = [e.payload["isolation"] for e in events if e.kind == "formation"]
+    ended = [e.payload["isolation"] for e in events if e.kind == "end"]
+    return RunSummary(
+        core_summary(reader),
+        epoch_summaries(reader),
+        fold_summary(reader),
+        formed[0] if formed else None,
+        ended[-1] if ended else None,
+    )
 
 
 def epoch_summaries(reader: RunReader) -> list[EpochSummary]:
@@ -420,7 +433,7 @@ def as_json(summary: RunSummary) -> dict[str, Any]:
             }
         )
     fold = None if summary.fold is None else summary.fold.__dict__
-    return {"core": core_json, "epochs": result, "fold": fold}
+    return {"core": core_json, "epochs": result, "fold": fold, "formation": summary.formation, "end": summary.end}
 
 
 def reference_json(ref: Reference) -> dict[str, Any]:
@@ -466,9 +479,34 @@ def describe_fold(fold: FoldSummary | None) -> list[str]:
     ]
 
 
+def describe_isolation(when: str, isolation: dict[str, Any]) -> str:
+    """One moment of the boundary's reach: the domains needed on sound and on light, and whether the run's clears."""
+
+    def verdict(cone: str) -> str:
+        return f"{isolation[f'needed_{cone}']:.3g} ({'clear' if isolation[f'isolated_{cone}'] else 'NOT clear'})"
+
+    needs = f"needs Rtilde_max >= {verdict('sound')} on sound, {verdict('light')} on light"
+    return f"  {when}, r = {isolation['r']:.3g}: {needs}"
+
+
+def describe_boundary(summary: RunSummary) -> list[str]:
+    """A readable account of when the outer boundary could have reached the hole and the origin."""
+    moments = [("at formation (apparent horizon)", summary.formation)]
+    moments += [
+        (f"at reading {n} (apparent horizon)", s.quoted and s.quoted["isolation"]) for n, s in enumerate(summary.epochs)
+    ]
+    moments.append(("at the end (origin)", summary.end))
+    present = [(when, isolation) for when, isolation in moments if isolation]
+    if not present:
+        return []
+    first = present[0][1]
+    header = f"outer boundary at Rtilde_max = {first['Rtilde_max']:g}, acting since xi = {first['since']:.4g}:"
+    return [header, *(describe_isolation(when, isolation) for when, isolation in present)]
+
+
 def describe(summary: RunSummary) -> str:
     """A readable account of the summary."""
-    lines = [*describe_core(summary.core), *describe_fold(summary.fold)]
+    lines = [*describe_core(summary.core), *describe_fold(summary.fold), *describe_boundary(summary)]
     if not summary.epochs:
         return "\n".join([*lines, "no horizon formed"])
     for n, s in enumerate(summary.epochs):

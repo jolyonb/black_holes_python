@@ -182,7 +182,7 @@ def test_data_off_the_grid_or_after_the_end_are_refused(tmp_path: Path):
     other = CONFIG.model_copy(update={"grid": GridConfig(N=N, Rtilde_max=5.0, map=MapFamily.UNIFORM)})
     with pytest.raises(ValueError, match="not sampled on the grid"):
         run(other, initial, paths)
-    ended = CONFIG.model_copy(update={"evolution": EvolutionConfig(xi_end=0.0)})
+    ended = CONFIG.model_copy(update={"evolution": EvolutionConfig(xi_start=-1.0, xi_end=0.0)})  # a late restart
     with pytest.raises(ValueError, match="not before the end"):
         run(ended, initial, paths)
 

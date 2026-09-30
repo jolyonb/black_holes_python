@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from pbh.causal import isolation
 from pbh.cli import main
 from pbh.config import EvolutionConfig, GridConfig, MapFamily, RunConfig
 from pbh.driver import RunPaths
@@ -16,7 +17,7 @@ from pbh.michel import hole_mass_tilde
 from pbh.monitors import MonitoredStep
 from pbh.output import RunReader, RunWriter
 from pbh.state import State
-from pbh.summary import RunSummary, describe, slope, spheres, summarise
+from pbh.summary import RunSummary, as_json, describe, slope, spheres, summarise
 
 N = 40
 CONFIG = RunConfig(grid=GridConfig(N=N, Rtilde_max=8.0, map=MapFamily.UNIFORM), evolution=EvolutionConfig(xi_end=8.0))
@@ -44,7 +45,9 @@ def synthetic_run(directory: Path, flagged: bool) -> Path:
     paths = RunPaths.of(directory, "synthetic")
     layout = Layout(N)
     with RunWriter(paths.evolution, CONFIG, N, row_type=MonitoredStep) as out:
-        out.event(0, XI_FORM, "formation", {"M_AH": hole(XI_FORM)})
+        out.event(
+            0, XI_FORM, "formation", {"M_AH": hole(XI_FORM), "isolation": isolation(EOS, 0.0, XI_FORM, 0.9, 12.0)}
+        )
         times = XI_FORM + 0.01 * np.arange(301)
         for step, xi in enumerate(times):
             xi = float(xi)
@@ -58,8 +61,11 @@ def synthetic_run(directory: Path, flagged: bool) -> Path:
                 dy = layout.pack(State(E=delta_E, U=np.zeros(N + 1), W=0.0))
                 out.snapshot(step, xi, layout, dy, XI_FORM, ())
         quoted = {"epoch_start": XI_FORM, "xi_reading": 7.0, "M_est": 3.0, "bar": 1e-3, "lambda_c_eps": 0.05}
-        out.event(300, 8.0, "readout", {**quoted, "efficiency": EFFICIENCY, "efficiency_flag": flagged})
-        out.close(300, 8.0, "completed")
+        reach = isolation(EOS, 0.0, 7.0, 0.5, 12.0)
+        out.event(
+            300, 8.0, "readout", {**quoted, "efficiency": EFFICIENCY, "efficiency_flag": flagged, "isolation": reach}
+        )
+        out.close(300, 8.0, "completed", isolation=isolation(EOS, 0.0, 8.0, 0.0, 12.0))
     return paths.evolution
 
 
@@ -78,6 +84,17 @@ def test_the_summary_recovers_the_hole_the_file_was_made_from(tmp_path: Path):
     assert ref.M_AH_end == hole(7.89)
     assert ref.efficiency_end == pytest.approx(EFFICIENCY, rel=1e-2)
     assert abs(ref.Q_slope) < 1e-2  # constant efficiency: Q is flat
+    assert summary.formation is not None
+    assert summary.formation["r"] == 0.9
+    assert summary.end is not None
+    assert summary.end["r"] == 0.0
+    text = describe(summary)
+    assert "outer boundary at Rtilde_max = 12, acting since xi = 0:" in text
+    assert "at formation (apparent horizon), r = 0.9: needs Rtilde_max >= " in text
+    # 0.5 + (e^3.5 - 1) / sqrt 3 and 0.5 + e^3.5 - 1 at the reading; (e^4 - 1) / sqrt 3 and e^4 - 1 at the end
+    assert "at reading 0 (apparent horizon), r = 0.5: needs Rtilde_max >= 19 (NOT clear) on sound, 32.6" in text
+    assert "at the end (origin), r = 0: needs Rtilde_max >= 30.9 (NOT clear) on sound, 53.6 (NOT clear)" in text
+    assert as_json(summary)["end"] == summary.end
     assert ref.bar_below[0.01] == pytest.approx(2.0, abs=0.01)  # the floor decides
     fit = first.fit
     assert fit is not None
