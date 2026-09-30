@@ -14,6 +14,7 @@ from pbh.initial import (
     ModeExpansion,
     NotCompensatedError,
     cell_contents,
+    initial_deviation,
     initial_state,
     j1_over_x,
     j2_over_x2,
@@ -278,8 +279,11 @@ def test_the_state_holds_the_mass_exactly_with_the_velocity_corrected_and_w_at_t
     delta_m, first, second = mode.delta_m_derivatives(BG_0, X)
     corrected = mode.delta_U(BG_0, X) + nonlinear_correction(X, delta_m, first, second)
     assert state.U[1:] == pytest.approx(X[1:] * (1.0 + corrected[1:]), rel=1e-14)
-    delta_U_N = (state.U[N] - X[N]) / X[N]
-    delta_rho_N_1 = (state.E[N - 1] - geo.dV[N - 1]) / geo.dV[N - 1]
+    deviation = mode.deviation(geo, BG_0)  # the state is FRW plus this, and W is formed from it, not from the state
+    assert np.array_equal(state.E, geo.dV + deviation.E)
+    assert np.array_equal(state.U, X + deviation.U)
+    delta_U_N, delta_rho_N_1 = deviation.U[N] / X[N], deviation.E[N - 1] / geo.dV[N - 1]
+    assert state.W == deviation.W
     assert state.W == characteristic_pair(float(delta_U_N), float(delta_rho_N_1), float(X[N]), BG_0.c_s)[1]
     assert 0.0 < mode.correction_ratio(geo, BG_0) < 0.05
     # and the data are admissible, as derive agrees
@@ -341,3 +345,37 @@ def test_the_quadrature_contents_of_a_density_equal_the_exact_contents_of_its_ma
         return mode.delta_rho(BG_0, Xq)
 
     assert cell_contents(density, geo) == pytest.approx(exact, rel=1e-13)
+
+
+# --- data below round-off of the background ---
+
+
+def test_the_deviation_keeps_a_perturbation_far_below_round_off_of_the_background():
+    # A Gaussian of compaction 1e-3 given 30 e-folds before horizon entry: delta_m ~ 3e-17, where 1 + delta_m is 1
+    # to the bit. The deviation holds it exactly; the full state cannot.
+    xi = -30.0
+    bg = Background.at(RAD, xi)
+    profile = Gaussian(A=1e-3 * np.e / 8.0 * np.exp(xi), ell=2.0)
+    mode, _ = GrowingMode.from_profile(profile, "m", 30.0, bg)
+    geo = Geometry.of(*SinhStretch(30.0, scale=3.0).radii(xi, 200))
+    X = geo.X[: geo.N + 1]
+    deviation = mode.deviation(geo, bg)
+    mass = 3.0 * np.cumsum(deviation.E) / X[1:] ** 3
+    assert mass == pytest.approx(mode.delta_m(bg, X[1:]), rel=1e-12)  # eq:num:idata, in the deviation
+    assert float(np.max(np.abs(mass))) < 1e-16
+    assert np.array_equal(mode.state(geo, bg).E, geo.dV)  # through the full state it is gone: FRW to the bit
+
+
+def test_data_given_as_a_deviation_go_through_the_same_door():
+    geo = Geometry.of(*IdentityMap(12.0).radii(0.0, 100))
+    X = geo.X[: geo.N + 1]
+    mode, _ = GrowingMode.from_profile(gaussian_at_peak_compaction(2.0), "m", 12.0, BG_0)
+    delta_E, delta_U = np.diff(X**3 * mode.delta_m(BG_0, X)) / 3.0, X * mode.delta_U(BG_0, X)
+    delta_U[0] = 3.0
+    deviation = initial_deviation(delta_E, delta_U, geo, BG_0)
+    assert deviation.U[0] == 0.0
+    assert delta_U[0] == 3.0  # the caller's array is not changed
+    assert deviation.W == ModeExpansion.state(mode, geo, BG_0).W
+    assert initial_deviation(delta_E, delta_U, geo, BG_0, W=0.25).W == 0.25
+    with pytest.raises(NotHyperbolicError, match="rho"):
+        initial_deviation(-2.0 * geo.dV, delta_U, geo, BG_0)

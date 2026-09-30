@@ -54,6 +54,10 @@ resolution there), the quoted reading, the long-run reference, when the bar cros
 accretion law, the enclosed-mass cross-check on spheres of fixed physical radius, and the fold monitor's nearest approach
 after excision. `--export FILE.json` writes it with its series.
 
+A profile may be given long before horizon entry, even far below round-off of the background (`--xi0 -30` puts a
+collapse-sized Gaussian at `delta_m ~ 1e-14`): the data are built and recorded as their deviation from FRW, so nothing
+is lost, and the early steps are few, since there the step cap and not the sound speed sets them.
+
 `pbh restart SOURCE NAME [--snapshot K] [--config OTHER.yaml]` starts a new run from any snapshot of another, with its
 configuration or a different one: every snapshot is a restart point, and a restart carries the read-out's history.
 

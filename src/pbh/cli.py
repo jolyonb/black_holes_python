@@ -90,7 +90,7 @@ def gaussian(
     config: Annotated[Path, Parameter(help="The configuration whose grid and fluid the data are made for.")],
     A: Annotated[float, Parameter(name="--A", help="The amplitude of delta_m = A exp(-X^2 / 2 ell^2).")],
     ell: Annotated[float, Parameter(help="The width.")],
-    xi0: Annotated[float, Parameter(help="The start time; the run begins there.")] = 0.0,
+    xi0: Annotated[float, Parameter(help="The time the profile is given at; the run begins there.")] = 0.0,
     dir: Directory = Path(),
 ) -> None:
     """Write the growing mode of a Gaussian mass profile, the paper's standard perturbation (Section 7.9)."""
@@ -102,7 +102,7 @@ def gaussian(
     bg_0 = Background.at(sch.eos, xi0)
     mode, report = GrowingMode.from_profile(Gaussian(A=A, ell=ell), "m", parsed.grid.Rtilde_max, bg_0)
     geo = sch.frame(xi0).geo
-    state = mode.state(geo, bg_0)
+    deviation = mode.deviation(geo, bg_0)  # never the state: a perturbation below round-off of FRW must survive
     ratio = mode.correction_ratio(geo, bg_0)
     provenance = {
         "method": "growing_mode",
@@ -118,8 +118,8 @@ def gaussian(
         "edge_value": report.edge_value,
         "correction_ratio": ratio,
     }
-    write_initial(paths.initial, StateRecord.of(state, geo.X[: geo.N + 1], xi0, 0, provenance))
-    peak = 2.0 * ell**2 * A / math.e  # Section 5.4: the Gaussian's peak compaction at xi = 0
+    write_initial(paths.initial, StateRecord.of_deviation(deviation, geo.X[: geo.N + 1], xi0, provenance))
+    peak = 2.0 * ell**2 * A / (math.e * math.exp(xi0))  # Section 5.4: X^2 delta_m / Rtilde_H^2 at sqrt 2 ell, at xi0
     print(f"wrote {paths.initial}: peak compaction {peak:.4f}, correction ratio {ratio:.2%}")
 
 

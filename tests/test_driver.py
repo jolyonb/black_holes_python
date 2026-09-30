@@ -199,6 +199,10 @@ def test_the_far_zone_radius_is_the_first_face_beyond_the_perturbation(tmp_path:
     delta_E[10] = 0.01 * geo.dV[10]
     local = StateRecord(delta_E, np.zeros(N + 1), 0.0, 0.0, X, 0.0, 0, {})
     assert far_zone_radius(local) == X[12]  # cell 10 perturbed: face 11 bounds it, the zone starts at 12
+    delta_E[10] = 1e-20 * geo.dV[10]  # far below round-off of the background: the tolerance is relative
+    delta_E[5] = 1e-31 * geo.dV[5]  # below it
+    tiny = StateRecord(delta_E, np.zeros(N + 1), 0.0, 0.0, X, 0.0, 0, {})
+    assert far_zone_radius(tiny) == X[12]
 
 
 def test_a_run_with_many_steps_flushes_on_its_cadence_and_can_be_read_while_running(tmp_path: Path):

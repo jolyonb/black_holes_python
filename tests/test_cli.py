@@ -1,16 +1,22 @@
 """Tests of pbh.cli: the four verbs, in process."""
 
+import math
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 import yaml
 
 import pbh
 from pbh.cli import main
+from pbh.eos import RADIATION, Background, EquationOfState
+from pbh.initial import GrowingMode
 from pbh.output import RunReader
+from pbh.profiles import Gaussian
 from pbh.records import read_initial
 from pbh.timestep import Engine
+from pbh.types import FloatArray
 
 CONFIG = """
 grid: {N: 40, Rtilde_max: 12.0, scale: 3.0}
@@ -133,3 +139,60 @@ def test_the_module_can_be_run_directly():
     done = subprocess.run([sys.executable, "-m", "pbh.cli", "--help"], capture_output=True, text=True, check=False)
     assert done.returncode == 0
     assert "validate" in done.stdout
+
+
+def test_a_perturbation_far_below_round_off_of_the_background_reaches_the_file(tmp_path: Path):
+    config = write_config(tmp_path)
+    A = f"{1e-3 * math.e / 8.0 * math.exp(-30.0)!r}"  # delta_m ~ 3e-17: 1 + delta_m is 1 to the bit
+    args = ["initial", "gaussian", "t", "--config", str(config), "--A", A, "--ell", "2.0", "--xi0", "-30"]
+    assert main([*args, "--dir", str(tmp_path)]) == 0
+    initial = read_initial(tmp_path / "t.initial.h5")
+    mass = 3.0 * np.cumsum(initial.delta_E) / initial.X[1:] ** 3
+    assert 1e-17 < float(np.max(mass)) < 1e-16
+
+
+WIDE = """
+grid: {N: 200, Rtilde_max: 30.0, scale: 3.0}
+output: {snapshots: milestones}
+evolution: {xi_end: XI_END}
+"""
+
+
+def run_gaussian(tmp_path: Path, name: str, C: float, xi0: float, xi_end: float) -> None:
+    """Write a Gaussian (ell = 2) of peak compaction C at xi0 and run it to xi_end."""
+    config = tmp_path / f"{name}.yaml"
+    config.write_text(WIDE.replace("XI_END", repr(xi_end)))
+    A = repr(C * math.e / 8.0 * math.exp(xi0))
+    args = ["initial", "gaussian", name, "--config", str(config), "--A", A, "--ell", "2.0", "--xi0", repr(xi0)]
+    assert main([*args, "--dir", str(tmp_path)]) == 0
+    assert main(["run", str(config), name, "--dir", str(tmp_path)]) == 0
+
+
+def last_fields(tmp_path: Path, name: str) -> tuple[float, FloatArray, FloatArray, FloatArray]:
+    """The last snapshot's time, radii and relative deviations `(delta_m, delta_U)` at faces 1..N."""
+    reader = RunReader(tmp_path / f"{name}.evolution.h5")
+    end = reader.snapshot(len(reader.snapshots) - 1)
+    X = end.X[1:]
+    return end.xi, X, 3.0 * np.cumsum(end.delta_E) / X**3, end.delta_U[1:] / X
+
+
+def relative_l2(values: FloatArray, reference: FloatArray, X: FloatArray) -> float:
+    """`|values - reference| / |reference|` in L2 with the weight `X^2 dX` on the faces `X`."""
+    w = X**2 * np.diff(np.concatenate(([0.0], X)))
+    return float(np.sqrt(np.sum(w * (values - reference) ** 2) / np.sum(w * reference**2)))
+
+
+@pytest.mark.slow
+def test_a_perturbation_far_below_round_off_evolves_as_linear_theory_says(tmp_path: Path):
+    # Compaction 1e-3 given at xi = -30 (delta_m ~ 3e-17) and run to -10 (delta_m ~ 2e-8): the linear evolution is
+    # exact up to O(C epsilon^2) ~ 1e-9 there, so what remains is the scheme's truncation error (measured 4.5e-5),
+    # where carried through the full state the whole signal was lost.
+    run_gaussian(tmp_path, "early", 1e-3, -30.0, -10.0)
+    xi, X, delta_m, delta_U = last_fields(tmp_path, "early")
+    assert xi == -10.0
+    eos = EquationOfState(RADIATION)
+    profile = Gaussian(A=1e-3 * math.e / 8.0 * math.exp(-30.0), ell=2.0)
+    mode, _ = GrowingMode.from_profile(profile, "m", 30.0, Background.at(eos, -30.0))
+    bg = Background.at(eos, xi)
+    assert relative_l2(delta_m, mode.delta_m(bg, X), X) < 1e-4
+    assert relative_l2(delta_U, mode.delta_U(bg, X), X) < 1e-4

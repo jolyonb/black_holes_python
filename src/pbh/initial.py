@@ -269,11 +269,19 @@ class ModeExpansion:
         _, u = self._coefficients(bg)
         return 3.0 * j1_over_x(np.multiply.outer(X, self.k)) @ u
 
+    def deviation(self, geo: Geometry, bg: Background) -> State:
+        """The linear data sampled on the grid at this time, as their deviation from FRW, through the door.
+
+        The exact cell contents are formed as `delta E_c = [X^3 delta_m] / 3` across the cell, never as the
+        difference of `[X^3 (1 + delta_m)] / 3` and the shell volume, so that a perturbation below round-off of the
+        background survives: the record and the integrator carry the deviation, and nothing on the way adds FRW back.
+        """
+        X = geo.X[: geo.N + 1]
+        return initial_deviation(np.diff(X**3 * self.delta_m(bg, X)) / 3.0, X * self.delta_U(bg, X), geo, bg)
+
     def state(self, geo: Geometry, bg: Background) -> State:
         """The linear data sampled on the grid at this time: exact cell contents, point velocities, through the door."""
-        X = geo.X[: geo.N + 1]
-        E = np.diff(X**3 * (1.0 + self.delta_m(bg, X))) / 3.0
-        return initial_state(E, X * (1.0 + self.delta_U(bg, X)), geo, bg)
+        return with_background(ModeExpansion.deviation(self, geo, bg), geo)  # the general sampling, even on a subclass
 
 
 @dataclass(frozen=True, init=False)
@@ -331,20 +339,23 @@ class GrowingMode(ModeExpansion):
         )
         return mode, report
 
-    def state(self, geo: Geometry, bg: Background, nonlinear: bool = True) -> State:
-        """The growing mode sampled on the grid as the paper prescribes (eq:num:idata).
+    def deviation(self, geo: Geometry, bg: Background, nonlinear: bool = True) -> State:
+        """The growing mode sampled on the grid as the paper prescribes (eq:num:idata), as its deviation from FRW.
 
         The cell contents are exact and the face velocities carry the correction eq:num:dUnl unless `nonlinear` is
         off; the correction is derived for the growing solution, which is why it lives here and not on the general
         expansion. Radiation only, as eq:lin:idata and eq:num:dUnl are.
         """
         if not nonlinear:
-            return super().state(geo, bg)
+            return super().deviation(geo, bg)
         X = geo.X[: geo.N + 1]
         delta_m, first, second = self.delta_m_derivatives(bg, X)
         delta_U = self.delta_U(bg, X) + nonlinear_correction(X, delta_m, first, second)
-        E = np.diff(X**3 * (1.0 + delta_m)) / 3.0
-        return initial_state(E, X * (1.0 + delta_U), geo, bg)
+        return initial_deviation(np.diff(X**3 * delta_m) / 3.0, X * delta_U, geo, bg)
+
+    def state(self, geo: Geometry, bg: Background, nonlinear: bool = True) -> State:
+        """The growing mode sampled on the grid, FRW plus `deviation`."""
+        return with_background(self.deviation(geo, bg, nonlinear), geo)
 
     def correction_ratio(self, geo: Geometry, bg: Background) -> float:
         """The diagnostic of Section 7.9: `max |delta_U^nl / delta_U^lin|` over the grid's faces.
@@ -380,20 +391,40 @@ def initial_state(E: FloatArray, U: FloatArray, geo: Geometry, bg: Background, W
     eq:num:sat starts at zero; and the data are refused unless admissible. The growing-mode recipe above is one
     source; two-field linear data, which know their own `W`, and test data with velocities of their own are others.
     A checkpoint of a run is not an initial datum and does not come through here: it is restored as it was written.
+    Data known as their deviation from FRW go through `initial_deviation`, which is this door without the background.
+    """
+    X = geo.X[: geo.N + 1]
+    U = U.copy()
+    U[0] = 0.0
+    deviation = initial_deviation(E - geo.dV, U - X, geo, bg, W)
+    return State(E=E, U=U, W=deviation.W)
+
+
+def initial_deviation(
+    delta_E: FloatArray, delta_U: FloatArray, geo: Geometry, bg: Background, W: float | None = None
+) -> State:
+    """`initial_state` for data given as their deviation from FRW: `delta E_c = E_c - Delta V_c`, `U_j - X_j`.
+
+    The same door, in the form the record and the integrator carry, so that a perturbation below round-off of the
+    background is never added to it and subtracted again. Returns the deviation, `W` included (FRW value `0`).
     """
     N = geo.N
     X = geo.X[: N + 1]
-    U = U.copy()
-    U[0] = 0.0
-    check_admissible(E, U, X, bg)
+    delta_U = delta_U.copy()
+    delta_U[0] = 0.0
+    check_admissible(delta_E, delta_U, X, bg)
     if W is None:
-        delta_U_N = (U[N] - X[N]) / X[N]  # the deviations, formed without subtracting one
-        delta_rho_N_1 = (E[N - 1] - geo.dV[N - 1]) / geo.dV[N - 1]
-        W = characteristic_pair(float(delta_U_N), float(delta_rho_N_1), float(X[N]), bg.c_s)[1]
-    return State(E=E, U=U, W=W)
+        delta_rho_N_1 = delta_E[N - 1] / geo.dV[N - 1]
+        W = characteristic_pair(float(delta_U[N] / X[N]), float(delta_rho_N_1), float(X[N]), bg.c_s)[1]
+    return State(E=delta_E, U=delta_U, W=W)
 
 
-def check_admissible(E: FloatArray, U: FloatArray, X: FloatArray, bg: Background) -> None:
+def with_background(deviation: State, geo: Geometry) -> State:
+    """The state whose deviation from FRW this is, before any excision: `E = Delta V + delta E`, `U = X + delta U`."""
+    return State(E=geo.dV + deviation.E, U=geo.X[: geo.N + 1] + deviation.U, W=deviation.W)
+
+
+def check_admissible(delta_E: FloatArray, delta_U: FloatArray, X: FloatArray, bg: Background) -> None:
     """Refuse data with a non-positive density in any cell or `Gammabar^2 <= 0` at any face (Section 5.4).
 
     `Gammabar^2 = Gammabar_FRW^2 + U^2 - M / X` with `M = 3 sum E` the tilde mass times `X^3` (eq:eul:gamma): the
@@ -402,12 +433,12 @@ def check_admissible(E: FloatArray, U: FloatArray, X: FloatArray, bg: Background
     from the deviations, as a stage forms it (`derive`).
     """
     dV = shell_volumes(X)
-    rho = E / dV
+    rho = 1.0 + delta_E / dV
     if np.any(rho <= 0.0):
         c = int(np.argmin(rho))
         raise NotHyperbolicError("rho", c, float(rho[c]))
-    dM = 3.0 * np.cumsum(E - dV)
-    Gammabar2 = gammabar_squared(bg, X[1:], U[1:], U[1:] - X[1:], dM)
+    dM = 3.0 * np.cumsum(delta_E)
+    Gammabar2 = gammabar_squared(bg, X[1:], X[1:] + delta_U[1:], delta_U[1:], dM)
     if np.any(Gammabar2 <= 0.0):
         j = int(np.argmin(Gammabar2))
         raise NotHyperbolicError("Gammabar2", j + 1, float(Gammabar2[j]))

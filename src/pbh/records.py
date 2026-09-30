@@ -94,6 +94,17 @@ class StateRecord:
             zones=zones,
         )
 
+    @classmethod
+    def of_deviation(cls, deviation: State, X: FloatArray, xi: float, provenance: dict[str, Any]) -> StateRecord:
+        """The record of initial data known as their deviation from FRW, before any excision, taken as they are.
+
+        What `pbh.initial` builds: a perturbation below round-off of the background survives only if FRW is never
+        added to it on the way, as `of` would.
+        """
+        return cls(
+            delta_E=deviation.E, delta_U=deviation.U, W=deviation.W, M_e=0.0, X=X, xi=xi, j_e=0, provenance=provenance
+        )
+
     @property
     def state(self) -> State:
         """The state itself, FRW plus the deviation."""

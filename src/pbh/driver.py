@@ -88,7 +88,9 @@ from pbh.timestep import (
 from pbh.types import FloatArray
 
 FAR_ZONE_TOLERANCE = 1e-10
-"""A cell or face is in the far zone if the initial deviation from FRW there and beyond is below this."""
+"""A cell or face is in the far zone if the initial deviation from FRW there and beyond is below this fraction of the
+largest initial deviation: relative, so that a perturbation given early, far below round-off of the background, still
+has a far zone outside it."""
 
 READOUT_CHECK = 0.05
 """How often, in `xi`, the read-out is tried. The reading quoted is the first qualifying one whenever it is found, so
@@ -220,13 +222,17 @@ def step_abort(
 
 
 def far_zone_radius(initial: StateRecord) -> float:
-    """The smallest face radius beyond which the initial data are FRW to `FAR_ZONE_TOLERANCE`; the edge if none."""
+    """The smallest face radius beyond which the initial data are FRW, relatively; the edge if none.
+
+    FRW to `FAR_ZONE_TOLERANCE` of the largest initial deviation.
+    """
     N = initial.X.size - 1
     X = initial.X
     delta_rho = np.abs(initial.delta_E / shell_volumes(X))
     delta_U = np.abs(initial.delta_U[1:] / X[1:])
-    perturbed_cells = np.flatnonzero(delta_rho > FAR_ZONE_TOLERANCE)
-    perturbed_faces = np.flatnonzero(delta_U > FAR_ZONE_TOLERANCE) + 1
+    tolerance = FAR_ZONE_TOLERANCE * max(float(np.max(delta_rho)), float(np.max(delta_U)))
+    perturbed_cells = np.flatnonzero(delta_rho > tolerance)
+    perturbed_faces = np.flatnonzero(delta_U > tolerance) + 1
     last_cell = int(perturbed_cells[-1]) + 1 if perturbed_cells.size else 0  # the face outside the last perturbed cell
     last_face = int(perturbed_faces[-1]) if perturbed_faces.size else 0
     return float(X[min(max(last_cell, last_face) + 1, N)])
