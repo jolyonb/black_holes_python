@@ -12,11 +12,17 @@ efficiency drifts, at `varsigma = d ln lambda_a / d xi`, the estimate drifts at 
 
     Q = ln[omega / (1 - omega)] + xi = ln(lambda_a M_est / R_H),   dQ/d xi = varsigma / (1 - omega),   eq:exc:Q
 
-is constant while the efficiency is. The residual of the estimate is `-int omega dQ` over the future, and the
-variation `Q` showed over the preceding e-fold is the proxy for the variation still to come, so the estimate carries
-its own error bar,
+is constant while the efficiency is. The residual of the estimate is `-int omega dQ` over the future, bounded while
+`omega` falls by `omega` times the variation of `Q` still to come. Two things measure that variation. The variation
+`Q` showed over the preceding e-fold is a proxy for it, but a poor one at an extremum of the efficiency, where `Q`
+stands still; and the efficiency must relax to the Michel value `lambda_c`, so `Q` has yet to move by at least
+`|ln(lambda_a / lambda_c)|`, to leading order in `omega`. The bar is anchored on Michel by taking the larger:
 
-    delta M / M <~ omega [max Q - min Q] over [xi - 1, xi].                                      eq:exc:bar
+    delta M / M <~ omega max([max Q - min Q] over [xi - 1, xi], |ln(lambda_a / lambda_c)|).      eq:exc:bar
+
+Above threshold the efficiency overshoots the Michel value, to 1.12-1.17, before it relaxes; at the top of that hump
+`Q` is stationary and its backward variation small, and the backward term alone let a reading two e-folds after
+formation stand 0.6 per cent above the final mass under a bar of 0.43 per cent (experiments/readout_bias).
 
 The recipe of Section 8.5, which this module carries out on the series `(xi, M_AH)` that the horizon table records
 every step:
@@ -26,14 +32,15 @@ every step:
 * `omega` is the slope of a straight line fitted to `ln M_AH` over a window of width 0.3 centred on the reading's
   time, a window because `M_AH` comes from an interpolated root and carries steps at the scale of the grid; `M_AH` of
   the reading is the line's value at the centre;
-* `Q` and the bar are formed from that `omega`, the bar from the largest and smallest `Q` over the preceding e-fold;
+* `Q` and the bar are formed from that `omega`, the bar from the largest and smallest `Q` over the preceding e-fold
+  and from the measured efficiency `lambda_a / lambda_c` of the reading (below);
 * the mass is read no earlier than two e-folds after the formation of the horizon, and a run is carried until the bar
   falls below the accuracy wanted. The bar looks backward, so only the rate window reaches past the reading's time,
   by half its width.
 
 Also reported with every reading: `lambda_c epsilon = lambda_c M_AH e^(-xi)`, with `lambda_c` the Michel accretion
 eigenvalue, and the measured efficiency in its units, `lambda_a / lambda_c = omega / (lambda_c epsilon)`, which
-relaxes to one as the near zone becomes the Michel flow.
+relaxes to one as the near zone becomes the Michel flow, and whose logarithm anchors the bar.
 
 And the fit's own systematic, which the bar does not contain. A straight line across the curving `ln M_AH` errs in
 its slope by `f''' h^2 / 10` and in its value at the centre by `f'' h^2 / 6`, `h` the window's half-width; on steady
@@ -102,8 +109,8 @@ class Readings:
         omega: `d ln M_AH / d xi`, the fitted slope.
         M_est: The rate-corrected estimate `M_AH / (1 - omega)`.
         Q: `ln[omega / (1 - omega)] + xi`; NaN where `omega` is not in `(0, 1)`.
-        bar: The error bar `omega [max Q - min Q]` over the preceding `bar_span`; NaN until a whole span of readings
-            lies behind, and wherever `Q` is NaN in it.
+        bar: The error bar `omega max([max Q - min Q], |ln efficiency|)`, the range over the preceding `bar_span`;
+            NaN until a whole span of readings lies behind, and wherever `Q` is NaN in it.
         lambda_c_eps: `lambda_c M_AH e^(-xi)`.
         efficiency: The measured efficiency in units of the Michel value, `omega / (lambda_c epsilon)`.
         systematic: The fit's bias of the estimate, `omega W^2 / 60`, by which it reads low; not in the bar.
@@ -164,27 +171,32 @@ def readings(xi: FloatArray, M_AH: FloatArray, eos: EquationOfState, settings: R
     with np.errstate(divide="ignore", invalid="ignore"):
         Q = np.where((omega > 0.0) & (omega < 1.0), np.log(omega / (1.0 - omega)) + t, np.nan)
     lambda_c_eps = eos.accretion_eigenvalue * M * np.exp(-t)
+    efficiency = omega / lambda_c_eps
     return Readings(
         xi=t,
         M_AH=M,
         omega=omega,
         M_est=M / (1.0 - omega),
         Q=Q,
-        bar=_bars(omega, Q, settings),
+        bar=_bars(omega, Q, efficiency, settings),
         lambda_c_eps=lambda_c_eps,
-        efficiency=omega / lambda_c_eps,
+        efficiency=efficiency,
         systematic=omega * settings.window**2 / 60.0,
     )
 
 
-def _bars(omega: FloatArray, Q: FloatArray, settings: ReadoutSettings) -> FloatArray:
-    """`omega [max Q - min Q]` over the readings of the preceding `bar_span` (inclusive), NaN until a whole span."""
+def _bars(omega: FloatArray, Q: FloatArray, efficiency: FloatArray, settings: ReadoutSettings) -> FloatArray:
+    """`omega max([max Q - min Q], |ln efficiency|)`, the range over the preceding `bar_span` (inclusive).
+
+    NaN until a whole span lies behind, and wherever `Q` is NaN in it.
+    """
     span = round(settings.bar_span / settings.spacing)
     bar = nan_array(omega.size)
     for i in range(span, omega.size):
         behind = Q[i - span : i + 1]
         if np.all(np.isfinite(behind)):
-            bar[i] = omega[i] * (float(np.max(behind)) - float(np.min(behind)))
+            variation = float(np.max(behind)) - float(np.min(behind))
+            bar[i] = omega[i] * max(variation, abs(math.log(efficiency[i])))
     return bar
 
 

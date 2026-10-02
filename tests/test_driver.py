@@ -373,7 +373,8 @@ def test_the_mass_is_read_once_after_the_floor_and_the_run_is_told_to_stop(tmp_p
 
 
 def test_a_reading_far_from_the_michel_efficiency_is_flagged_and_need_not_stop_the_run(tmp_path: Path):
-    config = CONFIG.model_copy(update={"readout": ReadoutConfig(stop=False)})
+    # the Michel anchor puts the bar at omega ln 1.5, above the default target, so the target is loosened
+    config = CONFIG.model_copy(update={"readout": ReadoutConfig(stop=False, target=0.05)})
     path = tmp_path / "flag.evolution.h5"
     with RunWriter(path, config, N, row_type=MonitoredStep) as writer:
         _, stop = accreting(writer, config, 1.5, XI_FORM + 2.5)
@@ -381,6 +382,7 @@ def test_a_reading_far_from_the_michel_efficiency_is_flagged_and_need_not_stop_t
     (readout,) = [e for e in RunReader(path).events if e.kind == "readout"]
     assert readout.payload["efficiency"] == pytest.approx(1.5, rel=1e-2)
     assert readout.payload["efficiency_flag"]
+    assert readout.payload["bar"] > ReadoutConfig().target
 
 
 def test_no_reading_before_the_floor_or_the_target(tmp_path: Path):

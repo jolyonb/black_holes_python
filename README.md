@@ -63,6 +63,20 @@ so nothing is lost, and the early steps are few, since there the step cap and no
 `pbh restart SOURCE NAME [--snapshot K] [--config OTHER.yaml]` starts a new run from any snapshot of another, with its
 configuration or a different one: every snapshot is a restart point, and a restart carries the read-out's history.
 
+A run's spatial error comes from a pair: `pbh initial gaussian NAME ... --pair` also writes `NAME.half.initial.h5`, the
+same datum on the grid with `grid.N` halved (`N` must be even), and `pbh run CONFIG NAME --pair` then runs the companion
+`NAME.half` at `N/2`, about a quarter more work, saving its derived configuration with `half_of: NAME` in its
+provenance. `pbh summary NAME` then adds the pair's analysis (`pair.py`, Section 8.6), provided `NAME.half` is this
+run's companion (its provenance names `NAME`, its configuration is `NAME`'s with `N` halved, and it started after
+`NAME`; a leftover from an earlier run is said not to be): both outcomes and whether they agree (an abort never
+does); the mass at `N` and `N/2` with its calibrated error `F (v_N - v_(N/2))/3`, the peak central density with the
+bare third (uncalibrated), the formation and bounce times without one (they are sampled at the steps); whether the
+run is far enough from threshold to trust its side of it, with the probability and the `N` that would reach 95 per
+cent, and a caveat wherever the step cap or the start differ from the calibration's (`1e-7`, `-10`); and `M_est` with
+its error budget, spatial, read-out bar and quoted systematics in quadrature, with what the total does not cover. The
+trust width, the coverage factor and the systematics are calibrated by the campaigns of bite 26; `pair.py` names the
+source of each.
+
 `pbh run` and `pbh restart` take `--engine python|rust`: which implementation evaluates the stages, numpy (the
 reference and the default) or the optional Rust engine (the same numbers, about twice as fast on a whole run). It is
 not physics and not part of the configuration, so a configuration runs on any machine; each run records its engine in
@@ -142,6 +156,7 @@ src/pbh/
   config, initial, profiles          the configuration; initial data (the growing mode of a mass profile)
   records, output, h5                initial and snapshot records; the evolution file
   monitors, readout, summary         per-step monitors; the mass read-out; the run summary
+  pair                               the pair at N and N/2: spatial errors, threshold trust, the mass error budget
   causal                             how far the outer boundary can have reached, on sound and on light
   michel                             the Michel accretion flow, the late-time background and a test
   rust_engine                        the adapter to the Rust engine

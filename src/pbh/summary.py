@@ -114,7 +114,12 @@ class Sphere:
 
 @dataclass(frozen=True)
 class EpochSummary:
-    """Everything recomputed about one epoch; `quoted` is the run's `readout` event payload, if it read the mass."""
+    """Everything recomputed about one epoch; `quoted` is the run's `readout` event payload, if it read the mass.
+
+    The readings and the bars are recomputed with the bar of the code that summarises; `quoted` is the reading as the
+    run made it, under the bar of the code that ran it, and the two can differ for a file written before a change of
+    the bar.
+    """
 
     xi_start: float
     readings: Readings
@@ -316,7 +321,8 @@ class RunSummary:
 
     `core` is `None` if no step preceded formation, `fold` if the run never excised. `formation` and `end` are the
     causal isolation of the apparent horizon at the first formation and of the origin at the end (`causal.py`),
-    `None` if the run did not form a hole or has not ended; the reading's is in each epoch's `quoted`.
+    `None` if the run did not form a hole or has not ended; the reading's is in each epoch's `quoted`. `status` is
+    how the run ended (`completed`, `aborted`, `interrupted`), `None` while it is still going.
     """
 
     core: CoreSummary | None
@@ -324,6 +330,7 @@ class RunSummary:
     fold: FoldSummary | None = None
     formation: dict[str, Any] | None = None
     end: dict[str, Any] | None = None
+    status: str | None = None
 
 
 def core_summary(reader: RunReader) -> CoreSummary | None:
@@ -381,13 +388,14 @@ def summarise(reader: RunReader) -> RunSummary:
     """The core before formation, every epoch of the run, the fold monitor and the boundary's reach, summarised."""
     events = reader.events
     formed = [e.payload["isolation"] for e in events if e.kind == "formation"]
-    ended = [e.payload["isolation"] for e in events if e.kind == "end"]
+    ended = [e.payload for e in events if e.kind == "end"]
     return RunSummary(
         core_summary(reader),
         epoch_summaries(reader),
         fold_summary(reader),
         formed[0] if formed else None,
-        ended[-1] if ended else None,
+        ended[-1].get("isolation") if ended else None,  # an interrupted run has none
+        ended[-1]["status"] if ended else None,
     )
 
 
@@ -433,7 +441,14 @@ def as_json(summary: RunSummary) -> dict[str, Any]:
             }
         )
     fold = None if summary.fold is None else summary.fold.__dict__
-    return {"core": core_json, "epochs": result, "fold": fold, "formation": summary.formation, "end": summary.end}
+    return {
+        "core": core_json,
+        "epochs": result,
+        "fold": fold,
+        "formation": summary.formation,
+        "end": summary.end,
+        "status": summary.status,
+    }
 
 
 def reference_json(ref: Reference) -> dict[str, Any]:
@@ -515,9 +530,9 @@ def describe(summary: RunSummary) -> str:
             q = s.quoted
             flag = "  FLAGGED: efficiency far from Michel's" if q["efficiency_flag"] else ""
             lines.append(
-                f"  quoted: M_est = {q['M_est']:.5g} R_H +- {100 * q['bar']:.2f}% at xi = {q['xi_reading']:.3f} "
-                f"({q['xi_reading'] - s.xi_start:.2f} e-folds), lambda_c eps = {q['lambda_c_eps']:.3f}, "
-                f"efficiency {q['efficiency']:.3f} of Michel's{flag}"
+                f"  quoted (as the run read it): M_est = {q['M_est']:.5g} R_H +- {100 * q['bar']:.2f}% "
+                f"at xi = {q['xi_reading']:.3f} ({q['xi_reading'] - s.xi_start:.2f} e-folds), "
+                f"lambda_c eps = {q['lambda_c_eps']:.3f}, efficiency {q['efficiency']:.3f} of Michel's{flag}"
             )
         else:
             lines.append("  no reading quoted")

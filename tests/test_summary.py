@@ -88,6 +88,8 @@ def test_the_summary_recovers_the_hole_the_file_was_made_from(tmp_path: Path):
     assert summary.formation["r"] == 0.9
     assert summary.end is not None
     assert summary.end["r"] == 0.0
+    assert summary.status == "completed"
+    assert as_json(summary)["status"] == "completed"
     text = describe(summary)
     assert "outer boundary at Rtilde_max = 12, acting since xi = 0:" in text
     assert "at formation (apparent horizon), r = 0.9: needs Rtilde_max >= " in text

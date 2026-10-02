@@ -103,10 +103,17 @@ def test_with_a_constant_efficiency_the_estimate_is_the_final_mass_at_every_time
     assert r.M_AH[0] / M_inf - 1.0 < -0.05
     assert r.efficiency[after] == pytest.approx(efficiency, rel=5e-3)  # lambda_a / lambda_c, with the fit's systematic
     assert r.lambda_c_eps == pytest.approx(LAMBDA_C * r.M_AH * np.exp(-r.xi))
-    # Q = ln(lambda_a M_inf) is constant, so the bar vanishes but for the fit's systematic, which it does not measure
+    # Q = ln(lambda_a M_inf) is constant, so its variation vanishes but for the fit's systematic, and the bar is the
+    # Michel anchor omega |ln(lambda_a / lambda_c)|: the estimate is exact here, but an efficiency must relax to the
+    # Michel value, and a constant one away from it is the change still to come
     assert r.Q[after] == pytest.approx(math.log(efficiency * LAMBDA_C * M_inf), abs=5e-3)
     assert np.all(np.isfinite(r.bar[after]))
-    assert np.max(r.bar[after]) < 2e-5
+    anchor = r.omega[after] * np.abs(np.log(r.efficiency[after]))
+    assert np.max(np.abs(r.bar[after] - anchor)) < 2e-5
+    if efficiency == 1.0:
+        # at the Michel value itself what is left is the fit's systematic in the measured efficiency, which puts
+        # the anchor at about one and a half times the estimate's own systematic omega W^2 / 60
+        assert np.all(r.bar[after] < 2.0 * r.systematic[after])
 
 
 def test_where_the_efficiency_drifts_the_estimate_drifts_as_eq_exc_estdrift_says():
@@ -150,6 +157,33 @@ def test_after_the_floor_the_bar_bounds_the_error_of_the_estimate():
     assert r.xi[i] >= XI_FORM + SETTINGS.floor - 1e-9
     assert r.bar[i] < SETTINGS.target
     assert abs(r.M_est[i] / M_inf - 1.0) < SETTINGS.target
+
+
+def test_at_the_top_of_an_efficiency_hump_the_michel_anchor_keeps_the_bar_above_the_error():
+    # The efficiency overshoots the Michel value and relaxes, as above threshold: a hump to 1.15 times Michel whose top
+    # sits halfway through the e-fold before the floor. There Q is stationary, so its variation over that e-fold is
+    # small while all of its fall to the Michel value is still to come: omega [max Q - min Q] alone dips below the
+    # error of the first reading, and the anchor omega |ln(lambda_a / lambda_c)| keeps the bar above it (eq:exc:bar).
+    def lambda_a(t: float) -> float:
+        return LAMBDA_C * (1.0 + 0.15 * math.exp(-(((t - XI_FORM - 1.5) / 1.5) ** 2)))
+
+    long = step_times(XI_FORM, XI_FORM + 14.0)
+    M = accreted(long, 3.0, lambda_a)
+    M_inf = float(M[-1] / (1.0 - LAMBDA_C * M[-1] * math.exp(-long[-1])))
+    r = readings(long, M, EOS, SETTINGS)
+    i = first_reading(r, XI_FORM, SETTINGS)
+    assert i is not None
+    assert r.xi[i] == pytest.approx(XI_FORM + SETTINGS.floor, abs=SETTINGS.spacing)
+    error = r.M_est[i] / M_inf - 1.0
+    assert error > 1e-3  # high: the efficiency has yet to fall
+    span = round(SETTINGS.bar_span / SETTINGS.spacing)
+    behind = r.Q[i - span : i + 1]
+    assert r.omega[i] * (np.max(behind) - np.min(behind)) < 0.5 * error  # the backward variation alone under-covers
+    assert r.bar[i] == pytest.approx(r.omega[i] * math.log(r.efficiency[i]))  # the anchor decides
+    assert error < r.bar[i]
+    # and from the floor on, wherever the bar is below five per cent, it bounds the error
+    after = (r.xi >= XI_FORM + SETTINGS.floor - 1e-9) & (r.bar < 0.05)
+    assert np.all(np.abs(r.M_est[after] / M_inf - 1.0) <= r.bar[after] + 1e-6)
 
 
 # --- the read-out decision ---

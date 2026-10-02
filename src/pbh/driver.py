@@ -623,11 +623,14 @@ def run(
     history: Epoch | None = None,
     core: CoreWatch | None = None,
     engine: Engine = Engine.PYTHON,
+    half_of: str | None = None,
 ) -> RunResult:
     """Run the configuration from the initial state and write the run's files; see the module docstring.
 
     `history` is the epoch the initial state is in, with its series of `M_AH`, and `core` the core's watch
     (`core_watch`), when it continues another run. `engine` evaluates the stages, and is recorded in both files.
+    `half_of` names the run this one is the half-resolution companion of (`pair.py`), recorded in the configuration's
+    provenance.
     """
     if initial.j_e > 0 and not config.excision.enabled:
         raise ValueError(
@@ -648,7 +651,7 @@ def run(
             f"the initial time {xi} is before the configuration's xi_start = {config.evolution.xi_start}: a run starts "
             "at xi_start, or continues one that did"
         )
-    save(config, paths.config, engine)
+    save(config, paths.config, engine, half_of)
     cap = config.stepping.cap(sch.eos)
     weights = tuple(float(b) for b in RK4.b)
     scale = float(np.max(np.abs(sch.frw(xi))))  # the state's scale, for the companion estimate

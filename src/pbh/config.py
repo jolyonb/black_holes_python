@@ -46,7 +46,8 @@ Every key has the default shown except `N`, `Rtilde_max` and `xi_end`, which a r
 may omit any key with a default and may contain nothing else: an unknown key, a wrong type, or a value outside its
 range is an error naming the key, never a warning. `save` writes the complete configuration with every default
 filled in, under a `provenance` section giving the code's git commit, the time of writing and, for a run, the engine
-that evaluated its stages; `load` accepts and discards that section, so a saved configuration reruns as it was.
+that evaluated its stages and, for the half companion of a pair (`pair.py`), the run it accompanies; `load` accepts
+and discards that section, so a saved configuration reruns as it was.
 
 The engine (`timestep.Engine`, numpy or the optional Rust engine) is not configured here: it is not physics, and a
 configuration must run on every machine, with or without the Rust engine. It is chosen where the run is started
@@ -411,16 +412,23 @@ class Provenance(Section):
     engine: Engine | None = Field(default=None, strict=False)
     """The engine that evaluated the run's stages, for a run's configuration; absent otherwise."""
 
+    half_of: str | None = None
+    """For the half-resolution companion of a pair (`pbh run --pair`), the run it is the companion of; absent
+    otherwise."""
+
     @classmethod
-    def now(cls, engine: Engine | None = None) -> Self:
+    def now(cls, engine: Engine | None = None, half_of: str | None = None) -> Self:
         """The provenance of a file written now by this code, for a run on `engine` if one is given."""
-        return cls(code_commit=code_commit(), written=datetime.now(UTC), engine=engine)
+        return cls(code_commit=code_commit(), written=datetime.now(UTC), engine=engine, half_of=half_of)
 
 
-def save(config: RunConfig, path: Path, engine: Engine | None = None) -> None:
-    """Write the complete configuration, every default filled in, under its provenance (with the run's `engine`)."""
+def save(config: RunConfig, path: Path, engine: Engine | None = None, half_of: str | None = None) -> None:
+    """Write the complete configuration, every default filled in, under its provenance.
+
+    The provenance carries the run's `engine` and, for the half companion of a pair, `half_of`, the run it accompanies.
+    """
     document = {
-        "provenance": Provenance.now(engine).model_dump(mode="json", exclude_none=True),
+        "provenance": Provenance.now(engine, half_of).model_dump(mode="json", exclude_none=True),
         **config.model_dump(mode="json", exclude_none=True),
     }
     with path.open("w") as f:

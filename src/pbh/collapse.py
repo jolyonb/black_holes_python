@@ -11,7 +11,11 @@ above threshold, `M ~ (C - C_*)^gamma`, which the read-out measures, and below i
 The physical central density, in units of the background at `xi = 0`, is `rho_phys = rhotilde_0 e^(-2 xi)`, since
 the background falls as `H^2 = e^(-2 xi)`. The tilde density alone is measured against a background that is itself
 falling, and does not scale. The background's fall also makes the physical density largest at the start in any run
-that is not collapsing hard, so the collapse's peak is the largest value after the physical density first rises.
+that is not collapsing hard, so the collapse's peak is the largest value after the physical density first rises, and
+before it first falls below `BOUNCE_FALL` of its running maximum since then: below threshold on a grid fine at the
+origin the core empties after the bounce, and later infall onto the emptied centre can raise a spike above the
+collapse's own peak, a different event that does not scale with the distance from threshold (experiments/
+e10_criticality, `e10_peaks.first_peak`, the rule this one reproduces).
 
 A bounce is positive evidence, never the absence of a horizon by the end of a run: the physical central density must
 have fallen to `BOUNCE_FALL` of its peak and stayed there for `BOUNCE_HOLD` in `xi`, and the core margin must by then
@@ -65,12 +69,19 @@ def physical_density(xi: FloatArray, rho_0: FloatArray) -> FloatArray:
 
 
 def peak_index(rho_phys: FloatArray) -> int | None:
-    """The index of the collapse's peak: the largest value after the physical density first rises; `None` if never."""
+    """The index of the collapse's peak; `None` if the physical density never rises.
+
+    The peak is the largest value after the density first rises and before it first falls below `BOUNCE_FALL` of its
+    running maximum since then, so that a later spike onto an emptied centre is not taken for it.
+    """
     rising = np.flatnonzero(np.diff(rho_phys) > 0.0)
     if rising.size == 0:
         return None
     first = int(rising[0])
-    return first + int(np.argmax(rho_phys[first:]))
+    after = rho_phys[first:]
+    fallen = np.flatnonzero(after < BOUNCE_FALL * np.maximum.accumulate(after))
+    end = int(fallen[0]) if fallen.size else after.size
+    return first + int(np.argmax(after[:end]))
 
 
 def bounce_time(xi: FloatArray, rho_phys: FloatArray, margin: FloatArray, peak: int) -> float | None:

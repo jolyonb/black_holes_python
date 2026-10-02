@@ -44,6 +44,17 @@ def test_the_peak_is_the_largest_value_after_the_physical_density_first_rises():
     assert peak_index(physical_density(XI, np.full(XI.size, 1.2))) is None  # FRW never rises
 
 
+def test_the_peak_is_the_first_one_not_a_later_spike_onto_an_emptied_centre():
+    # below threshold at fine origin resolution the centre empties after the bounce and later infall spikes above the
+    # collapse's own peak; the peak is the one before the density first fell below half its running maximum
+    rho_0 = central(4.0, 0.2, 3.0) + 8.0 * np.exp(2.0 * XI) * np.exp(-(((XI - 6.0) / 0.05) ** 2))
+    rho_phys = physical_density(XI, rho_0)
+    assert np.argmax(rho_phys) == pytest.approx(600, abs=2)  # the spike is the largest value
+    k = peak_index(rho_phys)
+    assert k is not None
+    assert XI[k] == pytest.approx(4.0, abs=0.02)
+
+
 def test_a_bounce_is_established_at_the_end_of_the_hold_once_the_margin_has_risen():
     rho_phys = physical_density(XI, central(5.0, 0.2, 3.0))
     margin = 1.0 - 0.8 * np.exp(-(((XI - 5.0) / 0.3) ** 2))  # smallest at the peak, recovering after
