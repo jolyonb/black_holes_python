@@ -194,9 +194,9 @@ fn one_sided(
 
 /// The density to both sides of every retained face, piecewise linear in `s = X^2` (eq:num:recon, eq:num:theta),
 /// carried out on the deviation `rho - 1` with one added back; in the cells `whole` marks (`storage.rs`), and across
-/// their faces, on the densities `rho` themselves.
+/// their faces, on the densities `rho` themselves. `ANY` is whether `whole` is `Some` (`calc_derivs`).
 #[inline(never)] // kept out of line: see `calc_derivs`
-pub fn reconstruct_density(
+pub fn reconstruct_density<const ANY: bool>(
     delta_rho: &[f64],
     geo: &Geometry,
     w: &StencilWeights,
@@ -205,6 +205,7 @@ pub fn reconstruct_density(
     rho: &[f64],
     whole: Option<&[bool]>,
 ) -> Reconstruction {
+    let whole = whole.filter(|_| ANY); // `None` in the instance for none stored whole, where the tests fold away
     let N = w.layout.N;
     let j_e = w.layout.j_e;
     let dS = &geo.dS;
@@ -400,9 +401,9 @@ pub fn viscous_sides(
 /// `drift = alpha (h X (e^phi - 1) + e^phi dU)` at that side's lapse; the bounds are
 /// `Lambda^+ = max(Theta + a, v^L, v^R, 0)` and `Lambda^- = min(Theta - a, v^L, v^R, 0)`, taken pairwise in the order
 /// printed. At the faces `beside` a cell stored whole (`None` if none is) the lapse of both sides is the power of the
-/// density, and the flux is formed whole by `hll_flux_whole`.
+/// density, and the flux is formed whole by `hll_flux_whole`. `ANY` is whether `beside` is `Some` (`calc_derivs`).
 #[inline(never)] // kept out of line: see `calc_derivs`
-pub fn hll_flux(
+pub fn hll_flux<const ANY: bool>(
     rho_L: &[f64],
     rho_R: &[f64],
     delta_rho_L: &[f64],
@@ -419,6 +420,7 @@ pub fn hll_flux(
     frw_speed: &[f64],
     beside: Option<&[bool]>,
 ) -> HllFlux {
+    let beside = beside.filter(|_| ANY); // `None` in the instance for none stored whole, where the tests fold away
     let N = w.layout.N;
     let j_e = w.layout.j_e;
 

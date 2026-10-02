@@ -64,9 +64,10 @@ pub struct Derived {
 ///
 /// `deviation` is the state's deviation from FRW, which `Gammabar^2` and the relative deviations read. `whole` marks
 /// the cells stored whole (`storage.rs`), `None` if none is: their `delta_rho` is `rho - 1`, formed from their density,
-/// and their lapse is the power of their density (`EquationOfState::lapse_whole`).
+/// and their lapse is the power of their density (`EquationOfState::lapse_whole`). `ANY` is whether `whole` is `Some`
+/// (`calc_derivs`).
 #[inline(never)] // kept out of line: see `calc_derivs`
-pub fn derive(
+pub fn derive<const ANY: bool>(
     state: &State,
     geo: &Geometry,
     bg: &Background,
@@ -76,6 +77,7 @@ pub fn derive(
     deviation: &State,
     whole: Option<&[bool]>,
 ) -> Result<Derived, NotHyperbolic> {
+    let whole = whole.filter(|_| ANY); // `None` in the instance for none stored whole, where the tests fold away
     let N = w.layout.N;
     let j_e = w.layout.j_e;
 

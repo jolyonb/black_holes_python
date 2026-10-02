@@ -83,6 +83,8 @@ def switched(
         layout: The layout `dy` is packed by.
     """
     N, j_e = layout.N, layout.j_e
+    if whole is None and not bool(np.any(rho[j_e : N - KEEP_DEVIATION] < TO_WHOLE)):
+        return None  # the usual case, decided without forming the flags: none is stored whole, and none moves
     flags = np.zeros(N, dtype=bool) if whole is None else whole
     eligible = np.zeros(N, dtype=bool)
     eligible[j_e : N - KEEP_DEVIATION] = True

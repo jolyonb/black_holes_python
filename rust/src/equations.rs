@@ -149,6 +149,10 @@ pub fn speeds(
 /// `#[inline(never)]`: inlined into this one function, the stage ran about 10 per cent slower at N = 1600 (281 against
 /// 312 us an RK4 attempt, 2026-09-28; measured, the cause not established). Out of line or in, the operations and
 /// their order are the same.
+///
+/// The stage is compiled twice, `ANY` false and true (`stage`), the flags tested once here: in the instance for none
+/// stored whole every test of them folds away, and the stage is the deviation form's alone. Tested in every loop, they
+/// cost about 12 per cent of an RK4 attempt at N = 1600 with none set (2026-10-02).
 pub fn calc_derivs(
     state: &State,
     geo: &Geometry,
@@ -163,6 +167,39 @@ pub fn calc_derivs(
     X_je_squared: f64,
     whole: Option<&[bool]>,
 ) -> Result<DerivsResult, StageError> {
+    let instance = if whole.is_some() { stage::<true> } else { stage::<false> };
+    instance(
+        state,
+        geo,
+        bg,
+        eos,
+        w,
+        outer,
+        settings,
+        deviation,
+        reference,
+        X_N_squared,
+        X_je_squared,
+        whole,
+    )
+}
+
+/// `calc_derivs` for flags `whole` that are `Some` exactly when `ANY`.
+fn stage<const ANY: bool>(
+    state: &State,
+    geo: &Geometry,
+    bg: &Background,
+    eos: &EquationOfState,
+    w: &StencilWeights,
+    outer: &OuterClosure,
+    settings: &KernelSettings,
+    deviation: &State,
+    reference: &FrwReference,
+    X_N_squared: f64,
+    X_je_squared: f64,
+    whole: Option<&[bool]>,
+) -> Result<DerivsResult, StageError> {
+    let whole = whole.filter(|_| ANY); // `None` in the instance for none stored whole, where the tests fold away
     let N = w.layout.N;
     let j_e = w.layout.j_e;
     let alpha = eos.alpha_float;
@@ -171,7 +208,8 @@ pub fn calc_derivs(
 
     let beside = whole.map(faces_beside);
     let beside = beside.as_deref();
-    let d = derive(state, geo, bg, eos, w, settings.theta, deviation, whole).map_err(StageError::NotHyperbolic)?;
+    let d =
+        derive::<ANY>(state, geo, bg, eos, w, settings.theta, deviation, whole).map_err(StageError::NotHyperbolic)?;
     let sp = speeds(&d, deviation, geo, eos, j_e, h);
     let mut D_s_rho = w.gradient_s(&d.delta_rho); // the same difference as of rho, without its rounding to the FRW size
     if let Some(beside) = beside {
@@ -193,7 +231,7 @@ pub fn calc_derivs(
     let frw_speed = &reference.frw_speed; // alpha w h X - d_xi X: the FRW flux is frw_speed X^2
     let (mut delta_F, Q, kernels, F_whole) = match settings.kernels {
         Kernels::Production => {
-            let recon = reconstruct_density(
+            let recon = reconstruct_density::<ANY>(
                 &d.delta_rho,
                 geo,
                 w,
@@ -221,7 +259,7 @@ pub fn calc_derivs(
                 &w.layout,
                 &settings.viscous_flux,
             );
-            let hll = hll_flux(
+            let hll = hll_flux::<ANY>(
                 &recon.rho_L,
                 &recon.rho_R,
                 &recon.delta_rho_L,
