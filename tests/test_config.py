@@ -251,7 +251,7 @@ def test_the_sections_build_the_objects_they_describe():
     assert config.grid.build() == SinhStretch(12.0, scale=3.0)
     assert config.outer.build() == OutgoingWave(PenaltyStrengths(2.0, 1.0, 0.0))
     assert config.shocks.build() == KernelSettings()
-    assert config.stepping.cap(config.fluid.build()) == step_cap(config.fluid.build(), 1e-5, 4.0)
+    assert config.stepping.cap(config.fluid.build()) == step_cap(config.fluid.build(), 1e-7, 4.0)
     held_uniform = RunConfig(
         grid=GridConfig(N=10, Rtilde_max=3.0, map=MapFamily.UNIFORM),
         evolution=EvolutionConfig(xi_end=1.0),

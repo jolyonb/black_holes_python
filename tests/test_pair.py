@@ -211,7 +211,10 @@ def test_the_pair_is_described_and_exported():
 
 
 def test_a_looser_cap_or_a_later_start_than_the_calibration_s_is_named_in_the_verdict():
-    production = load_yaml("grid: {N: 400, Rtilde_max: 30.0, scale: 3.0}\nevolution: {xi_start: -6.0, xi_end: 8.0}\n")
+    production = load_yaml(  # the former default cap, and a start after the calibration's
+        "grid: {N: 400, Rtilde_max: 30.0, scale: 3.0}\nstepping: {cap_tolerance: 1.0e-5}\n"
+        "evolution: {xi_start: -6.0, xi_end: 8.0}\n"
+    )
     analysed = pair.analyse(run_summary(M_est=10.0, formation=4.0), run_summary(M_est=10.03, formation=4.0), production)
     assert len(analysed.caveats) == 2
     text = "\n".join(pair.describe(analysed))

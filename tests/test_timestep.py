@@ -237,9 +237,10 @@ def test_the_step_is_the_courant_step_when_cells_are_small_and_the_cap_when_they
 
 
 def test_the_step_cap_has_the_printed_values():
-    assert step_cap(EOS) == pytest.approx(0.1316, abs=5e-4)  # eq:num:stepcap: kappa = 0.13 at tol = 1e-5, T_sh = 4
-    assert step_cap(EOS, super_horizon_efolds=6.0) == pytest.approx(0.12, abs=5e-3)
-    assert step_cap(EOS) == pytest.approx((120.0 * 1e-5 / 4.0) ** 0.25 / EOS.growing_mode_rate)
+    assert step_cap(EOS, 1e-5) == pytest.approx(0.1316, abs=5e-4)  # eq:num:stepcap: kappa = 0.13 at tol 1e-5, T_sh = 4
+    assert step_cap(EOS, 1e-5, super_horizon_efolds=6.0) == pytest.approx(0.12, abs=5e-3)
+    assert step_cap(EOS) == pytest.approx((120.0 * 1e-7 / 4.0) ** 0.25 / EOS.growing_mode_rate)  # the default
+    assert step_cap(EOS) == pytest.approx(0.0416, abs=5e-4)
 
 
 # --- convergence on the exact Bessel modes (Section 7.3; tab:num:tests row 2, base scheme) ---

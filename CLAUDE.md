@@ -74,6 +74,9 @@ compare on the same machine, idle (the owner's machine is sometimes loaded, whic
 | 800 | 7080 | 9.17 s | 2.30 s | 1295 us | 325 us | 4.0x | identical |
 | 1600 | 14090 | 21.69 s | 6.76 s | 1539 us | 480 us | 3.2x | identical |
 
+Since 2026-10-02 the step cap's default tolerance is `1e-7` (was `1e-5`): the same collapse takes 1743, 3556, 7080 and
+14090 steps (the cap rarely binds from a start at `xi = 0`); timings to be refreshed on an idle machine.
+
 The same collapse that morning, before the day's speed work: Rust 2.08 s at N = 400 and 12.81 s at N = 1600, numpy
 4.38 s and 24.05 s.
 

@@ -47,7 +47,7 @@ readout:
 
 stepping:
   courant_number: 0.75
-  cap_tolerance: 1.0e-5       # the step cap of eq:num:stepcap: relative error tolerance ...
+  cap_tolerance: 1.0e-7       # the step cap of eq:num:stepcap: relative error tolerance ...
   cap_efolds: 4.0             # ... over this many super-horizon e-folds
 
 output:

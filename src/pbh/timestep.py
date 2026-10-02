@@ -722,13 +722,15 @@ def step_size(result: DerivsResult, geo: Geometry, layout: Layout, courant_numbe
     return StepChoice(dxi=cap, limit=StepLimit.CAP)
 
 
-def step_cap(eos: EquationOfState, tolerance: float = 1e-5, super_horizon_efolds: float = 4.0) -> float:
+def step_cap(eos: EquationOfState, tolerance: float = 1e-7, super_horizon_efolds: float = 4.0) -> float:
     """The fixed cap `Delta xi_max = kappa / lambda_g` on the step (eq:num:stepcap).
 
     RK4's local error on `y' = lambda_g y` is `(lambda_g Delta xi)^5 / 120` per step, so the relative error of the
     growing amplitude accumulated over a stretch of `T_sh` e-folds is `T_sh lambda_g (lambda_g Delta xi)^4 / 120`;
     requiring it below the tolerance gives `kappa = (120 tol / (lambda_g T_sh))^(1/4)`, `0.13` for radiation at
-    `tol = 1e-5`, `T_sh = 4`, and `0.12` at `T_sh = 6`. Flat spacetime has no growing mode, so a flat run passes no
+    `tol = 1e-5`, `T_sh = 4`, and `0.12` at `T_sh = 6`; the default `1e-7` gives `0.042`, since at `1e-5` the cap's
+    amplitude error moved the threshold by a few parts in 1e6 (analysis experiments e9, e10) for at most a few per
+    cent more steps. Flat spacetime has no growing mode, so a flat run passes no
     cap (`math.inf`) to `step_size`.
     """
     lambda_g = eos.growing_mode_rate

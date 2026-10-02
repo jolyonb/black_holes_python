@@ -78,7 +78,9 @@ cent coverage factor of the 23 pairs of both families with `|dM/M| > 1e-4` (expe
 1.29 from the Gaussian alone). Below `1e-4` the step cap's floor, `SYSTEMATIC_TIME_STEP`, sets the error."""
 
 SYSTEMATIC_TIME_STEP = 1.1e-4
-"""The relative error of the mass from the time step: the step cap at its default tolerance `1e-5` against `1e-7`,
+"""The relative error of the mass from the time step, kept as a conservative bound: measured with the step cap at
+its former default tolerance `1e-5` against `1e-7` (the default since 2026-10-02, at which the cap's part vanishes;
+to be remeasured with the campaign rerun at `1e-7`, which also recalibrates `F_COVERAGE`),
 1.03e-4 at 0.03 above threshold, rounded up (experiments/e9_systematics); the Courant number alone, 0.75 against
 0.375, 4e-7. Measured at `xi_start = -6` on the sinh scale 3: it grows as `1/(C - C_*)` nearer threshold, it grows
 with an earlier start, since the cap's amplitude error accumulates over the super-horizon steps (the threshold moves

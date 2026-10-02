@@ -29,7 +29,7 @@ assembled from all of them. The driver reads the file and never sees a raw strin
       cap_tension: true         # cap the viscous tension at the fluid pressure, q >= -w rho
     stepping:
       courant_number: 0.75
-      cap_tolerance: 1.0e-5     # the step cap of eq:num:stepcap: relative error tolerance ...
+      cap_tolerance: 1.0e-7     # the step cap of eq:num:stepcap: relative error tolerance ...
       cap_efolds: 4.0           # ... over this many super-horizon e-folds
     output:
       snapshots: all                # all; milestones (initial, formation, switch-on, end); none (initial only)
@@ -266,7 +266,7 @@ class SteppingConfig(Section):
     """The `stepping` section: RK4's Courant number and the step cap (Section 7.6)."""
 
     courant_number: float = Field(default=COURANT_NUMBER, gt=0.0, le=1.0)
-    cap_tolerance: float = 1e-5
+    cap_tolerance: float = 1e-7
     cap_efolds: float = 4.0
 
     def cap(self, eos: EquationOfState) -> float:
