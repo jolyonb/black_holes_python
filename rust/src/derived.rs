@@ -9,6 +9,9 @@
 //! The hyperbolicity checks are the Python's, in its order: every retained `rho_c` first, the first offender by index,
 //! then `Gammabar_j^2` over the retained faces, then the outer face's density (as `rho` at index `N`). NaN counts as
 //! not positive.
+//!
+//! A cell stored whole (`storage.rs`) has its content itself in `state.E` and its rounded `E - Delta V` in the
+//! deviation: its `delta_rho` and lapse come from its density.
 
 use crate::eos::{Background, EquationOfState};
 use crate::geometry::Geometry;
@@ -59,7 +62,9 @@ pub struct Derived {
 
 /// Form the derived fields of one stage, asserting hyperbolicity on the retained entries (`derive`).
 ///
-/// `deviation` is the state's deviation from FRW, which `Gammabar^2` and the relative deviations read.
+/// `deviation` is the state's deviation from FRW, which `Gammabar^2` and the relative deviations read. `whole` marks
+/// the cells stored whole (`storage.rs`), `None` if none is: their `delta_rho` is `rho - 1`, formed from their density,
+/// and their lapse is the power of their density (`EquationOfState::lapse_whole`).
 #[inline(never)] // kept out of line: see `calc_derivs`
 pub fn derive(
     state: &State,
@@ -69,6 +74,7 @@ pub fn derive(
     w: &StencilWeights,
     theta: f64,
     deviation: &State,
+    whole: Option<&[bool]>,
 ) -> Result<Derived, NotHyperbolic> {
     let N = w.layout.N;
     let j_e = w.layout.j_e;
@@ -82,11 +88,21 @@ pub fn derive(
     for c in j_e..N {
         delta_rho[c] = deviation.E[c] / geo.dV[c];
     }
+    if let Some(whole) = whole {
+        for c in 0..N {
+            if whole[c] {
+                delta_rho[c] = rho[c] - 1.0; // a cell stored whole: from its own density, not its rounded deviation
+            }
+        }
+    }
 
     let mut ephi = vec![f64::NAN; N];
     let mut delta_ephi = vec![f64::NAN; N];
     for c in j_e..N {
-        let lapse = eos.lapse_and_deviation(rho[c], delta_rho[c]);
+        let lapse = match whole {
+            Some(whole) if whole[c] => eos.lapse_whole(rho[c]),
+            _ => eos.lapse_and_deviation(rho[c], delta_rho[c]),
+        };
         ephi[c] = lapse.ephi;
         delta_ephi[c] = lapse.delta_ephi;
     }

@@ -116,7 +116,7 @@ HDF5, in single-writer multiple-reader mode, with four tables that share nothing
 |---|---|---|
 | `steps` | one per step | `xi`, `dxi`, what limited the step, refused attempts, and the monitors (conservation, the outer boundary, stability, positivity, resolution) |
 | `events` | one per event | a kind and a JSON payload: `formation`, `switch_on`, `re_excision`, `readout`, `bounce`, `rejection`, `abort`, `end`, ... |
-| `snapshots` | one per output time | the integrator's variables only (deviations from FRW), from which every derived field is recomputed |
+| `snapshots` | one per output time | the integrator's variables only (deviations from FRW, and the content itself of the cells stored whole in `E_whole`), from which every derived field is recomputed |
 | `horizon` | one per step | the finder's report: `M_AH`, `X_AH`, the trapping margins, the excision face, the fold monitor, the near-zone monitors |
 
 ```python
@@ -136,8 +136,8 @@ What each column means, and which paper equation it comes from, is in the docstr
 alongside the paper (`PRODUCTION_OUTPUT_SPEC.md`).
 
 A run ends in one of three ways, each recorded as the `end` event: completed (at `xi_end`, when the mass was read,
-or when the core bounced); aborted, with a named cause (a cell below `5e-13` of the background, where the fluid-orthogonal slicing and
-the arithmetic both end; a chart failure, named by case; a switch-on transition that cannot fit, naming the
+or when the core bounced); aborted, with a named cause (no step passes the checks after twenty halvings; the clock stalls, a step lost even in
+the compensated sum of `xi`; a chart failure, named by case; a switch-on transition that cannot fit, naming the
 radius it needs; an excision face that is no longer an outflow boundary, or its three faces no longer trapped; the fold
 monitor, a shock behind which the slice folds, naming the cure, to excise further out); or interrupted, by an exception (Ctrl-C included), after a final flush.
 
@@ -146,6 +146,7 @@ monitor, a shock behind which the slice folds, naming the cure, to excise furthe
 ```
 src/pbh/
   maps, geometry, layout, state      the grid map X(xi, x), exact cell geometry, the packed state, FRW
+  storage                            each cell stored as its deviation, or whole once far below the background
   stencils, kernels, derived         difference quotients in X and s = X^2, the shock-capturing kernels, derived fields
   equations                          one stage: the semi-discrete equations, in deviation form
   outer                              the outer closure (outgoing-wave penalty, or held at FRW)
@@ -167,7 +168,9 @@ src/_old/                            the retired collocated code (2015-2026), ke
 
 The evolved variables are the cell energy contents and the face velocities on a staggered grid (density on cells,
 velocity and mass on faces), with the mass by cumulative sum, so the mass constraint holds by construction; the
-integrator advances their deviation from FRW, which keeps the far field FRW to round-off.
+integrator advances their deviation from FRW, which keeps the far field FRW to round-off, except in a cell below a
+quarter of the background, which it stores whole (back as its deviation above a half), so that a void keeps its
+precision however empty it gets.
 
 ### Development
 

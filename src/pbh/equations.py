@@ -55,6 +55,16 @@ exactly on `U = X`. The fluxes are formed as deviations in `kernels.hll_flux` an
 Every term is then of the size of the deviation; the stage returns this deviation rate, which the integrator
 advances, and the whole rate, the FRW rate plus it, which the monitors read.
 
+Cells stored whole (`storage.py`). A cell far below the background stores its content `E_c` itself, and the rows that
+need its relative precision are formed from whole values: the flux through its two faces (`kernels.hll_flux_whole`, or
+the centred `X^2 (alpha w h X - d_xi X + (1 + w) drift) <rho>` with the kernels off), its energy row
+`-(F_{c+1} - F_c) + (2 - 3 alpha) E_c`, which is the rate of what it stores, and at its faces the pressure gradient of
+the velocity rows, the difference of the densities rather than of their deviations. There the pressure force is formed
+as `<ephi> Gammabar^2` times `[w (D_s rho)_j + Q_j] / <rho>_j`, the ratio first: the inertia
+`<ephi> Gammabar^2 / <rho>` alone overflows once `<rho>` is near `1e-246`, while the ratio stays of the size of an
+inverse cell width. A neighbouring cell stored as its deviation reads the same flux less `F_FRW`. The stage then
+returns, beside the whole rate and the deviation rate, the rate of the stored numbers (`DerivsResult.stored_rate`).
+
 Flat spacetime (Section 7.7's limit without gravity). Every Hubble, gravity and source part above carries the
 background coefficient `h` of `Background`: the Hubble flow `X` in the drift, `cE` and `F_FRW`, the background
 velocity `h X`, the expansion `(1 - alpha) U`, the gravitational term and the source `2 - 3 alpha`. With `h = 1` they
@@ -75,6 +85,7 @@ from pbh.kernels import (
     Kernels,
     KernelSettings,
     hll_flux,
+    hll_flux_whole,
     reconstruct_density,
     viscous_pressure,
     viscous_sides,
@@ -82,7 +93,8 @@ from pbh.kernels import (
 from pbh.outer import OuterClosure, OuterInputs
 from pbh.state import FrwReference, State, deviation_from_frw
 from pbh.stencils import StencilWeights
-from pbh.types import FloatArray, nan_array
+from pbh.storage import any_whole, faces_beside
+from pbh.types import BoolArray, FloatArray, nan_array
 
 
 @dataclass(frozen=True)
@@ -122,6 +134,8 @@ class DerivsResult:
             flux that also feeds the face-mass row.
         delta_F: The same flux less its FRW value, `F - (alpha w X - d_xi X) X^2`, as the rows use it.
         kernels: What the shock-capturing kernels produced, or `None` when the centred base scheme ran.
+        stored: The rate of the stored numbers when cells are stored whole (`storage.py`): the whole rate `d_xi E_c`
+            in those cells, the deviation rate elsewhere; `None` when none is, and it is `deviation_rate`.
     """
 
     rate: State
@@ -131,6 +145,12 @@ class DerivsResult:
     F: FloatArray
     delta_F: FloatArray
     kernels: KernelResult | None
+    stored: State | None = None
+
+    @property
+    def stored_rate(self) -> State:
+        """The rate of what the integrator stores, which it advances: `stored`, or `deviation_rate` if none is whole."""
+        return self.deviation_rate if self.stored is None else self.stored
 
 
 def speeds(d: Derived, deviation: State, geo: Geometry, eos: EquationOfState, faces: slice, hubble: float) -> Speeds:
@@ -150,6 +170,22 @@ def speeds(d: Derived, deviation: State, geo: Geometry, eos: EquationOfState, fa
     return Speeds(drift=drift, Theta=Theta, cE=cE, a=a, Lam=np.abs(Theta) + a)
 
 
+def pressure_force(lead: FloatArray, force: FloatArray, rho_f: FloatArray, beside: BoolArray | None) -> FloatArray:
+    """The pressure force of the velocity rows, `-lead force / <rho>`, with `lead = alpha / (1 + w) <ephi> Gammabar^2`.
+
+    Formed as `-(lead / <rho>) force`, the inertia first, except at the faces `beside` a cell stored whole
+    (`storage.py`), where it is `-lead (force / <rho>)`: the inertia overflows once `<rho>` is near `1e-246`, the ratio
+    `force / <rho>` stays of the size of an inverse cell width, and `lead` grows only as `<rho>^(-w/(1+w))`.
+    """
+    if beside is None:
+        return -(lead / rho_f) * force
+    pressure = np.empty_like(lead)
+    near = ~beside
+    pressure[near] = -(lead[near] / rho_f[near]) * force[near]
+    pressure[beside] = -lead[beside] * (force[beside] / rho_f[beside])
+    return pressure
+
+
 def calc_derivs(
     state: State,
     geo: Geometry,
@@ -160,6 +196,7 @@ def calc_derivs(
     settings: KernelSettings,
     deviation: State | None = None,
     reference: FrwReference | None = None,
+    whole: BoolArray | None = None,
 ) -> DerivsResult:
     """Evaluate the semi-discrete equations once: the rate of every unknown at this time and state.
 
@@ -174,6 +211,8 @@ def calc_derivs(
         deviation: The state's deviation from FRW, if the caller holds it (see `derive`).
         reference: The background on this geometry, `FrwReference.of(geo, eos, j_e, h)`, if the caller holds it
             (the `Scheme` keeps one per frame); otherwise it is formed here.
+        whole: The cells stored whole (`storage.py`), `None` if none. Their `state.E` is the stored content and their
+            `deviation.E` its rounded `E - Delta V`.
 
     Returns:
         The rate and the fields it was computed from.
@@ -194,9 +233,13 @@ def calc_derivs(
         reference = FrwReference.of(geo, eos, j_e, h)
     elif not reference.belongs_to(geo, eos, j_e, h):
         raise ValueError("the FRW reference was formed for another geometry, equation of state, j_e or h")
-    d = derive(state, geo, bg, eos, w, settings.theta, deviation)
+    whole = any_whole(whole)
+    beside = None if whole is None else faces_beside(whole)
+    d = derive(state, geo, bg, eos, w, settings.theta, deviation, whole)
     sp = speeds(d, deviation, geo, eos, faces, h)
     D_s_rho = w.gradient_s(d.delta_rho)  # the same difference as of rho, without its rounding to the FRW size
+    if beside is not None:
+        D_s_rho[beside] = w.gradient_s(d.rho)[beside]  # beside a cell stored whole, the difference of the densities
     delta_D = w.velocity_gradient(deviation.U)  # (D_U U)_j - h: every row of D_U gives exactly h on U = h X
 
     # The energy flux through the retained faces and the artificial pressure force, as the flux's deviation from the
@@ -206,14 +249,29 @@ def calc_derivs(
     F_frw = reference.F_frw  # the FRW flux, to which the deviation is added for the whole flux
     frw_speed = reference.frw_speed  # alpha w h X - d_xi X: the FRW flux is frw_speed X^2
     kernels = None
+    F_whole = None  # the flux formed whole, at the faces beside a cell stored whole
     if settings.kernels is Kernels.PRODUCTION:
         rho_L, rho_R, delta_rho_L, delta_rho_R, theta_scale = reconstruct_density(
-            d.delta_rho, geo, w, settings.density_limiter, settings.theta
+            d.delta_rho, geo, w, settings.density_limiter, settings.theta, d.rho, whole
         )
         J, q, q_f, Q = viscous_pressure(state, geo, d, sp.Lam, eos, w, settings.c_v, settings.cap_tension)
         q_L, q_R = viscous_sides(q, q_f, d.rho, rho_L, rho_R, w.layout, settings.viscous_flux)
         delta_F, Lam_plus, Lam_minus, v_L, v_R = hll_flux(
-            rho_L, rho_R, delta_rho_L, delta_rho_R, q_L, q_R, deviation, geo, sp.Theta, sp.a, eos, w, h, frw_speed
+            rho_L,
+            rho_R,
+            delta_rho_L,
+            delta_rho_R,
+            q_L,
+            q_R,
+            deviation,
+            geo,
+            sp.Theta,
+            sp.a,
+            eos,
+            w,
+            h,
+            frw_speed,
+            beside,
         )
         kernels = KernelResult(
             rho_L=rho_L,
@@ -231,6 +289,10 @@ def calc_derivs(
             v_L=v_L,
             v_R=v_R,
         )
+        if beside is not None:
+            F_whole = hll_flux_whole(kernels, q_L, q_R, deviation, geo, eos, w, h, frw_speed, beside)
+            delta_F[beside] = F_whole[beside] - F_frw[beside]
+            kernels.F[beside] = F_whole[beside]
     else:
         delta_F = nan_array(N + 1)
         f = faces
@@ -240,6 +302,11 @@ def calc_derivs(
         if j_e == 0:
             delta_F[0] = 0.0
         Q = np.zeros(N + 1)
+        if beside is not None:
+            F_whole = geo.X2 * ((frw_speed + (1.0 + w_eos) * sp.drift) * d.rho_f)  # NaN below the retained faces
+            if j_e == 0:
+                F_whole[0] = 0.0
+            delta_F[beside] = F_whole[beside] - F_frw[beside]
 
     # The outer face: the closure supplies the rows the interior cannot.
     rows = outer.rows(
@@ -267,14 +334,17 @@ def calc_derivs(
     )
     delta_F[N] = rows.delta_F_N
     F = F_frw + delta_F  # the whole flux, for the monitors
+    if F_whole is not None:
+        F[beside] = F_whole[beside]  # the face's one flux, formed whole beside a cell stored whole
 
     # The velocity rows at the interior faces, eq:num:velocity, as their deviation from the FRW rate (d_xi X)_j.
     dU = nan_array(N + 1)
     j = slice(max(j_e, 1), N)
     Xj, ephi_f, rho_f = X[j], d.ephi_f[j], d.rho_f[j]
     expansion = (1.0 - alpha) * h * deviation.U[j]  # (1 - alpha) U_j, less the FRW part
-    inertia = alpha / (1.0 + w_eos) * ephi_f * d.Gammabar2[j] / rho_f  # alpha / (1 + w) <ephi> Gammabar^2 / <rho>
-    pressure = -inertia * (w_eos * D_s_rho[j] + Q[j])  # ... times [w (D_s rho)_j + Q_j], the pressure force
+    lead = alpha / (1.0 + w_eos) * ephi_f * d.Gammabar2[j]  # alpha / (1 + w) <ephi> Gammabar^2 ...
+    force = w_eos * D_s_rho[j] + Q[j]  # ... times [w (D_s rho)_j + Q_j] / <rho>_j, the pressure force
+    pressure = pressure_force(lead, force, rho_f, None if beside is None else beside[j])
     lapse_mass = d.delta_ephi_f[j] * (d.mt[j] + 3.0 * w_eos * rho_f) + d.delta_m[j] + 3.0 * w_eos * d.delta_rho_f[j]
     gravity = -0.5 * alpha * h * Xj * lapse_mass  # alpha / 2 <ephi> X (mt + 3 w <rho>), less its FRW value
     advection = -sp.drift[j] * (h + delta_D[j]) + X_xi[j] * delta_D[j]  # Theta (D_U U), less its FRW value
@@ -291,9 +361,19 @@ def calc_derivs(
     dE[cells] = -(flux_out - flux_in) + h * eos.energy_source_rate * deviation.E[cells]
     dM_e = h * eos.energy_source_rate * deviation.M_e - 3.0 * float(delta_F[j_e]) if j_e > 0 else 0.0
 
-    deviation_rate = State(E=dE, U=dU, W=rows.dW, M_e=dM_e)
     frw = reference.rate
-    rate = State(E=frw.E + dE, U=frw.U + dU, W=rows.dW, M_e=frw.M_e + dM_e)
+    rate_E = frw.E + dE
+    stored = None
+    if whole is not None:
+        # A cell stored whole: its whole rate from its two whole fluxes and its own content, which is the rate of what
+        # it stores; its deviation rate is that less d_xi Delta V_c.
+        assert F_whole is not None
+        whole_rate = -(F_whole[1:] - F_whole[:-1]) + h * eos.energy_source_rate * state.E
+        stored = State(E=np.where(whole, whole_rate, dE), U=dU, W=rows.dW, M_e=dM_e)
+        dE = np.where(whole, whole_rate - frw.E, dE)
+        rate_E = np.where(whole, whole_rate, rate_E)
+    deviation_rate = State(E=dE, U=dU, W=rows.dW, M_e=dM_e)
+    rate = State(E=rate_E, U=frw.U + dU, W=rows.dW, M_e=frw.M_e + dM_e)
     return DerivsResult(
         rate=rate,
         deviation_rate=deviation_rate,
@@ -302,4 +382,5 @@ def calc_derivs(
         F=F,
         delta_F=delta_F,
         kernels=kernels,
+        stored=stored,
     )

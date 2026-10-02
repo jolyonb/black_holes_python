@@ -105,7 +105,7 @@ def violent_case(family: str, seed: int, w: str = RAD) -> Case:
     bg2 = Background.at(eos, xi).Gammabar2
 
     # densities: dense cells between 0.05 and 20, a quarter of them near vacuum, 1e-9 to 1e-4, and in every third seed
-    # down to 5e-13, the owner's abort threshold, where the content is resolved only to eps / rho (Section 7.2)
+    # down to 5e-13, where a content stored as its deviation is resolved only to eps / rho (Section 7.2)
     rho = np.exp(rng.uniform(math.log(0.05), math.log(20.0), N))
     vacuum = rng.random(N) < 0.25
     deepest = -12.3 if seed % 3 == 2 else -9.0

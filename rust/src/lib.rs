@@ -3,11 +3,11 @@
 //!
 //! This file is the boundary with Python and nothing else: the settings come in once and are kept here, a frame is
 //! built here from the map at the faces and its arrays handed back to the Python, and a stage takes the packed
-//! deviation (or state) and the background scalars, and hands back every field the Python `DerivsResult` carries, as
-//! fresh numpy arrays. The arithmetic lives in the modules below, one per Python module and
-//! one function per Python function, so that the two can be read side by side. A stage outside the hyperbolic domain
-//! raises the Python's own `pbh.derived.NotHyperbolicError`; a closure's refusal raises `ValueError` with the Python's
-//! message, at the point where the Python raises it.
+//! deviation (or state), with the flags of the cells stored whole, and the background scalars, and hands back every
+//! field the Python `DerivsResult` carries, as fresh numpy arrays. The arithmetic lives in the modules below, one per
+//! Python module and one function per Python function, so that the two can be read side by side. A stage outside the
+//! hyperbolic domain raises the Python's own `pbh.derived.NotHyperbolicError`; a closure's refusal raises `ValueError`
+//! with the Python's message, at the point where the Python raises it.
 
 mod derived;
 mod eos;
@@ -21,6 +21,7 @@ mod numpy_like;
 mod outer;
 mod state;
 mod stencils;
+mod storage;
 mod timestep;
 
 use std::borrow::Cow;
@@ -38,8 +39,9 @@ use crate::kernels::{DensityLimiter, KernelSettings, Kernels, ViscousFlux};
 use crate::layout::Layout;
 use crate::numpy_like::c_pow;
 use crate::outer::OuterClosure;
-use crate::state::{FrwReference, State, deviation_from_frw, whole_state};
+use crate::state::{FrwReference, State, deviation_from_frw};
 use crate::stencils::StencilWeights;
+use crate::storage::{deviation_of, whole_of};
 
 /// `pbh.derived.NotHyperbolicError`, looked up once.
 static NOT_HYPERBOLIC_ERROR: PyOnceLock<Py<PyType>> = PyOnceLock::new();
@@ -56,6 +58,22 @@ fn view<'a>(a: &'a PyReadonlyArray1<'_, f64>) -> Cow<'a, [f64]> {
         Ok(s) => Cow::Borrowed(s),
         Err(_) => Cow::Owned(to_vec(a)),
     }
+}
+
+/// The flags of the cells stored whole as a stage takes them (`storage.any_whole`): `Some` only if at least one cell
+/// is, after checking that there is one flag per cell.
+fn flags(whole: Option<PyReadonlyArray1<'_, bool>>, N: usize) -> PyResult<Option<Vec<bool>>> {
+    let Some(whole) = whole else {
+        return Ok(None);
+    };
+    if whole.len() != N {
+        return Err(PyValueError::new_err(format!(
+            "expected one flag per cell, {N}, got {}",
+            whole.len()
+        )));
+    }
+    let whole = whole.as_array().to_vec();
+    Ok(if whole.contains(&true) { Some(whole) } else { None })
 }
 
 /// A fresh numpy array handed the vector without a copy.
@@ -471,6 +489,8 @@ pub struct StageOutput {
     delta_F: Py<PyArray1<f64>>,
     #[pyo3(get)]
     kernels: Option<Py<KernelOutput>>,
+    #[pyo3(get)]
+    stored_rate_E: Option<Py<PyArray1<f64>>>,
 }
 
 impl StageOutput {
@@ -537,6 +557,7 @@ impl StageOutput {
             F: to_numpy(py, r.F),
             delta_F: to_numpy(py, r.delta_F),
             kernels,
+            stored_rate_E: r.stored.map(|stored| to_numpy(py, stored.E)),
         })
     }
 }
@@ -549,6 +570,7 @@ fn run_stage(
     bg: &Background,
     state: &State,
     deviation: &State,
+    whole: Option<&[bool]>,
 ) -> PyResult<StageOutput> {
     let result = calc_derivs(
         state,
@@ -562,6 +584,7 @@ fn run_stage(
         &frame.reference,
         frame.X_N_squared,
         frame.X_je_squared,
+        whole,
     );
     match result {
         Ok(r) => StageOutput::from_result(py, r),
@@ -573,9 +596,10 @@ fn run_stage(
     }
 }
 
-/// One stage at the state `y_FRW + delta y` (`Scheme.evaluate_deviation`), from the packed deviation `dy`.
+/// One stage at the state `y_FRW + delta y` (`Scheme.evaluate_deviation`), from the packed deviation `dy`, the cells
+/// `whole` marks holding their content itself (`storage.rs`).
 #[pyfunction]
-#[pyo3(signature = (frame, settings, Gammabar2, c_s, hubble, dy))]
+#[pyo3(signature = (frame, settings, Gammabar2, c_s, hubble, dy, whole=None))]
 fn stage_deviation(
     py: Python<'_>,
     frame: &StageFrame,
@@ -584,11 +608,15 @@ fn stage_deviation(
     c_s: f64,
     hubble: f64,
     dy: PyReadonlyArray1<'_, f64>,
+    whole: Option<PyReadonlyArray1<'_, bool>>,
 ) -> PyResult<StageOutput> {
     let bg = Background { Gammabar2, c_s, hubble };
-    let deviation = frame.w.layout.unpack(&to_vec(&dy)).map_err(PyValueError::new_err)?;
-    let state = whole_state(&frame.reference, &deviation);
-    run_stage(py, frame, settings, &bg, &state, &deviation)
+    let stored = frame.w.layout.unpack(&to_vec(&dy)).map_err(PyValueError::new_err)?;
+    let whole = flags(whole, frame.w.layout.N)?;
+    let whole = whole.as_deref();
+    let state = whole_of(&stored, whole, &frame.reference.state);
+    let deviation = deviation_of(stored, whole, &frame.reference.state.E);
+    run_stage(py, frame, settings, &bg, &state, &deviation, whole)
 }
 
 /// One stage at the packed whole state `y` (`Scheme.evaluate`), its deviation recovered as `deviation_from_frw` does.
@@ -606,7 +634,7 @@ fn stage_state(
     let bg = Background { Gammabar2, c_s, hubble };
     let state = frame.w.layout.unpack(&to_vec(&y)).map_err(PyValueError::new_err)?;
     let deviation = deviation_from_frw(&state, &frame.reference);
-    run_stage(py, frame, settings, &bg, &state, &deviation)
+    run_stage(py, frame, settings, &bg, &state, &deviation, None)
 }
 
 /// A completed stage as the Python reads it: `(F_N, F_je, M_total, delta_F_N, delta_M_total, k)`.
@@ -676,9 +704,10 @@ fn stage_time<'a>(frame: &'a StageFrame, bg: (f64, f64, f64)) -> timestep::Stage
 
 /// One checked Runge-Kutta attempt in deviation form (`timestep.checked_step`): the stages after the first on
 /// `frames` with their backgrounds `(Gammabar2, c_s, hubble)`, and the result on `arrive`, from the deviation `dy`
-/// and the first stage's packed rate `k1`, with the tableau's rows `a` and weights `b` as floats.
+/// and the first stage's packed rate `k1`, with the tableau's rows `a` and weights `b` as floats, and the cells stored
+/// whole, `whole`.
 #[pyfunction]
-#[pyo3(signature = (settings, frames, backgrounds, arrive, arrive_background, dy, dxi, k1, a, b))]
+#[pyo3(signature = (settings, frames, backgrounds, arrive, arrive_background, dy, dxi, k1, a, b, whole=None))]
 #[allow(clippy::too_many_arguments)]
 fn checked_step(
     py: Python<'_>,
@@ -692,6 +721,7 @@ fn checked_step(
     k1: PyReadonlyArray1<'_, f64>,
     a: Vec<Vec<f64>>,
     b: Vec<f64>,
+    whole: Option<PyReadonlyArray1<'_, bool>>,
 ) -> PyResult<AttemptOutput> {
     let layout = &arrive.w.layout;
     let size = layout.size();
@@ -717,6 +747,7 @@ fn checked_step(
             k1.len()
         )));
     }
+    let whole = flags(whole, layout.N)?;
     let s = timestep::Settings {
         eos: &settings.eos,
         outer: &settings.outer,
@@ -736,6 +767,7 @@ fn checked_step(
         &to_vec(&k1),
         &a,
         &b,
+        whole.as_deref(),
     )
     .map_err(PyValueError::new_err)?;
     let result = match attempt.result {

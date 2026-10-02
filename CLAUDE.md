@@ -11,7 +11,7 @@ workspace map is `../CLAUDE.md`.
 |---|---|---|
 | `src/pbh/` | **The production code, being built** (since 2026-09-18) from paper sections 7-8 (`../analysis/v4/numerics.tex`, `numerics-excision.tex`) in reviewed bites. Module docstrings name the paper section and equations they implement. Pipeline: `maps`/`geometry`/`layout`/`state` (grid and variables) -> `stencils`/`kernels`/`derived`/`equations` (one stage, in deviation form) -> `outer` (SAT closure) -> `timestep` (RK4, checked stepper, step rules) -> `horizon`/`excision` -> `driver` (the `Run`), with `config`, `initial`/`profiles`, `records`/`output`/`h5`, `monitors`, `readout`/`summary`, `pair` (the N and N/2 pair's analysis), `causal`, `michel`, `cli`. | tracked |
 | `src/_old/` | **RETIRED** collocated code (the former `src/pbh`, moved 2026-09-18 with its unit tests deleted). Kept for reference, not run, not imported by `pbh`; still passes ruff and pyright strict. `ms.py` (Misner-Sharp EOMs, Eulerian and Lagrangian handlers), `base.py` (evolver + cached EOM handler), `derivs.py` (collocated stencils), `dopri5.py`, `initial.py` (2015 growing-mode data), `output.py`, `cli.py`. | tracked |
-| `tests/` | Flat pytest functions, one file per module; fast suite by default (816 with the Rust engine), evolutions `-m slow` (41). `whole_state.py` is the stage as printed, the cross-check of the deviation form. | tracked |
+| `tests/` | Flat pytest functions, one file per module; fast suite by default (911 with the Rust engine), evolutions `-m slow` (41). `whole_state.py` is the stage as printed, the cross-check of the deviation form. | tracked |
 | `benchmarks/` | `collapse.py`, the wall-clock benchmark of both engines (see Benchmarks below). | tracked |
 | `README.md` | The production code: worked example, configuration, the evolution file, module map. | tracked |
 | `../analysis/` | **Outside this repo.** Theory and numerics rebuild plus the paper sources; see `../analysis/CLAUDE.md`. | sibling repo |
@@ -90,5 +90,7 @@ lapse error at a shock, formation times unchanged to 5 digits). Output files rec
 ## Where things stand
 
 See `../CLAUDE.md`, "Where things stand", for the bites done, the decisions of 2026-09-23/24 (theta-limiter,
-chord-widened bounds, checked RK4 stepper, 5e-13 abort, RK4 only, o1 only, switch-on in areal radius) and the next
-bites (31 `M_est` jitter, 33 density-floor switch, 22-26, 13c, 28).
+chord-widened bounds, checked RK4 stepper, RK4 only, o1 only, switch-on in areal radius) and the next bites. Void
+storage (2026-10-02, Section 7.6): a cell below a quarter of the background is stored whole (back as its deviation
+above a half; `storage.py`), the clock is compensated (`timestep.Clock`), and the 5e-13 density abort is gone; a run
+still aborts on a non-finite or non-positive stage, and on a clock stall. Bite 33 (a density floor) is dropped.

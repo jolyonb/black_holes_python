@@ -26,7 +26,7 @@ from typing import Self
 
 import numpy as np
 
-from pbh.types import FloatArray
+from pbh.types import BoolArray, FloatArray
 
 #: The equation of state parameter of radiation, `w = 1/3`
 RADIATION: Fraction = Fraction(1, 3)
@@ -136,7 +136,9 @@ class EquationOfState:
             return 1.0 / np.sqrt(rho)
         return rho**self.lapse_exponent
 
-    def lapse_and_deviation(self, rho: FloatArray, delta_rho: FloatArray) -> tuple[FloatArray, FloatArray]:
+    def lapse_and_deviation(
+        self, rho: FloatArray, delta_rho: FloatArray, whole: BoolArray | None = None
+    ) -> tuple[FloatArray, FloatArray]:
         """The lapse `e^phi` and its deviation `e^phi - 1` from its FRW value, the latter without subtracting one.
 
         Near FRW `e^phi - 1` is a small number, and forming it as `e^phi` minus one keeps only the rounding of `e^phi`.
@@ -145,10 +147,23 @@ class EquationOfState:
         the stiff fluid, with `r = rho^(1/2)`, `-delta_rho / (r (1 + r))`; for any other `w`,
         `expm1(lapse_exponent log1p(delta_rho))`.
 
+        The entries `whole` marks are densities far below the background (of a cell stored whole, or at a face beside
+        one: `storage.py`). There `delta_rho` is not read: the lapse is the power of `rho` and its deviation is formed
+        by subtracting one, which costs nothing when `e^phi` is well above one, whereas the last form above would take
+        `log1p(-1)` once `rho` is below the rounding of one.
+
         Args:
             rho: The density.
             delta_rho: Its deviation `rho - 1`, formed without subtracting one.
+            whole: The entries to form from `rho` alone, if any.
         """
+        if whole is not None:
+            ephi, delta_ephi = np.empty_like(rho), np.empty_like(rho)
+            near = ~whole
+            ephi[near], delta_ephi[near] = self.lapse_and_deviation(rho[near], delta_rho[near])
+            ephi[whole] = self.lapse(rho[whole])
+            delta_ephi[whole] = ephi[whole] - 1.0
+            return ephi, delta_ephi
         if self.lapse_exponent == -0.25:
             r2 = np.sqrt(rho)
             r = np.sqrt(r2)

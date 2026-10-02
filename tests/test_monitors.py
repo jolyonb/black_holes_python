@@ -390,7 +390,7 @@ def test_the_monitor_sees_an_end_cell_theta_limit_of_a_tenth(j_e: int, excess: f
     rho[e + 1] = rho[e] + excess * drop / (sbar[e] - X2[e]) * (sbar[e + 1] - sbar[e])
     rho[f] = 0.01  # falling outward: theta rho at the outer face at slope -drop / (X_N^2 - sbar_f)
     rho[f - 1] = rho[f] + excess * drop / (X2[f + 1] - sbar[f]) * (sbar[f] - sbar[f - 1])
-    _, _, delta_L, _, _ = reconstruct_density(rho - 1.0, geo, weights, DensityLimiter.MC, THETA)
+    _, _, delta_L, _, _ = reconstruct_density(rho - 1.0, geo, weights, DensityLimiter.MC, THETA, rho)
     flags = limiter_clipped(rho - 1.0, delta_L, geo, layout)
     assert flags[e] == clipped
     assert flags[f] == clipped

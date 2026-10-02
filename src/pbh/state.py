@@ -8,9 +8,9 @@ excision face (FRW value `X_{j_e}^3`). The indexing and the NaN convention below
 
 The integrator does not advance the state itself but its deviation from FRW, `delta y = y - y_FRW(xi)` (Section 7.6):
 on a static map the two coincide, and on a moving one the deviation form keeps the far zone FRW to round-off where
-the direct form keeps it only to the truncation error of the map's motion. `frw_state` gives `y_FRW` at a time and
-`frw_rate` its time derivative, which the stage adds to its deviation rate for the whole rate; both follow from the
-geometry alone.
+the direct form keeps it only to the truncation error of the map's motion; a cell far below the background stores its
+content whole instead (`storage.py`). `frw_state` gives `y_FRW` at a time and `frw_rate` its time derivative, which
+the stage adds to its deviation rate for the whole rate; both follow from the geometry alone.
 
 A `State` is also the shape of a rate of change: the stage returns `d_xi E_c`, `d_xi U_j`, `d_xi W`, `d_xi M_e` in
 the same container, packed by the same rule.

@@ -54,7 +54,7 @@ from pbh.horizon import FaceValues, FoldValues, HorizonReport
 from pbh.layout import Layout
 from pbh.maps import Map, Zone
 from pbh.state import State
-from pbh.types import FloatArray
+from pbh.types import BoolArray, FloatArray
 
 OUTER_STATIC_LABEL = 0.8
 """The transition must end below this label, so that the outer face sits on the static part of the map."""
@@ -472,7 +472,13 @@ def zone_needs_extension(report: HorizonReport, zones: tuple[Zone, ...], fractio
     return apparent.x >= fraction * zones[-1].inner_edge
 
 
-def packed_deviation(state: State, geo: Geometry, layout: Layout, dV: FloatArray) -> FloatArray:
-    """The packed deviation of an excised state: `E - Delta V`, `U - X`, `M_e - X_e^3`, `W`."""
+def packed_deviation(
+    state: State, geo: Geometry, layout: Layout, dV: FloatArray, whole: BoolArray | None = None
+) -> FloatArray:
+    """The packed deviation of an excised state: `E - Delta V`, `U - X`, `M_e - X_e^3`, `W`.
+
+    A cell `whole` marks is stored whole (`storage.py`) and keeps its content `E` itself.
+    """
     M_e = state.M_e - float(geo.X[layout.j_e]) ** 3  # the mass inside the face against its FRW value
-    return layout.pack(State(E=state.E - dV, U=state.U - geo.X[: layout.N + 1], W=state.W, M_e=M_e))
+    E = state.E - dV if whole is None else np.where(whole, state.E, state.E - dV)
+    return layout.pack(State(E=E, U=state.U - geo.X[: layout.N + 1], W=state.W, M_e=M_e))

@@ -20,8 +20,8 @@ things:
   own SIMD versions elsewhere, so for such a `w` the engines can differ there by an ulp or so
   (`rust/src/numpy_like.rs`);
 * per stage, it passes the packed deviation (or the packed state), as native float64 after `Layout.unpack`'s shape
-  check, and the background scalars, and assembles the returned arrays into the `DerivsResult`, `Derived`, `Speeds`,
-  `KernelResult` and `State`s that every consumer reads.
+  check, the flags of the cells stored whole (`storage.py`), if any, and the background scalars, and assembles the
+  returned arrays into the `DerivsResult`, `Derived`, `Speeds`, `KernelResult` and `State`s that every consumer reads.
 
 A stage outside the hyperbolic domain raises `derived.NotHyperbolicError` from inside Rust, with the same field, index
 and value; a closure's refusal raises `ValueError` with the same message, at the same point of the stage.
@@ -58,7 +58,7 @@ from pbh.outer import HeldAtFrw, HeldExterior, OuterClosure, OutgoingWave
 from pbh.state import FrwReference, State
 from pbh.stencils import StencilWeights
 from pbh.timestep import Attempt, FailureCause, Stage, StageFluxes, StepFailure
-from pbh.types import FloatArray, read_only
+from pbh.types import BoolArray, FloatArray, read_only
 
 
 class RustStage:
@@ -208,11 +208,12 @@ class RustStage:
         dxi: float,
         a: tuple[tuple[float, ...], ...],
         b: tuple[float, ...],
+        whole: BoolArray | None = None,
     ) -> Attempt:
         """`checked_step` on the Rust engine, as the numpy engine's `Attempt`, from the first stage `stages[0]`.
 
         The stages after the first are evaluated on `frames`, each a Rust frame and its background (at `times`), and
-        the result on `arrive`. Rust forms the
+        the result on `arrive`, with the cells `whole` marks stored whole. Rust forms the
         stage inputs, evaluates and checks each, and forms the deviation arrived at and its rate, with the same
         operations in the same order; a refusal comes back as the numpy engine's `StepFailure`. The stages after the
         first are appended to `stages`, as the numpy engine appends them.
@@ -228,6 +229,7 @@ class RustStage:
             stages[0].k,
             [list(row) for row in a],
             list(b),
+            whole,
         )
         # a refused attempt completed fewer stages than there are times
         for xi_i, (F_N, F_je, M_total, delta_F_N, delta_M_total, k) in zip(times, out.stages, strict=False):
@@ -239,10 +241,16 @@ class RustStage:
         result = None if out.result is None else to_result(out.result)
         return Attempt(out.dy, stages, result, failure)
 
-    def evaluate_deviation(self, frame: StageFrame, bg: Background, dy: FloatArray) -> DerivsResult:
-        """`Scheme.evaluate_deviation` on the Rust engine: the stage at `y_FRW + delta y` from the packed deviation."""
+    def evaluate_deviation(
+        self, frame: StageFrame, bg: Background, dy: FloatArray, whole: BoolArray | None = None
+    ) -> DerivsResult:
+        """`Scheme.evaluate_deviation` on the Rust engine: the stage at `y_FRW + delta y` from the packed deviation.
+
+        The cells `whole` marks hold their content itself (`storage.py`).
+        """
         dy = self.packed(dy)
-        return to_result(pbh_engine.stage_deviation(frame, self._settings, bg.Gammabar2, bg.c_s, bg.hubble, dy))
+        out = pbh_engine.stage_deviation(frame, self._settings, bg.Gammabar2, bg.c_s, bg.hubble, dy, whole)
+        return to_result(out)
 
     def evaluate(self, frame: StageFrame, bg: Background, y: FloatArray) -> DerivsResult:
         """`Scheme.evaluate` on the Rust engine: the stage at the packed whole state `y`."""
@@ -290,16 +298,21 @@ def to_result(out: StageOutput) -> DerivsResult:
             v_L=k.v_L,
             v_R=k.v_R,
         )
+    deviation_rate = State(
+        E=out.deviation_rate_E, U=out.deviation_rate_U, W=out.deviation_rate_W, M_e=out.deviation_rate_M_e
+    )
+    stored = None  # as the numpy engine forms it: the deviation rate with the whole rate of the cells stored whole
+    if out.stored_rate_E is not None:
+        stored = State(E=out.stored_rate_E, U=deviation_rate.U, W=deviation_rate.W, M_e=deviation_rate.M_e)
     return DerivsResult(
         rate=State(E=out.rate_E, U=out.rate_U, W=out.rate_W, M_e=out.rate_M_e),
-        deviation_rate=State(
-            E=out.deviation_rate_E, U=out.deviation_rate_U, W=out.deviation_rate_W, M_e=out.deviation_rate_M_e
-        ),
+        deviation_rate=deviation_rate,
         derived=derived,
         speeds=speeds,
         F=out.F,
         delta_F=out.delta_F,
         kernels=kernels,
+        stored=stored,
     )
 
 

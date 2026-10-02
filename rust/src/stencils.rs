@@ -155,24 +155,49 @@ impl StencilWeights {
     }
 }
 
-/// The two face values of a cell whose linear profile is scaled by the theta-limiter (eq:num:theta).
+/// The two face values of a cell whose linear profile is scaled by the theta-limiter (eq:num:theta), as deviations.
 ///
-/// The cell keeps its mean and has its offsets scaled by `t = min(1, (1 - theta) rho_c / m)`, `m` the larger drop
-/// below the mean, so that both face values are at least `theta rho_c`. The ratio is only taken of a drop above
-/// `allowed`, as the Python's `np.where` keeps it; a NaN drop leaves `t = 1`, as there.
+/// The cell keeps its mean and has its offsets scaled by `t` (`theta_scale`, at the density `1 + delta_rho`), so that
+/// both face values are at least `theta rho_c`.
 pub fn theta_limited_faces(delta_rho: f64, off_in: f64, off_out: f64, theta: f64) -> ThetaLimited {
-    let rho = 1.0 + delta_rho;
-    let drop = -minimum(minimum(off_in, off_out), 0.0); // the larger drop below the mean, >= 0
-    let allowed = (1.0 - theta) * rho;
-    let t = if drop > allowed {
-        allowed / maximum(drop, allowed)
-    } else {
-        1.0
-    };
+    let t = theta_scale(1.0 + delta_rho, off_in, off_out, theta);
     ThetaLimited {
         t,
         delta_in: delta_rho + t * off_in,
         delta_out: delta_rho + t * off_out,
+    }
+}
+
+/// One cell stored whole, theta-limited (`theta_limited_whole`, one entry of it).
+pub struct ThetaLimitedWhole {
+    /// The scale factor `t` of the cell's slope.
+    pub t: f64,
+    /// Its inner face value.
+    pub rho_in: f64,
+    /// Its outer face value.
+    pub rho_out: f64,
+}
+
+/// `theta_limited_faces` for a cell stored whole (`storage.rs`): formed on its density itself.
+pub fn theta_limited_whole(rho: f64, off_in: f64, off_out: f64, theta: f64) -> ThetaLimitedWhole {
+    let t = theta_scale(rho, off_in, off_out, theta);
+    ThetaLimitedWhole {
+        t,
+        rho_in: rho + t * off_in,
+        rho_out: rho + t * off_out,
+    }
+}
+
+/// The theta-limiter's factor `t = min(1, (1 - theta) rho_c / m)` of a cell of density `rho` (`theta_scale`), `m`
+/// the larger drop below the mean. The ratio is only taken of a drop above `allowed`, as the Python's `np.where`
+/// keeps it; a NaN drop leaves `t = 1`, as there.
+pub fn theta_scale(rho: f64, off_in: f64, off_out: f64, theta: f64) -> f64 {
+    let drop = -minimum(minimum(off_in, off_out), 0.0); // the larger drop below the mean, >= 0
+    let allowed = (1.0 - theta) * rho;
+    if drop > allowed {
+        allowed / maximum(drop, allowed)
+    } else {
+        1.0
     }
 }
 

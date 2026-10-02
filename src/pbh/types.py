@@ -1,13 +1,15 @@
-"""The one array type the code uses: a numpy array of doubles, and the NaN-filled array every field starts as.
+"""The array types the code uses: a numpy array of doubles, and the NaN-filled array every field starts as.
 
 The paper's Section 7.2 presumes double precision throughout (in single precision the round-off floors it quotes would
-stand above the truncation error of the scheme), so no other dtype appears anywhere.
+stand above the truncation error of the scheme), so no other floating-point dtype appears anywhere. The one other array
+is a mask of booleans, such as the cells stored whole (`storage.py`).
 """
 
 import numpy as np
 from numpy.typing import NDArray
 
 type FloatArray = NDArray[np.float64]
+type BoolArray = NDArray[np.bool_]
 
 
 def nan_array(n: int) -> FloatArray:

@@ -14,6 +14,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 type FloatArray = NDArray[np.float64]  # pbh.types.FloatArray, restated so that the stubs import nothing from pbh
+type BoolArray = NDArray[np.bool_]  # pbh.types.BoolArray
 
 @final
 class StageFrame:
@@ -313,14 +314,30 @@ class StageOutput:
     def kernels(self) -> KernelOutput | None:
         """The kernels' fields, or `None` when the centred base scheme ran."""
 
+    @property
+    def stored_rate_E(self) -> FloatArray | None:
+        """The rate of the stored cell numbers, or `None` when no cell is stored whole (cells).
+
+        The whole rate in the cells stored whole, the deviation rate elsewhere.
+        """
+
 def stage_deviation(
-    frame: StageFrame, settings: StageSettings, Gammabar2: float, c_s: float, hubble: float, dy: FloatArray
+    frame: StageFrame,
+    settings: StageSettings,
+    Gammabar2: float,
+    c_s: float,
+    hubble: float,
+    dy: FloatArray,
+    whole: BoolArray | None = None,
 ) -> StageOutput:
     """One stage at `y_FRW + delta y` from the packed deviation (`Scheme.evaluate_deviation`).
 
+    The cells `whole` marks hold their content itself (`pbh.storage`).
+
     Raises:
         NotHyperbolicError: As `derive` raises it.
-        ValueError: As the outer closure raises it, or if `dy` has not the packed length (`Layout.check_packed`).
+        ValueError: As the outer closure raises it, if `dy` has not the packed length (`Layout.check_packed`), or if
+            `whole` has not one flag per cell.
         TypeError: If `dy` is not a one-dimensional native float64 array.
     """
 
@@ -360,14 +377,16 @@ def checked_step(
     k1: FloatArray,
     a: list[list[float]],
     b: list[float],
+    whole: BoolArray | None = None,
 ) -> AttemptOutput:
     """One checked attempt (`timestep.checked_step`) from `dy` and the first stage's packed rate `k1`.
 
     The stages after the first are evaluated on `frames`, each with its background `(Gammabar2, c_s, hubble)`, and the
-    result on `arrive`.
+    result on `arrive`; the cells `whole` marks are stored whole.
 
     Raises:
-        ValueError: As the outer closure raises it, or if the frames, backgrounds, tableau or vectors do not match.
+        ValueError: As the outer closure raises it, or if the frames, backgrounds, tableau, vectors or flags do not
+            match.
         TypeError: If a vector is not a one-dimensional native float64 array.
     """
 

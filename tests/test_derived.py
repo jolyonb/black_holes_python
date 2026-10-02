@@ -195,7 +195,7 @@ def test_an_outer_face_density_rounded_to_zero_aborts_naming_the_face():
     with pytest.raises(NotHyperbolicError, match=r"rho\[10\]") as info:
         derive(State(E=E, U=s.U, W=0.0), geo, bg, EOS, w, THETA)
     assert (info.value.field, info.value.index, info.value.value) == ("rho", 10, 0.0)
-    E[9] = 1e-14 * geo.dV[9]  # far below the 5e-13 abort line, and still resolved: a positive face density
+    E[9] = 1e-14 * geo.dV[9]  # deep near-vacuum, and still resolved: a positive face density
     assert derive(State(E=E, U=s.U, W=0.0), geo, bg, EOS, w, THETA).rho_f[10] > 0.0
 
 

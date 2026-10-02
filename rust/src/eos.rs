@@ -55,6 +55,29 @@ impl EquationOfState {
             delta_ephi: (self.lapse_exponent * delta_rho.ln_1p()).exp_m1(),
         }
     }
+
+    /// The algebraic lapse `e^phi = rho ^ lapse_exponent` of a density (`EquationOfState.lapse`, one entry of it):
+    /// square roots for radiation and the stiff fluid, the power otherwise.
+    pub fn lapse(&self, rho: f64) -> f64 {
+        if self.lapse_exponent == -0.25 {
+            return 1.0 / rho.sqrt().sqrt();
+        }
+        if self.lapse_exponent == -0.5 {
+            return 1.0 / rho.sqrt();
+        }
+        rho.powf(self.lapse_exponent)
+    }
+
+    /// The lapse and its deviation of a density far below the background (`EquationOfState.lapse_and_deviation` at
+    /// an entry `whole` marks: a cell stored whole, or a face beside one; `storage.py`): the power of `rho`, and the
+    /// deviation by subtracting one, where the form from `delta_rho` would take `log1p(-1)`.
+    pub fn lapse_whole(&self, rho: f64) -> Lapse {
+        let ephi = self.lapse(rho);
+        Lapse {
+            ephi,
+            delta_ephi: ephi - 1.0,
+        }
+    }
 }
 
 /// The background scalars of `pbh.eos.Background` that a stage reads, at the stage's time (no closure reads `xi`).

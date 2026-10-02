@@ -44,6 +44,11 @@ adjacent difference, as at faces `0` and `N`; the viscous pressure enters the fl
 is the end row `Q_je = 2 sbar_je q_je / (X_je^2 Delta X_je)`, the one-sided gradient over the half cell with `q`
 vanishing at the face.
 
+Beside a cell stored whole (`storage.py`) the kernels work in the densities themselves: the one-sided differences
+across its faces are of `rho`, its theta-limiter and face values are formed on `rho` (`theta_limited_whole`), the
+lapse of the face values at its faces is the power of the density, and the flux through its faces is formed whole
+(`hll_flux_whole`), every term proportional to a face density, so that it is precise relative to itself.
+
 The centred base scheme remains available as a test switch (`Kernels.CENTRED`); Section 7.4 says why it is never a
 production configuration.
 """
@@ -58,8 +63,9 @@ from pbh.eos import EquationOfState
 from pbh.geometry import Geometry
 from pbh.layout import Layout
 from pbh.state import State
-from pbh.stencils import StencilWeights, theta_limited_faces
-from pbh.types import FloatArray, nan_array
+from pbh.stencils import StencilWeights, theta_limited_faces, theta_limited_whole
+from pbh.storage import faces_beside
+from pbh.types import BoolArray, FloatArray, nan_array
 
 
 class Kernels(Enum):
@@ -174,7 +180,13 @@ def minmod(*slopes: FloatArray) -> FloatArray:
 
 
 def reconstruct_density(
-    delta_rho: FloatArray, geo: Geometry, w: StencilWeights, limiter: DensityLimiter, theta: float
+    delta_rho: FloatArray,
+    geo: Geometry,
+    w: StencilWeights,
+    limiter: DensityLimiter,
+    theta: float,
+    rho: FloatArray,
+    whole: BoolArray | None = None,
 ) -> tuple[FloatArray, FloatArray, FloatArray, FloatArray, FloatArray]:
     """The density to both sides of every retained face, piecewise linear in `s = X^2` (eq:num:recon, eq:num:theta).
 
@@ -188,6 +200,9 @@ def reconstruct_density(
         w: The stencil weights, for the retained ranges.
         limiter: mc or minmod for the interior cells.
         theta: The theta-limiter's fraction.
+        rho: The cell densities, which the cells stored whole are reconstructed from.
+        whole: The cells stored whole, `None` if none: the differences across their faces, their limiter and their
+            face values are formed on `rho`.
 
     Returns:
         `(rho_L, rho_R, delta_rho_L, delta_rho_R, t)` at the faces: the density from the cell inside the face and
@@ -200,6 +215,11 @@ def reconstruct_density(
     # The one-sided slopes d_j across the interior retained faces j_e+1 .. N-1, indexed by face.
     d = nan_array(N + 1)
     d[j_e + 1 : N] = (delta_rho[j_e + 1 : N] - delta_rho[j_e : N - 1]) / dS[j_e + 1 : N]
+    if whole is not None:
+        # Beside a cell stored whole, the difference of the densities: the same in exact arithmetic, without the
+        # deviations' absolute rounding, which is all there is of a nearly empty cell's density.
+        k = np.flatnonzero(faces_beside(whole)[j_e + 1 : N]) + j_e + 1
+        d[k] = (rho[k] - rho[k - 1]) / dS[k]
     # The limited slope of every retained cell: the interior cells from their two faces, the first and last retained
     # cells from their single adjacent difference, which keeps second order at the origin.
     slope = nan_array(N)
@@ -219,19 +239,31 @@ def reconstruct_density(
     # face value near zero has an unbounded lapse (Section 7.7).
     cells = slice(j_e, N)
     t = nan_array(N)
-    t[cells], delta_in, delta_out = theta_limited_faces(
-        delta_rho[cells],
-        slope[cells] * geo.s_in[cells],  # the slope times X^2 - sbar_c at each face
-        slope[cells] * geo.s_out[cells],
-        theta,
-    )
-    delta_L = nan_array(N + 1)
-    delta_R = nan_array(N + 1)
-    delta_L[j_e + 1 : N + 1] = delta_out  # cell c is inside face c + 1 ...
-    delta_R[j_e:N] = delta_in  # ... and outside face c
-    delta_L[j_e] = delta_R[j_e]  # nothing inside the innermost face: transmissive (F_0 = 0 anyway at the origin)
-    delta_R[N] = delta_L[N]
-    return 1.0 + delta_L, 1.0 + delta_R, delta_L, delta_R, t
+    off_in = slope[cells] * geo.s_in[cells]  # the slope times X^2 - sbar_c at each face
+    off_out = slope[cells] * geo.s_out[cells]
+    if whole is None:
+        t[cells], delta_in, delta_out = theta_limited_faces(delta_rho[cells], off_in, off_out, theta)
+        rho_in, rho_out = 1.0 + delta_in, 1.0 + delta_out
+    else:
+        flag, near = whole[cells], ~whole[cells]
+        t_c, delta_in, delta_out = np.empty_like(off_in), np.empty_like(off_in), np.empty_like(off_in)
+        rho_in, rho_out = np.empty_like(off_in), np.empty_like(off_in)
+        t_c[near], delta_in[near], delta_out[near] = theta_limited_faces(
+            delta_rho[cells][near], off_in[near], off_out[near], theta
+        )
+        rho_in[near], rho_out[near] = 1.0 + delta_in[near], 1.0 + delta_out[near]
+        t_c[flag], rho_in[flag], rho_out[flag] = theta_limited_whole(
+            rho[cells][flag], off_in[flag], off_out[flag], theta
+        )
+        delta_in[flag], delta_out[flag] = rho_in[flag] - 1.0, rho_out[flag] - 1.0
+        t[cells] = t_c
+    delta_L, delta_R, rho_L, rho_R = nan_array(N + 1), nan_array(N + 1), nan_array(N + 1), nan_array(N + 1)
+    delta_L[j_e + 1 : N + 1], rho_L[j_e + 1 : N + 1] = delta_out, rho_out  # cell c is inside face c + 1 ...
+    delta_R[j_e:N], rho_R[j_e:N] = delta_in, rho_in  # ... and outside face c
+    # nothing inside the innermost face: transmissive (F_0 = 0 anyway at the origin)
+    delta_L[j_e], rho_L[j_e] = delta_R[j_e], rho_R[j_e]
+    delta_R[N], rho_R[N] = delta_L[N], rho_L[N]
+    return rho_L, rho_R, delta_L, delta_R, t
 
 
 def viscous_pressure(
@@ -354,6 +386,7 @@ def hll_flux(
     w: StencilWeights,
     hubble: float,
     frw_speed: FloatArray,
+    beside: BoolArray | None = None,
 ) -> tuple[FloatArray, FloatArray, FloatArray, FloatArray, FloatArray]:
     """The HLL energy flux through the retained faces `j < N` (eq:num:hll) as its deviation from the FRW flux.
 
@@ -402,6 +435,8 @@ def hll_flux(
         hubble: The background coefficient `h` of `Background`: 1 on FRW, 0 in flat spacetime.
         frw_speed: `alpha w h X_j - (d_xi X)_j` at every face (`FrwReference.frw_speed`): the FRW flux is
             `frw_speed X^2`.
+        beside: The faces beside a cell stored whole, `None` if none: the lapse of both sides there is the power of the
+            density (`EquationOfState.lapse_and_deviation`), and the flux is formed whole by `hll_flux_whole`.
 
     Returns:
         `(F_j - F_FRW,j, Lambda^+_j, Lambda^-_j, v^L_j, v^R_j)` at the retained faces `j < N`: the flux deviation,
@@ -414,10 +449,14 @@ def hll_flux(
     alpha, w_eos = eos.alpha_float, eos.w_float
     frw_speed = frw_speed[faces]
     X2 = geo.X2[faces]
+    whole = None if beside is None else beside[faces]
 
     def one_sided(rho: FloatArray, delta_rho: FloatArray, q: FloatArray) -> tuple[FloatArray, FloatArray]:
         """The one-sided flux less the FRW flux, and the chord speed `F_j(rho, q) / (X^2 rho)`."""
-        ephi, delta_ephi = eos.lapse_and_deviation(rho, delta_rho)
+        if whole is None:
+            ephi, delta_ephi = eos.lapse_and_deviation(rho, delta_rho)
+        else:
+            ephi, delta_ephi = eos.lapse_and_deviation(rho, delta_rho, whole)
         drift = alpha * (hubble * X * delta_ephi + ephi * dU)  # alpha (e^phi U - h X)
         chord = frw_speed + (1.0 + w_eos) * drift + drift * q / rho
         return X2 * (frw_speed * delta_rho + (1.0 + w_eos) * drift * rho + drift * q), chord
@@ -439,3 +478,42 @@ def hll_flux(
     if j_e == 0:
         delta_F[0] = 0.0
     return delta_F, Lam_plus, Lam_minus, chord_L, chord_R
+
+
+def hll_flux_whole(
+    kernels: KernelResult,
+    q_L: FloatArray,
+    q_R: FloatArray,
+    deviation: State,
+    geo: Geometry,
+    eos: EquationOfState,
+    w: StencilWeights,
+    hubble: float,
+    frw_speed: FloatArray,
+    beside: BoolArray,
+) -> FloatArray:
+    """The HLL flux of eq:num:hll itself at the faces beside a cell stored whole (`storage.py`); NaN elsewhere.
+
+    The same flux as `hll_flux`, with its bounds, formed whole: each side `X^2 [(alpha w h X - d_xi X + (1 + w) drift)
+    rho + drift q]` with the drift `alpha (e^phi U - h X)` of that side's density, combined with the bounds `hll_flux`
+    chose. Every term is proportional to a face density, so the flux is precise relative to itself however empty the
+    cell; less `F_FRW` it is the deviation the cells stored as deviations read. Zero at the origin.
+    """
+    layout = w.layout
+    N, j_e = layout.N, layout.j_e
+    k = np.flatnonzero(beside[j_e:N]) + j_e  # the faces j < N beside a cell stored whole
+    X, X2, dU, speed = geo.X[k], geo.X2[k], deviation.U[k], frw_speed[k]
+    alpha, w_eos = eos.alpha_float, eos.w_float
+
+    def one_sided(rho: FloatArray, q: FloatArray) -> FloatArray:
+        ephi = eos.lapse(rho)
+        drift = alpha * (hubble * X * (ephi - 1.0) + ephi * dU)  # as `hll_flux` forms it beside a cell stored whole
+        return X2 * ((speed + (1.0 + w_eos) * drift) * rho + drift * q)
+
+    rho_L, rho_R = kernels.rho_L[k], kernels.rho_R[k]
+    Lp, Lm = kernels.Lam_plus[k], kernels.Lam_minus[k]
+    F = nan_array(N + 1)
+    F[k] = (Lp * one_sided(rho_L, q_L[k]) - Lm * one_sided(rho_R, q_R[k]) + Lp * Lm * X2 * (rho_R - rho_L)) / (Lp - Lm)
+    if j_e == 0 and beside[0]:
+        F[0] = 0.0
+    return F

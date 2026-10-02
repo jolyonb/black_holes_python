@@ -14,7 +14,8 @@ the run.
     horizon    one row per step: the finder's report, the apparent horizon and the trapping margins
 
 A snapshot stores what the integrator carries and nothing derived: the deviations from FRW of the cell energies and
-the face velocities, `W`, `M_e`, the excision face and the time. Radii, densities, the lapse and the rest are
+the face velocities, `W`, `M_e`, the excision face and the time, and the content itself of the cells stored whole
+(`storage.py`), NaN in the others, which is also each cell's flag. Radii, densities, the lapse and the rest are
 recomputed by the reader with the same functions the run used, so that what is plotted is what the run saw, and
 every snapshot is a state to restart from. The snapshot times are a schedule that depends only on the
 configuration, the central density at each snapshot before formation and the formation time, so that two runs of the
@@ -60,9 +61,10 @@ from pbh.h5 import Column
 from pbh.horizon import HorizonRow
 from pbh.layout import Layout
 from pbh.maps import BlendMap, Map, Zone
-from pbh.records import StateRecord, none_if_nan, zones_as_mappings, zones_from_mappings
+from pbh.records import StateRecord, none_if_all_nan, none_if_nan, zones_as_mappings, zones_from_mappings
+from pbh.storage import deviation_of
 from pbh.timestep import Engine
-from pbh.types import FloatArray
+from pbh.types import BoolArray, FloatArray, nan_array
 
 FORMAT = "pbh-evolution"
 VERSION = 1
@@ -185,6 +187,8 @@ class SnapshotRow:
     """The formation time, NaN before formation."""
     zones: str = field(metadata={"length": 2048})
     """The pinned zones of the post-formation map as JSON, `[]` before the first switch-on."""
+    E_whole: FloatArray
+    """The content `E_c` of the cells stored whole (`storage.py`), NaN in the others."""
 
 
 @dataclass(frozen=True)
@@ -254,17 +258,35 @@ class RunWriter[R: StepRow]:
         h5.write_int(self.file, "N", N)
         self.steps: Table[R] = Table(h5.create_group(self.file, "steps"), row_type)
         self.events = Table(h5.create_group(self.file, "events"), EventRow)
-        widths = {"delta_E": N, "delta_U": N + 1}
+        widths = {"delta_E": N, "delta_U": N + 1, "E_whole": N}
         self.snapshots = Table(h5.create_group(self.file, "snapshots"), SnapshotRow, widths)
         self.horizon = Table(h5.create_group(self.file, "horizon"), HorizonRow)
         h5.start_single_writer_mode(self.file)
         self.closed = False
 
     def snapshot(
-        self, step: int, xi: float, layout: Layout, dy: FloatArray, xi_form: float | None, zones: tuple[Zone, ...]
+        self,
+        step: int,
+        xi: float,
+        layout: Layout,
+        dy: FloatArray,
+        xi_form: float | None,
+        zones: tuple[Zone, ...],
+        whole: BoolArray | None = None,
+        dV: FloatArray | None = None,
     ) -> None:
-        """Record a snapshot from the packed deviation `dy` the integrator holds, and flush it at once."""
-        deviation = layout.unpack(dy)  # the deviation in the state's shape: delta_E, delta_U, W, M_e
+        """Record a snapshot from the packed deviation `dy` the integrator holds, and flush it at once.
+
+        The cells `whole` marks hold their content itself in `dy` (`storage.py`): it is recorded as it is, and their
+        deviation is formed with the shell volumes `dV`.
+        """
+        stored = layout.unpack(dy)  # what the integrator carries in the state's shape: delta_E, delta_U, W, M_e
+        E_whole = nan_array(layout.N)
+        deviation = stored
+        if whole is not None:
+            assert dV is not None
+            E_whole[whole] = stored.E[whole]
+            deviation = deviation_of(stored, whole, dV)
         row = SnapshotRow(
             step=step,
             xi=xi,
@@ -275,6 +297,7 @@ class RunWriter[R: StepRow]:
             delta_U=deviation.U,
             xi_form=float("nan") if xi_form is None else xi_form,
             zones=json.dumps(zones_as_mappings(zones)),
+            E_whole=E_whole,
         )
         self.snapshots.append(row)
         self.snapshots.flush()
@@ -384,7 +407,8 @@ class RunReader:
 
         The stored deviation goes into the record untouched, so a run started from it carries the integrator's
         variables to the last bit; the radii come from the configuration's base map with the zones the snapshot
-        carries. The record's provenance names this file and the step.
+        carries. The record's provenance names this file and the step. A file written before cells were stored whole
+        has no `E_whole` column, and its snapshots stand for states with none stored whole.
         """
         with self._open() as f:
             group = h5.subgroup(f, "snapshots")
@@ -395,13 +419,15 @@ class RunReader:
             step, xi, j_e = int(column("step")[index]), float(column("xi")[index]), int(column("j_e")[index])
             W, M_e = float(column("W")[index]), float(column("M_e")[index])
             delta_E, delta_U = column("delta_E")[index], column("delta_U")[index]
+            E_whole = none_if_all_nan(column("E_whole")[index]) if "E_whole" in h5.column_names(group) else None
             xi_form = none_if_nan(float(column("xi_form")[index]))
             zones_column = h5.read_column(group, "zones")
             assert isinstance(zones_column, list)
             zones = zones_from_mappings(json.loads(zones_column[index]))
         geo = self.geometry(xi, zones)
         provenance: dict[str, Any] = {"source": self.path.name, "step": step, "snapshot": index}
-        return StateRecord(delta_E, delta_U, W, M_e, geo.X[: geo.N + 1], xi, j_e, provenance, xi_form, zones)
+        X = geo.X[: geo.N + 1]
+        return StateRecord(delta_E, delta_U, W, M_e, X, xi, j_e, provenance, xi_form, zones, E_whole)
 
     def geometry(self, xi: float, zones: tuple[Zone, ...] = ()) -> Geometry:
         """The grid at time `xi`: the configuration's base map, blended with the zones if there are any."""

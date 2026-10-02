@@ -56,11 +56,21 @@ import pbh_engine
 import yaml
 from violent import FAMILIES, SEEDS, W_CASES, Case, violent_case
 
-from pbh import rust_engine
+from pbh import rust_engine, storage
 from pbh.cli import main
-from pbh.config import ConfigError, load, save
+from pbh.config import (
+    ConfigError,
+    EvolutionConfig,
+    GridConfig,
+    MapFamily,
+    OuterChoice,
+    OuterConfig,
+    RunConfig,
+    load,
+    save,
+)
 from pbh.derived import NotHyperbolicError
-from pbh.driver import RunPaths
+from pbh.driver import RunPaths, run
 from pbh.eos import RADIATION, EquationOfState, Spacetime
 from pbh.equations import DerivsResult
 from pbh.excision import fold_monitor
@@ -81,6 +91,7 @@ from pbh.outer import (
     PenaltyStrengths,
 )
 from pbh.output import RunReader
+from pbh.records import StateRecord
 from pbh.rust_engine import RustStage
 from pbh.state import State
 from pbh.timestep import (
@@ -95,7 +106,7 @@ from pbh.timestep import (
     step_cap,
     step_size,
 )
-from pbh.types import FloatArray
+from pbh.types import BoolArray, FloatArray
 
 RAD = EquationOfState(RADIATION)
 EPS = float(np.finfo(float).eps)
@@ -1184,7 +1195,9 @@ def test_what_the_extension_returns_has_the_types_its_stubs_declare(monkeypatch:
             sch = Scheme(RAD, SinhStretch(6.0, scale=2.0), Layout(20, j_e), HeldAtFrw(), settings, engine=Engine.RUST)
             sch.evaluate_deviation(0.3, np.zeros(sch.layout.size))
             sch.evaluate(0.3, sch.frw(0.3))
-    assert len(captured) == 8
+    pair, xi, dy, whole = void_pair(1e-20, 0, False, PRODUCTION_KERNELS, HeldAtFrw())  # with a stored rate
+    pair.rust.evaluate_deviation(xi, dy, whole)
+    assert len(captured) == 9
     for name in ("stage_deviation", "stage_state"):  # both stage functions return a StageOutput
         annotation = returns.pop(name)
         assert annotation is not None
@@ -1237,3 +1250,165 @@ def test_what_the_extension_returns_has_the_types_its_stubs_declare(monkeypatch:
     assert stub_value_matches(pbh_engine.radii_admissible(np.arange(4.0)), ast.unparse(annotation), classes)
     assert not returns  # every function is covered
     assert {out.kernels is None for out in captured} == {True, False}
+    assert {out.stored_rate_E is None for out in captured} == {True, False}
+
+
+# --- cells stored whole (storage.py) ---
+
+
+def void_pair(
+    depth: float, j_e: int, moving: bool, settings: KernelSettings, outer: OuterClosure, eos: EquationOfState = RAD
+) -> tuple[Pair, float, FloatArray, BoolArray]:
+    """A band of cells emptied to `depth` of the background between dense walls, as the integrator stores it: the
+    content itself in the cells below a quarter (bar the outermost two), the deviation elsewhere. On a static sinh
+    stretch, or on a blend map inside its ramp, whose faces in the band move. Returns the pair, the time, the packed
+    stored numbers and the flags."""
+    xi, N = 0.5, 90
+    zone = Zone(xi_on=0.4, tau_on=0.3, x_t=0.3, Delta_t=0.1)
+    m = BlendMap(SinhStretch(6.0, scale=2.0), 0.5, (zone,)) if moving else SinhStretch(6.0, scale=2.0)
+    pair = Pair.of(eos, m, Layout(N, j_e), outer, settings)
+    geo = pair.numpy.frame(xi).geo
+    X = geo.X[: N + 1]
+    ln_rho = np.log(depth) * np.exp(-(((geo.Xm - 2.0) / 0.6) ** 4)) + 0.5 * np.exp(-(((geo.Xm - 3.2) / 0.3) ** 2))
+    E: FloatArray = np.exp(ln_rho) * geo.dV
+    whole = np.zeros(N, dtype=bool)
+    whole[j_e : N - storage.KEEP_DEVIATION] = E[j_e : N - storage.KEEP_DEVIATION] < 0.25 * geo.dV[j_e : N - 2]
+    U = X * (1.0 + 0.1 * np.exp(-(((X - 2.0) / 0.7) ** 2)) - 0.1 * np.exp(-(((X - 3.4) / 0.4) ** 2)))
+    E_stored: FloatArray = np.where(whole, E, E - geo.dV)
+    stored = State(E=E_stored, U=U - X, W=0.01, M_e=-0.4 * float(X[j_e]) ** 3)
+    return pair, xi, pair.numpy.layout.pack(stored), whole
+
+
+@pytest.mark.parametrize("depth", [1e-8, 1e-16, 1e-30])
+@pytest.mark.parametrize("j_e", [0, 4])
+@pytest.mark.parametrize("moving", [False, True], ids=["static", "moving"])
+def test_the_engines_agree_on_cells_stored_whole(depth: float, j_e: int, moving: bool):
+    # every kernel switch and closure, and the stiff fluid, whose lapse is a square root too: the same stage
+    cases: list[tuple[str, KernelSettings, OuterClosure, EquationOfState]] = [
+        (f"{name} {closure}", settings, outer, RAD)
+        for name, settings in SETTINGS.items()
+        for closure, outer in CLOSURES.items()
+    ]
+    cases.append(("stiff", PRODUCTION_KERNELS, HeldAtFrw(), EquationOfState(Fraction(1))))
+    for name, settings, outer, eos in cases:
+        pair, xi, dy, whole = void_pair(depth, j_e, moving, settings, outer, eos)
+        assert np.count_nonzero(whole) >= 10, name
+        a, b = (sch.evaluate_deviation(xi, dy, whole) for sch in (pair.numpy, pair.rust))
+        assert a.stored is not None, name
+        assert np.all(np.isfinite(a.rate.E[j_e:])), name
+        assert_same_result(a, b, f"{name} at {depth:g}")
+        assert b.stored is not None
+        assert b.stored.U is b.deviation_rate.U  # as the numpy engine shares it
+    # with no cell flagged the stage is the deviation form's, on both engines
+    pair, xi, _, whole = void_pair(1e-8, j_e, moving, PRODUCTION_KERNELS, OutgoingWave())
+    dy = blob(pair.numpy, xi)
+    a, b = (sch.evaluate_deviation(xi, dy, np.zeros_like(whole)) for sch in (pair.numpy, pair.rust))
+    assert b.stored is None
+    assert_same_result(a, b, "no cell whole")
+    assert_same_result(b, pair.rust.evaluate_deviation(xi, dy), "no flags")
+
+
+def test_a_void_at_1e_250_is_the_same_on_both_engines():
+    # the pressure force formed with the ratio first, where the inertia alone overflows
+    pair, xi, dy, whole = void_pair(1e-250, 0, False, PRODUCTION_KERNELS, HeldAtFrw())
+    a, b = (sch.evaluate_deviation(xi, dy, whole) for sch in (pair.numpy, pair.rust))
+    assert np.all(np.isfinite(a.rate.U[1:]))
+    assert_same_result(a, b, "1e-250")
+
+
+def test_the_rust_engine_refuses_flags_that_are_not_one_per_cell():
+    pair, xi, dy, _ = void_pair(1e-8, 0, False, PRODUCTION_KERNELS, OutgoingWave())
+    frame = pair.rust.frame(xi)
+    assert frame.rust is not None
+    settings = cast(RustStage, pair.rust._rust)._settings  # pyright: ignore[reportPrivateUsage]
+    for whole in (np.ones(89, dtype=bool), np.zeros(91, dtype=bool)):
+        with pytest.raises(ValueError, match=f"expected one flag per cell, 90, got {whole.size}"):
+            pbh_engine.stage_deviation(frame.rust, settings, 1.0, 1.0, 1.0, dy, whole)
+
+
+@pytest.mark.parametrize("j_e", [0, 4])
+@pytest.mark.parametrize("moving", [False, True], ids=["static", "moving"])
+def test_checked_steps_with_cells_stored_whole_are_the_same_on_both_engines(j_e: int, moving: bool):
+    # a short march, and attempts too long to pass, refused alike after the same stages
+    causes: set[str] = set()
+    for depth in (1e-8, 1e-30):
+        pair, xi, dy, whole = void_pair(depth, j_e, moving, PRODUCTION_KERNELS, OutgoingWave())
+        first = [sch.evaluate_deviation(xi, dy, whole) for sch in (pair.numpy, pair.rust)]
+        base = step_size(first[0], pair.numpy.frame(xi).geo, pair.numpy.layout, 0.75, 1.0).dxi
+        for factor in (1.0, 64.0, 4096.0):
+            a, b = (
+                checked_step(sch, xi, dy, factor * base, f, whole=whole)
+                for sch, f in zip((pair.numpy, pair.rust), first, strict=True)
+            )
+            label = f"{depth:g} x{factor}"
+            assert (a.failure is None) == (b.failure is None), label
+            if a.failure is not None and b.failure is not None:
+                fa, fb = a.failure, b.failure
+                assert (fa.cause, fa.stage, fa.index) == (fb.cause, fb.stage, fb.index), label
+                assert np.array_equal([fa.value], [fb.value], equal_nan=True), label
+                causes.add(fa.cause.value)
+            assert len(a.stages) == len(b.stages), label
+            for sa, sb in zip(a.stages, b.stages, strict=True):
+                assert (sa.xi, sa.fluxes) == (sb.xi, sb.fluxes), label
+                assert np.array_equal(sa.k, sb.k, equal_nan=True), label
+            if a.result is not None and b.result is not None:
+                assert a.dy is not None, label
+                assert b.dy is not None, label
+                assert np.array_equal(a.dy, b.dy), label
+                assert_same_result(a.result, b.result, label)
+        dys = [dy, dy]
+        for n in range(4):
+            accepted: list[AcceptedStep] = []
+            for k, sch in enumerate((pair.numpy, pair.rust)):
+                dxi = step_size(first[k], sch.frame(xi).geo, sch.layout, 0.75, 1.0).dxi
+                accepted.append(advance_checked(sch, xi, dys[k], dxi, first[k], whole=whole))
+            assert_same_step(accepted[0], accepted[1], f"{depth:g} step {n}")
+            first = [s.result for s in accepted]
+            dys = [s.dy for s in accepted]
+            xi += accepted[0].dxi
+    assert causes, "no attempt was refused"
+
+
+def test_runs_through_a_void_are_the_same_on_both_engines(tmp_path: Path):
+    # one run that starts with a band held whole at 1e-30, one whose cell at a tenth of the background is stored whole
+    # at the first step boundary: the same steps, events, horizon rows and snapshots, the flags included
+    config = RunConfig(
+        grid=GridConfig(N=40, Rtilde_max=4.0, map=MapFamily.UNIFORM),
+        outer=OuterConfig(closure=OuterChoice.HELD),
+        evolution=EvolutionConfig(xi_end=0.05),
+    )
+    geo = config.scheme().frame(0.0).geo
+    X = geo.X[:41]
+    band = slice(10, 15)
+    delta_U = 0.05 * X * np.exp(-(((X - 1.2) / 0.3) ** 2))
+    E_whole = np.full(40, np.nan)
+    E_whole[band] = 1e-30 * geo.dV[band]
+    delta_E = np.zeros(40)
+    delta_E[band] = E_whole[band] - geo.dV[band]
+    held = StateRecord(delta_E, delta_U, 0.0, 0.0, X, 0.0, 0, {}, E_whole=E_whole)
+    delta_E = np.zeros(40)
+    delta_E[12] = -0.9 * geo.dV[12]
+    switched = StateRecord(delta_E, delta_U, 0.0, 0.0, X, 0.0, 0, {})
+    for name, record in (("held", held), ("switched", switched)):
+        readers: list[RunReader] = []
+        for engine in Engine:
+            paths = RunPaths.of(tmp_path, f"{name}_{engine.value}")
+            assert run(config, record, paths, engine=engine).status == "completed"
+            readers.append(RunReader(paths.evolution))
+        a, b = readers
+        assert a.events == b.events, name
+        for table in ("steps", "horizon"):
+            ta, tb = getattr(a, table), getattr(b, table)
+            for column, values in ta.items():
+                if isinstance(values, list):
+                    assert values == tb[column], (name, table, column)
+                else:
+                    assert np.array_equal(values, np.asarray(tb[column]), equal_nan=True), (name, table, column)
+        assert len(a.snapshots) == len(b.snapshots) > 1
+        for s in a.snapshots:
+            ra, rb = a.snapshot(s.index), b.snapshot(s.index)
+            assert ra.E_whole is not None, name  # a void all along
+            assert rb.E_whole is not None
+            assert np.array_equal(ra.E_whole, rb.E_whole, equal_nan=True), name
+            assert np.array_equal(ra.delta_E, rb.delta_E), name
+            assert np.array_equal(ra.delta_U, rb.delta_U), name

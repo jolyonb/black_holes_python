@@ -4,15 +4,17 @@
 //! operations in the same order as the Python. The retry policy that halves a refused step (`advance_checked`) stays in
 //! the Python, which reads the refusal from here. The tableau comes from the Python (`ButcherTableau.floats`), and so
 //! do the frames: one per stage after the first, at the stage times the Python forms, and one at the time the step
-//! arrives at.
+//! arrives at. A cell stored whole (`storage.rs`) advances by its whole rate, `DerivsResult::stored_rate`; the flags
+//! are the Python's, the same for every stage of the attempt.
 
 use crate::eos::{Background, EquationOfState};
 use crate::equations::{DerivsResult, StageError, calc_derivs};
 use crate::geometry::Geometry;
 use crate::kernels::KernelSettings;
 use crate::outer::OuterClosure;
-use crate::state::{FrwReference, whole_state};
+use crate::state::FrwReference;
 use crate::stencils::StencilWeights;
+use crate::storage::{deviation_of, whole_of};
 
 /// What a stage evaluates against at one time: the frame's geometry, weights and reference, its two scalar squares,
 /// and the background at that time.
@@ -32,14 +34,21 @@ pub struct Settings<'a> {
     pub kernels: &'a KernelSettings,
 }
 
-/// The stage at `y_FRW + delta y` from the packed deviation (`Scheme.evaluate_deviation`).
-pub fn evaluate_deviation(s: &Settings, t: &StageTime, dy: &[f64]) -> Result<DerivsResult, StageError> {
+/// The stage at `y_FRW + delta y` from the packed deviation (`Scheme.evaluate_deviation`), the cells `whole` marks
+/// holding their content itself.
+pub fn evaluate_deviation(
+    s: &Settings,
+    t: &StageTime,
+    dy: &[f64],
+    whole: Option<&[bool]>,
+) -> Result<DerivsResult, StageError> {
     // the length is the layout's: the caller checked it once for every vector the attempt forms
-    let deviation =
+    let stored =
         t.w.layout
             .unpack(dy)
             .expect("a packed deviation of the layout's length");
-    let state = whole_state(t.reference, &deviation);
+    let state = whole_of(&stored, whole, &t.reference.state);
+    let deviation = deviation_of(stored, whole, &t.reference.state.E);
     calc_derivs(
         &state,
         t.geo,
@@ -52,6 +61,7 @@ pub fn evaluate_deviation(s: &Settings, t: &StageTime, dy: &[f64]) -> Result<Der
         t.reference,
         t.X_N_squared,
         t.X_je_squared,
+        whole,
     )
 }
 
@@ -77,7 +87,7 @@ impl StageFluxes {
 }
 
 /// One stage after the first, as the record keeps it (`timestep.Stage` less its time): the fluxes and the packed
-/// deviation rate `k`.
+/// rate of the stored numbers `k`.
 pub struct Stage {
     pub fluxes: StageFluxes,
     pub k: Vec<f64>,
@@ -102,7 +112,8 @@ pub struct Attempt {
 }
 
 /// One checked attempt (`checked_step`) from the deviation `dy`, the first stage's packed rate `k1`, the tableau rows
-/// `a` (the first empty) and weights `b`, the stage times after the first and the time arrived at.
+/// `a` (the first empty) and weights `b`, the stage times after the first and the time arrived at, and the cells
+/// stored whole, `whole`.
 ///
 /// `Err` carries an outer closure's refusal, which the Python raises as `ValueError`.
 #[allow(clippy::too_many_arguments)]
@@ -115,6 +126,7 @@ pub fn checked_step(
     k1: &[f64],
     a: &[Vec<f64>],
     b: &[f64],
+    whole: Option<&[bool]>,
 ) -> Result<Attempt, String> {
     let evaluate = |t: &StageTime, dy_i: &[f64], stage: usize| -> Result<Result<DerivsResult, Failure>, String> {
         let place = if stage > 0 { "stage" } else { "result" };
@@ -126,7 +138,7 @@ pub fn checked_step(
                 value: f64::NAN,
             }));
         }
-        match evaluate_deviation(s, t, dy_i) {
+        match evaluate_deviation(s, t, dy_i, whole) {
             Ok(r) => Ok(Ok(r)),
             Err(StageError::NotHyperbolic(e)) => {
                 let what = if e.value.is_finite() { e.field } else { "nonfinite" };
@@ -158,7 +170,7 @@ pub fn checked_step(
         match evaluate(t, &dy_i, stage)? {
             Ok(r) => {
                 let fluxes = StageFluxes::of(&r, N, j_e);
-                let k_i = t.w.layout.pack(&r.deviation_rate);
+                let k_i = t.w.layout.pack(r.stored_rate());
                 stages.push(Stage { fluxes, k: k_i.clone() });
                 k.push(k_i);
             }

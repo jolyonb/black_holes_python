@@ -14,6 +14,11 @@
 //! the flux carries the viscous pressure.
 //!
 //! At an excision face the kernels' own one-sided rows apply, as in the Python.
+//!
+//! Beside a cell stored whole (`storage.rs`) the kernels work in the densities themselves: the one-sided differences
+//! across its faces are of `rho`, its theta-limiter and face values are formed on `rho` (`theta_limited_whole`), the
+//! lapse of the face values at its faces is the power of the density, and the flux through its faces is formed whole
+//! (`hll_flux_whole`).
 
 use crate::derived::Derived;
 use crate::eos::EquationOfState;
@@ -21,7 +26,8 @@ use crate::geometry::Geometry;
 use crate::layout::Layout;
 use crate::numpy_like::{maximum, minimum, minmod2, minmod3};
 use crate::state::State;
-use crate::stencils::{StencilWeights, theta_limited_faces};
+use crate::stencils::{StencilWeights, theta_limited_faces, theta_limited_whole};
+use crate::storage::faces_beside;
 
 /// Whether the shock-capturing kernels are on (production) or the centred base scheme runs (`Kernels`).
 pub enum Kernels {
@@ -157,7 +163,8 @@ struct OneSided {
 ///
 /// `X`, `X2`, `frw_speed` and `dU` are face `j`'s; `rho`, `delta_rho` and `q` are this side's. `dU = U - h X` is the
 /// absolute deviation of the velocity, `deviation.U[j]`, as the Python's `dU`; not `Derived::delta_U`, which is the
-/// relative deviation `U / X - 1`.
+/// relative deviation `U / X - 1`. `whole` says the face is beside a cell stored whole, where the lapse is the power of
+/// the density (`EquationOfState::lapse_whole`).
 fn one_sided(
     X: f64,
     X2: f64,
@@ -168,10 +175,15 @@ fn one_sided(
     q: f64,
     eos: &EquationOfState,
     hubble: f64,
+    whole: bool,
 ) -> OneSided {
     let alpha = eos.alpha_float;
     let w_eos = eos.w_float;
-    let lapse = eos.lapse_and_deviation(rho, delta_rho);
+    let lapse = if whole {
+        eos.lapse_whole(rho)
+    } else {
+        eos.lapse_and_deviation(rho, delta_rho)
+    };
     let drift = alpha * (hubble * X * lapse.delta_ephi + lapse.ephi * dU); // alpha (e^phi U - h X)
     let chord = frw_speed + (1.0 + w_eos) * drift + drift * q / rho;
     OneSided {
@@ -181,7 +193,8 @@ fn one_sided(
 }
 
 /// The density to both sides of every retained face, piecewise linear in `s = X^2` (eq:num:recon, eq:num:theta),
-/// carried out on the deviation `rho - 1` with one added back.
+/// carried out on the deviation `rho - 1` with one added back; in the cells `whole` marks (`storage.rs`), and across
+/// their faces, on the densities `rho` themselves.
 #[inline(never)] // kept out of line: see `calc_derivs`
 pub fn reconstruct_density(
     delta_rho: &[f64],
@@ -189,6 +202,8 @@ pub fn reconstruct_density(
     w: &StencilWeights,
     limiter: &DensityLimiter,
     theta: f64,
+    rho: &[f64],
+    whole: Option<&[bool]>,
 ) -> Reconstruction {
     let N = w.layout.N;
     let j_e = w.layout.j_e;
@@ -197,6 +212,16 @@ pub fn reconstruct_density(
     let mut d = vec![f64::NAN; N + 1];
     for j in j_e + 1..N {
         d[j] = (delta_rho[j] - delta_rho[j - 1]) / dS[j];
+    }
+    if let Some(whole) = whole {
+        // Beside a cell stored whole, the difference of the densities: the same in exact arithmetic, without the
+        // deviations' absolute rounding, which is all there is of a nearly empty cell's density.
+        let beside = faces_beside(whole);
+        for j in j_e + 1..N {
+            if beside[j] {
+                d[j] = (rho[j] - rho[j - 1]) / dS[j];
+            }
+        }
     }
     // The limited slope of every retained cell: the interior cells from their two faces, the first and last retained
     // cells from their single adjacent difference.
@@ -216,25 +241,39 @@ pub fn reconstruct_density(
     let mut t = vec![f64::NAN; N];
     let mut delta_L = vec![f64::NAN; N + 1];
     let mut delta_R = vec![f64::NAN; N + 1];
+    let mut rho_L = vec![f64::NAN; N + 1];
+    let mut rho_R = vec![f64::NAN; N + 1];
     for c in j_e..N {
-        let faces = theta_limited_faces(
-            delta_rho[c],
-            slope[c] * geo.s_in[c], // the slope times X^2 - sbar_c at each face
-            slope[c] * geo.s_out[c],
-            theta,
-        );
-        t[c] = faces.t;
-        delta_L[c + 1] = faces.delta_out; // cell c is inside face c + 1 ...
-        delta_R[c] = faces.delta_in; // ... and outside face c
+        let off_in = slope[c] * geo.s_in[c]; // the slope times X^2 - sbar_c at each face
+        let off_out = slope[c] * geo.s_out[c];
+        let (t_c, delta_in, delta_out, rho_in, rho_out) = match whole {
+            Some(whole) if whole[c] => {
+                let faces = theta_limited_whole(rho[c], off_in, off_out, theta);
+                (
+                    faces.t,
+                    faces.rho_in - 1.0,
+                    faces.rho_out - 1.0,
+                    faces.rho_in,
+                    faces.rho_out,
+                )
+            }
+            _ => {
+                let faces = theta_limited_faces(delta_rho[c], off_in, off_out, theta);
+                let (rho_in, rho_out) = (1.0 + faces.delta_in, 1.0 + faces.delta_out);
+                (faces.t, faces.delta_in, faces.delta_out, rho_in, rho_out)
+            }
+        };
+        t[c] = t_c;
+        delta_L[c + 1] = delta_out; // cell c is inside face c + 1 ...
+        rho_L[c + 1] = rho_out;
+        delta_R[c] = delta_in; // ... and outside face c
+        rho_R[c] = rho_in;
     }
-    delta_L[j_e] = delta_R[j_e]; // nothing inside the innermost face: transmissive
+    // nothing inside the innermost face: transmissive
+    delta_L[j_e] = delta_R[j_e];
+    rho_L[j_e] = rho_R[j_e];
     delta_R[N] = delta_L[N];
-    let mut rho_L = vec![0.0; N + 1];
-    let mut rho_R = vec![0.0; N + 1];
-    for j in 0..N + 1 {
-        rho_L[j] = 1.0 + delta_L[j];
-        rho_R[j] = 1.0 + delta_R[j];
-    }
+    rho_R[N] = rho_L[N];
     Reconstruction {
         rho_L,
         rho_R,
@@ -360,7 +399,8 @@ pub fn viscous_sides(
 /// Each side's flux less the FRW flux is `X^2 [frw_speed (rho - 1) + (1 + w) drift rho + drift q]`, with
 /// `drift = alpha (h X (e^phi - 1) + e^phi dU)` at that side's lapse; the bounds are
 /// `Lambda^+ = max(Theta + a, v^L, v^R, 0)` and `Lambda^- = min(Theta - a, v^L, v^R, 0)`, taken pairwise in the order
-/// printed.
+/// printed. At the faces `beside` a cell stored whole (`None` if none is) the lapse of both sides is the power of the
+/// density, and the flux is formed whole by `hll_flux_whole`.
 #[inline(never)] // kept out of line: see `calc_derivs`
 pub fn hll_flux(
     rho_L: &[f64],
@@ -377,6 +417,7 @@ pub fn hll_flux(
     w: &StencilWeights,
     hubble: f64,
     frw_speed: &[f64],
+    beside: Option<&[bool]>,
 ) -> HllFlux {
     let N = w.layout.N;
     let j_e = w.layout.j_e;
@@ -388,8 +429,9 @@ pub fn hll_flux(
     let mut delta_F = vec![f64::NAN; N + 1];
     for j in j_e..N {
         let (X, X2, speed, dU) = (geo.X[j], geo.X2[j], frw_speed[j], deviation.U[j]);
-        let left = one_sided(X, X2, speed, dU, rho_L[j], delta_rho_L[j], q_L[j], eos, hubble);
-        let right = one_sided(X, X2, speed, dU, rho_R[j], delta_rho_R[j], q_R[j], eos, hubble);
+        let whole = beside.is_some_and(|beside| beside[j]);
+        let left = one_sided(X, X2, speed, dU, rho_L[j], delta_rho_L[j], q_L[j], eos, hubble, whole);
+        let right = one_sided(X, X2, speed, dU, rho_R[j], delta_rho_R[j], q_R[j], eos, hubble, whole);
         let Lp = maximum(maximum(maximum(Theta[j] + a[j], left.chord), right.chord), 0.0);
         let Lm = minimum(minimum(minimum(Theta[j] - a[j], left.chord), right.chord), 0.0);
         Lam_plus[j] = Lp;
@@ -408,4 +450,51 @@ pub fn hll_flux(
         v_L: chord_L,
         v_R: chord_R,
     }
+}
+
+/// The HLL flux of eq:num:hll itself at the faces `j < N` beside a cell stored whole (`hll_flux_whole`); NaN elsewhere.
+///
+/// The same flux as `hll_flux`, with its bounds, formed whole: each side `X^2 [(alpha w h X - d_xi X + (1 + w) drift)
+/// rho + drift q]` with the drift `alpha (h X (e^phi - 1) + e^phi dU)` at the lapse of that side's density, combined
+/// with the bounds `hll_flux` chose. Every term is proportional to a face density, so the flux is precise relative to
+/// itself however empty the cell. Zero at the origin.
+pub fn hll_flux_whole(
+    rho_L: &[f64],
+    rho_R: &[f64],
+    Lam_plus: &[f64],
+    Lam_minus: &[f64],
+    q_L: &[f64],
+    q_R: &[f64],
+    deviation: &State,
+    geo: &Geometry,
+    eos: &EquationOfState,
+    w: &StencilWeights,
+    hubble: f64,
+    frw_speed: &[f64],
+    beside: &[bool],
+) -> Vec<f64> {
+    let N = w.layout.N;
+    let j_e = w.layout.j_e;
+    let alpha = eos.alpha_float;
+    let w_eos = eos.w_float;
+    let mut F = vec![f64::NAN; N + 1];
+    for j in j_e..N {
+        if !beside[j] {
+            continue;
+        }
+        let (X, X2, dU, speed) = (geo.X[j], geo.X2[j], deviation.U[j], frw_speed[j]);
+        let one_sided = |rho: f64, q: f64| -> f64 {
+            let ephi = eos.lapse(rho);
+            let drift = alpha * (hubble * X * (ephi - 1.0) + ephi * dU); // as `hll_flux` forms it here
+            X2 * ((speed + (1.0 + w_eos) * drift) * rho + drift * q)
+        };
+        let (Lp, Lm) = (Lam_plus[j], Lam_minus[j]);
+        F[j] = (Lp * one_sided(rho_L[j], q_L[j]) - Lm * one_sided(rho_R[j], q_R[j])
+            + Lp * Lm * X2 * (rho_R[j] - rho_L[j]))
+            / (Lp - Lm);
+    }
+    if j_e == 0 && beside[0] {
+        F[0] = 0.0;
+    }
+    F
 }

@@ -28,6 +28,10 @@ Nothing here is evolved. From the stored cell energies and face velocities a sta
   eq:num:stencils, which the velocity equation and the fluxes need at the faces, and the same averages of their
   deviations, `<rho>_j - 1 = <delta_rho>_j` and `<ephi>_j - 1`, since the stencil's weights sum to one.
 
+A cell stored whole (`storage.py`) has its content itself in `state.E` and its rounded `E - Delta V` in the deviation:
+its relative deviation is then `delta_rho = rho - 1`, formed from its density, and its lapse is the power of its density
+(`EquationOfState.lapse_and_deviation`), so that both keep the cell's relative precision however empty it is.
+
 Two things are asserted here and nowhere else, because they are the hyperbolicity of the system (Section 7.3):
 `rho_c > 0` in every retained cell and `Gammabar_j^2 > 0` at every retained face. Where either fails "the system is
 no longer hyperbolic, whatever the cause, and there is nothing to continue": the stage raises `NotHyperbolicError`
@@ -46,7 +50,7 @@ from pbh.eos import Background, EquationOfState
 from pbh.geometry import Geometry
 from pbh.state import State, deviation_from_frw
 from pbh.stencils import StencilWeights
-from pbh.types import FloatArray, nan_array
+from pbh.types import BoolArray, FloatArray, nan_array
 
 
 class NotHyperbolicError(Exception):
@@ -111,6 +115,7 @@ def derive(
     w: StencilWeights,
     theta: float,
     deviation: State | None = None,
+    whole: BoolArray | None = None,
 ) -> Derived:
     """Form the derived fields of one stage, asserting hyperbolicity on the retained entries.
 
@@ -123,6 +128,7 @@ def derive(
         theta: The theta-limiter's fraction, which fixes the outer face's density (Section 7.5).
         deviation: The state's deviation from FRW, `state - frw_state(geo, j_e)`, if the caller holds it; otherwise
             it is recovered from the state. `Gammabar^2` and the relative deviations read it.
+        whole: The cells stored whole, `None` if none (`storage.py`): their `delta_rho` and lapse come from `rho`.
 
     Returns:
         The `Derived` fields, full length, NaN below the excision face.
@@ -143,10 +149,15 @@ def derive(
     _assert_positive(rho, cells, "rho")
     delta_rho = nan_array(N)
     delta_rho[cells] = deviation.E[cells] / geo.dV[cells]
+    if whole is not None:
+        delta_rho[whole] = rho[whole] - 1.0  # a cell stored whole: from its own density, not its rounded deviation
 
     ephi = nan_array(N)
     delta_ephi = nan_array(N)
-    ephi[cells], delta_ephi[cells] = eos.lapse_and_deviation(rho[cells], delta_rho[cells])
+    if whole is None:
+        ephi[cells], delta_ephi[cells] = eos.lapse_and_deviation(rho[cells], delta_rho[cells])
+    else:
+        ephi[cells], delta_ephi[cells] = eos.lapse_and_deviation(rho[cells], delta_rho[cells], whole[cells])
 
     # The mass inside each retained face: what is inside the innermost retained face (nothing, or the excised M_e)
     # plus three times the energy of every retained cell inside it (Section 7.2 and 8.3).

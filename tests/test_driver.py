@@ -18,12 +18,9 @@ from pbh.config import (
     ShockConfig,
 )
 from pbh.driver import (
-    RHO_ABORT,
-    AbortError,
     Run,
     RunPaths,
     chart_case,
-    check_resolved,
     epoch_history,
     far_zone_radius,
     run,
@@ -41,7 +38,7 @@ from pbh.output import RunReader, RunWriter
 from pbh.readout import Epoch
 from pbh.records import StateRecord, read_initial, shell_volumes, write_initial
 from pbh.state import State
-from pbh.timestep import AcceptedStep, FailureCause, Scheme, StepAbortError, StepFailure
+from pbh.timestep import FailureCause, Scheme, StepAbortError, StepFailure
 
 N = 40
 CONFIG = RunConfig(
@@ -410,26 +407,33 @@ def abort_scheme(N: int = 40, j_e: int = 0) -> Scheme:
     return Scheme(EquationOfState(RADIATION), IdentityMap(4.0), Layout(N, j_e), OutgoingWave(), PRODUCTION_KERNELS)
 
 
-def accepted_at(sch: Scheme, xi: float, state: State) -> AcceptedStep:
-    dy = sch.layout.pack(state) - sch.frw(xi)
-    return AcceptedStep(0.01, dy, sch.evaluate_deviation(xi, dy), [], [])
-
-
-def test_a_cell_below_the_resolved_density_aborts_naming_it_and_the_last_resolved_density():
-    sch = abort_scheme()
+def test_a_cell_far_below_the_background_no_longer_ends_the_run(tmp_path: Path):
+    # Once a cell at 1e-13 of the background ended the run (the 5e-13 line): its density was then noise in deviation
+    # form. It is stored whole instead (storage.py) and the run goes on to its end, the cell refilling from its
+    # neighbours, its content known to the last bit throughout.
+    config = CONFIG.model_copy(update={"shocks": ShockConfig()})
+    sch = config.scheme()
     geo = sch.frame(0.0).geo
-    E = geo.dV[:40].copy()
-    E[7] *= 1e-13
-    before = sch.evaluate(0.0, sch.frw(0.0))
-    with pytest.raises(AbortError) as abort:
-        check_resolved(accepted_at(sch, 0.0, State(E=E, U=geo.X[:41].copy(), W=0.0)), 0.0, before, sch.layout)
-    assert (abort.value.field, abort.value.index) == ("rho", 7)
-    assert abort.value.value == pytest.approx(1e-13, rel=1e-3)
-    assert f"< {RHO_ABORT} in cell 7" in abort.value.reason
-    assert "fewer than two digits" not in abort.value.reason  # 1e-13 is 450 eps
-    assert "a step earlier, at xi = 0, was 1" in abort.value.reason
-    E[7] = geo.dV[7] * 1e-12  # above the line: no abort
-    check_resolved(accepted_at(sch, 0.0, State(E=E, U=geo.X[:41].copy(), W=0.0)), 0.0, before, sch.layout)
+    delta_E = np.zeros(N)
+    delta_E[7] = (1e-13 - 1.0) * geo.dV[7]  # the content 1e-13 dV, rounded as a deviation is
+    E_whole = np.full(N, np.nan)
+    E_whole[7] = 1e-13 * geo.dV[7]  # the same content, held whole
+    X = geo.X[: N + 1]
+    for name, record in {
+        "deviation": StateRecord(delta_E, np.zeros(N + 1), 0.0, 0.0, X, 0.0, 0, {}),
+        "whole": StateRecord(delta_E, np.zeros(N + 1), 0.0, 0.0, X, 0.0, 0, {}, E_whole=E_whole),
+    }.items():
+        result = run(config, record, RunPaths.of(tmp_path, name))
+        assert (result.status, result.xi) == ("completed", 0.4)
+        reader = RunReader(RunPaths.of(tmp_path, name).evolution)
+        first = reader.snapshot(0)
+        assert first.whole is not None
+        assert np.flatnonzero(first.whole).tolist() == [7]
+        assert first.state.E[7] / geo.dV[7] == pytest.approx(1e-13, rel=1e-3 if name == "deviation" else 1e-15)
+        assert not [e for e in reader.events if e.kind in ("abort", "rejection")]
+        assert reader.snapshot(-1).whole is None  # refilled above a half, and back as its deviation
+        # the energy bookkeeping holds across the move: it changes how the content is stored, not the content
+        assert np.max(np.asarray(reader.steps["bookkeeping_residual"], dtype=np.float64)) < 1e-15
 
 
 def test_the_chart_abort_reads_its_case_from_the_accepted_state():

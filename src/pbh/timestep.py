@@ -15,7 +15,10 @@ and its right-hand side is
 
 with `y_FRW` and its rate known in closed form from the geometry (`state.py`). On a static map the two forms
 coincide; on a moving one this keeps the far zone FRW to round-off where advancing `y` itself keeps it only to the
-Runge-Kutta truncation of the map's motion (Section 7.6: `1e-15` against `1e-8` over one e-fold). It is always on.
+Runge-Kutta truncation of the map's motion (Section 7.6: `1e-15` against `1e-8` over one e-fold). It is always on. A
+cell far below the background stores its content whole instead (`storage.py`), and the integrator advances each stored
+number by its own rate, `DerivsResult.stored_rate`; the flags change only at step boundaries, so a step's stages all
+share them.
 
 The step. `Delta xi = min(C_CFL min_c Delta X_c / Lambda_hat_c, Delta xi_max)` with `C_CFL = 0.75` and
 `Lambda_hat_c = max(Lambda_j, Lambda_j+1)` (eq:num:cfl): the shortest time in which the faster of a cell's two signal
@@ -29,6 +32,12 @@ The checked step. Every stage input and the result of a step must be finite and 
 retained `rho_c > 0` and `Gammabar_j^2 > 0`; an attempt that fails is refused and the step retried from the same state
 with half the step (`advance_checked`). This is what keeps accepted states positive: the semi-discrete scheme is
 positive (eq:num:positivity), but an explicit step can overshoot it.
+
+The clock. The time is advanced by adding the step to it, and a step of a few ulps of `xi` is rounded away in the sum:
+deep in a void the step falls to `1e-14` at `xi ~ 6`, and the clock would stop while the state moves on. A step shorter
+than `COMPENSATED_BELOW |xi|` is therefore added with its rounding error carried to the next (`Clock`, the two-sum of
+Knuth), so the clock keeps the sum of the steps however small they become. Ordinary runs never take a step that short,
+and their clock is the plain sum, to the bit.
 
 `Frame` bundles what a stage needs at one time, the geometry, the stencil weights, the scale factor and the reference
 solution, and `Scheme` builds frames from the map and the layout: once for a static map (bar the scale factor), at
@@ -56,7 +65,8 @@ from pbh.maps import BlendMap, Map, MapValues
 from pbh.outer import OuterClosure
 from pbh.state import FrwReference, State
 from pbh.stencils import StencilWeights
-from pbh.types import FloatArray, read_only
+from pbh.storage import any_whole, deviation_of, whole_of
+from pbh.types import BoolArray, FloatArray, read_only
 
 if TYPE_CHECKING:  # the Rust engine is imported only when a Scheme asks for it (`Scheme.__post_init__`)
     from pbh_engine import StageFrame
@@ -65,6 +75,35 @@ if TYPE_CHECKING:  # the Rust engine is imported only when a Scheme asks for it 
 
 #: The Courant number of eq:num:cfl. RK4's stable limit on the production footprint is 0.865 (0.835 to x_max = 48).
 COURANT_NUMBER = 0.75
+
+#: A step shorter than this fraction of `|xi|`, some six thousand ulps, is added to the clock with its rounding carried
+#: (`Clock`). An ordinary run never takes one: twenty halvings of an acoustic step of `1e-4` are `1e-10`, twenty times
+#: longer at `xi = 6`. The deep voids take steps of `1e-14`.
+COMPENSATED_BELOW = 2.0**-40
+
+
+@dataclass(frozen=True)
+class Clock:
+    """The time `xi` and the rounding error `carry` of its last compensated additions (`xi + carry` is the sum).
+
+    The carry is zero while every step is longer than `COMPENSATED_BELOW |xi|`, and the clock then the plain sum.
+    """
+
+    xi: float
+    carry: float = 0.0
+
+    def advanced(self, dxi: float) -> Clock:
+        """The clock a step `dxi` later: the plain sum, or, for a short step or with a carry, the compensated one.
+
+        The compensated sum adds `dxi + carry` and keeps the exact rounding error of that addition as the new carry
+        (Knuth's two-sum); only the rounding of `dxi + carry` itself, a part in `1e16` of the step, is lost.
+        """
+        if self.carry == 0.0 and dxi >= COMPENSATED_BELOW * abs(self.xi):
+            return Clock(self.xi + dxi)
+        increment = dxi + self.carry
+        xi = self.xi + increment
+        back = xi - self.xi
+        return Clock(xi, (self.xi - (xi - back)) + (increment - back))
 
 
 @dataclass(frozen=True)
@@ -299,20 +338,31 @@ class Scheme:
         state = self.layout.unpack(y)
         return calc_derivs(state, f.geo, f.bg, self.eos, f.w, self.outer, self.settings, reference=f.reference)
 
-    def evaluate_deviation(self, xi: float, dy: FloatArray) -> DerivsResult:
+    def evaluate_deviation(self, xi: float, dy: FloatArray, whole: BoolArray | None = None) -> DerivsResult:
         """`evaluate` at the state `y_FRW + delta y`, handing the stage the deviation as well, which it needs whole.
 
         The sum `y_FRW + delta y` rounds each entry to the size of its FRW value; `Gammabar^2` is formed from the
-        deviation instead, which has not been rounded (see `derive`).
+        deviation instead, which has not been rounded (see `derive`). The cells `whole` marks hold their content
+        itself (`storage.py`).
         """
         f = self.frame(xi)
+        whole = any_whole(whole)
         if self._rust is not None:
             assert f.rust is not None
-            return self._rust.evaluate_deviation(f.rust, f.bg, dy)
-        deviation = self.layout.unpack(dy)
-        state = self.whole_state(xi, deviation)
+            return self._rust.evaluate_deviation(f.rust, f.bg, dy, whole)
+        stored = self.layout.unpack(dy)
+        state = self.whole_state(xi, stored, whole)
         return calc_derivs(
-            state, f.geo, f.bg, self.eos, f.w, self.outer, self.settings, deviation=deviation, reference=f.reference
+            state,
+            f.geo,
+            f.bg,
+            self.eos,
+            f.w,
+            self.outer,
+            self.settings,
+            deviation=deviation_of(stored, whole, f.reference.state.E),
+            reference=f.reference,
+            whole=whole,
         )
 
     def rust_attempt(
@@ -324,16 +374,18 @@ class Scheme:
         dxi: float,
         a: tuple[tuple[float, ...], ...],
         b: tuple[float, ...],
+        whole: BoolArray | None = None,
     ) -> Attempt:
         """`checked_step`'s attempt on the Rust engine, from the first stage `stages[0]` (`pbh.rust_engine`).
 
-        The stages at `times` and the result at `arrive` are formed and checked in Rust, with the tableau `a`, `b`.
+        The stages at `times` and the result at `arrive` are formed and checked in Rust, with the tableau `a`, `b`, and
+        the cells `whole` marks stored whole.
         """
         assert self._rust is not None
         arrival = self.frame(arrive)  # held whole: the driver reads the state arrived at through it
         assert arrival.rust is not None
         at = [(arrival.rust, arrival.bg) if t == arrive else self._stage_time(t) for t in times]
-        return self._rust.attempt(stages, times, at, (arrival.rust, arrival.bg), dy, dxi, a, b)
+        return self._rust.attempt(stages, times, at, (arrival.rust, arrival.bg), dy, dxi, a, b, whole)
 
     def _stage_time(self, xi: float) -> tuple[StageFrame, Background]:
         """The Rust engine's frame and the background at `xi`, for a stage inside a step and nothing else.
@@ -357,15 +409,15 @@ class Scheme:
             self._stage_frames[xi] = kept
         return kept
 
-    def whole_state(self, xi: float, deviation: State) -> State:
+    def whole_state(self, xi: float, deviation: State, whole: BoolArray | None = None) -> State:
         """The state `y_FRW + delta y` at time `xi`, from the unpacked deviation: the one recipe for it.
 
         Bit for bit `unpack(frw(xi) + delta y)`, without packing and unpacking a second vector: the retained entries
         are the same sums; the excised ones are NaN either way (the deviation's are); and where `unpack` sets a value
         by fiat, the sum gives it exactly, `U_0 = h X_0 + 0 = 0` (`Geometry.of` insists on `X_0 = 0`) and before
-        excision `M_e = X_0^3 + 0 = 0`.
+        excision `M_e = X_0^3 + 0 = 0`. A cell `whole` marks holds its content itself, which is taken as it is.
         """
-        return self.frame(xi).reference.state.plus(deviation)
+        return whole_of(deviation, any_whole(whole), self.frame(xi).reference.state)
 
     def frw(self, xi: float) -> FloatArray:
         """The packed background state at time `xi`: FRW, or the fluid at rest in flat spacetime (read-only)."""
@@ -508,6 +560,7 @@ def checked_step(
     dxi: float,
     first: DerivsResult,
     land: float | None = None,
+    whole: BoolArray | None = None,
 ) -> Attempt:
     """One RK4 step in deviation form, every stage and the result checked.
 
@@ -517,22 +570,26 @@ def checked_step(
     result outside the domain is caught like a stage, and its rate is handed back as the next step's first stage. A
     `Gammabar^2` that evaluates to NaN or an infinity is a non-finite value, not a failure of the chart. The checks,
     not the method, keep accepted states positive.
-    `land`, if given, is the time the step arrives at, an output time the driver clipped it to: the result is evaluated
-    there exactly, as a restart from that output time evaluates it, rather than at the rounded `xi + dxi`.
+    `land`, if given, is the time the step arrives at, an output time the driver clipped it to or where the compensated
+    clock arrives (`Clock`): the result is evaluated there exactly, as a restart from that time evaluates it, rather
+    than at the rounded `xi + dxi`.
+    `whole` marks the cells stored whole (`storage.py`), whose stored content advances by its whole rate.
     """
     c, a, b = RK4.floats
     layout = scheme.layout
-    stages = [Stage(xi=xi, fluxes=StageFluxes.of(first, layout), k=layout.pack(first.deviation_rate))]
+    stages = [Stage(xi=xi, fluxes=StageFluxes.of(first, layout), k=layout.pack(first.stored_rate))]
     arrive = xi + dxi if land is None else land
+    whole = any_whole(whole)
     if scheme.engine is Engine.RUST:
-        return scheme.rust_attempt(stages, [xi + c_i * dxi for c_i in c[1:]], arrive, dy, dxi, a, b)
+        return scheme.rust_attempt(stages, [xi + c_i * dxi for c_i in c[1:]], arrive, dy, dxi, a, b, whole)
+    rate = scheme.evaluate_deviation if whole is None else functools.partial(scheme.evaluate_deviation, whole=whole)
 
     def evaluate(xi_i: float, dy_i: FloatArray, stage: int) -> tuple[DerivsResult | None, StepFailure | None]:
         where = "stage" if stage else "result"
         if not bool(np.all(np.isfinite(dy_i))):
             return None, StepFailure(FailureCause(f"{where}_nonfinite"), stage, -1, math.nan)
         try:
-            return scheme.evaluate_deviation(xi_i, dy_i), None
+            return rate(xi_i, dy_i), None
         except NotHyperbolicError as e:
             what = e.field if math.isfinite(e.value) else "nonfinite"
             return None, StepFailure(FailureCause(f"{where}_{what}"), stage, e.index, e.value)
@@ -548,7 +605,7 @@ def checked_step(
         result, failure = evaluate(xi_i, dy_i, n + 1)
         if result is None:
             return Attempt(None, stages, None, failure)
-        stages.append(Stage(xi=xi_i, fluxes=StageFluxes.of(result, layout), k=layout.pack(result.deviation_rate)))
+        stages.append(Stage(xi=xi_i, fluxes=StageFluxes.of(result, layout), k=layout.pack(result.stored_rate)))
     dy_new = dy + dxi * sum(b_i * stage.k for b_i, stage in zip(b, stages, strict=True))
     result, failure = evaluate(arrive, dy_new, 0)
     return Attempt(dy_new if result is not None else None, stages, result, failure)
@@ -564,6 +621,7 @@ class AcceptedStep:
         result: The rate there, the next step's first stage.
         stages: The accepted attempt's stages.
         refused: The attempts refused before it, in order.
+        clock: The clock arrived at, the time at which `result` was evaluated.
     """
 
     dxi: float
@@ -571,6 +629,7 @@ class AcceptedStep:
     result: DerivsResult
     stages: list[Stage]
     refused: list[StepFailure]
+    clock: Clock
 
 
 class StepAbortError(Exception):
@@ -589,6 +648,8 @@ def advance_checked(
     dxi: float,
     first: DerivsResult,
     land: float | None = None,
+    carry: float = 0.0,
+    whole: BoolArray | None = None,
 ) -> AcceptedStep:
     """The checked step with its retry policy (Section 7.6).
 
@@ -596,16 +657,19 @@ def advance_checked(
     `CHART_HALVINGS` times for `Gammabar^2`; beyond either the run ends (`StepAbortError`). The positivity of accepted
     states rests on the checks; that some step passes rests on the semi-discrete scheme's
     (eq:num:positivity) and on the stages tending to the accepted state as the step shrinks. `land` is the full step's
-    arrival time (`checked_step`); a halved step lands short.
+    arrival time (`checked_step`); a halved step lands short, where the clock `Clock(xi, carry)` arrives. The accepted
+    step carries the clock it arrived at, the one the result was evaluated at. `whole` marks the cells stored whole.
     """
     refused: list[StepFailure] = []
     chart = 0
+    clock = Clock(xi, carry)
     while True:
-        attempt = checked_step(scheme, xi, dy, dxi, first, None if refused else land)
+        arrived = Clock(land) if land is not None and not refused else clock.advanced(dxi)
+        attempt = checked_step(scheme, xi, dy, dxi, first, arrived.xi, whole)
         if attempt.failure is None:
             assert attempt.dy is not None
             assert attempt.result is not None
-            return AcceptedStep(dxi, attempt.dy, attempt.result, attempt.stages, refused)
+            return AcceptedStep(dxi, attempt.dy, attempt.result, attempt.stages, refused, arrived)
         refused.append(attempt.failure)
         chart += attempt.failure.cause.is_chart
         if len(refused) > MAX_HALVINGS or chart > CHART_HALVINGS:

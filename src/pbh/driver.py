@@ -8,7 +8,9 @@ sits on the grid that gives, saves the configuration with its provenance, and th
    step and the cap (eq:num:cfl), clipped to land exactly on the next snapshot time and on the end;
 2. take the checked Runge-Kutta step in deviation form (Section 7.6): every stage and the result must be finite and
    inside the hyperbolic domain, else the attempt is refused, logged as a `rejection` event, and retried with half
-   the step; a state arrived at with a cell below `RHO_ABORT` of the background ends the run;
+   the step; advance the clock, compensated for steps of a few ulps of `xi` (`timestep.Clock`), and end the run if
+   even so it stalls; then move the cells across the storage lines (`storage.py`): a cell below a quarter of the
+   background is stored whole from here on, and back as its deviation above a half;
 3. record the step's monitors, the full row when the step ends on a snapshot or the configuration asks for it every
    step;
 4. examine the state arrived at: run the horizon finder, record formation at the first trapped face, and, with
@@ -35,10 +37,12 @@ a snapshot of the state it is thrown on, unexcised and already carrying the new 
 from it with excision off runs on the same grid, which is the comparison Section 8.3 asks for.
 
 An abort is a result, not an exception: if no step the retry policy allows passes the checks (`Gammabar^2 <= 0`, named
-by what the accepted state says it is, or the positivity or finiteness of a stage after twenty halvings), a cell
-falls below `RHO_ABORT`, the outer face is trapped, or an excision assertion fails, the driver records an `abort`
-event naming what failed, writes a snapshot of the last good state, and ends the run with the status `aborted`. The
-far-zone radius of the monitors is read off the initial data.
+by what the accepted state says it is, or the positivity or finiteness of a stage after twenty halvings), the clock
+stalls, the outer face is trapped, or an excision assertion fails, the driver records an `abort` event naming what
+failed, writes a snapshot of the last good state, and ends the run with the status `aborted`. No density is too small:
+a void is followed down by storing its cells whole, and the slicing's own limit shows as one of these aborts. The
+far-zone radius of the monitors is read off the initial data. The clock's carry is dropped at every snapshot, so that
+a restart from it, which starts with none, continues bit for bit.
 """
 
 import dataclasses
@@ -49,6 +53,7 @@ from typing import Any, Literal
 
 import numpy as np
 
+from pbh import storage
 from pbh.causal import isolation
 from pbh.collapse import CoreWatch
 from pbh.config import RunConfig, SnapshotChoice, save
@@ -76,7 +81,7 @@ from pbh.records import StateRecord, shell_volumes
 from pbh.state import State
 from pbh.timestep import (
     RK4,
-    AcceptedStep,
+    Clock,
     Engine,
     Frame,
     Scheme,
@@ -86,7 +91,7 @@ from pbh.timestep import (
     advance_checked,
     step_size,
 )
-from pbh.types import FloatArray
+from pbh.types import BoolArray, FloatArray
 
 FAR_ZONE_TOLERANCE = 1e-10
 """A cell or face is in the far zone if the initial deviation from FRW there and beyond is below this fraction of the
@@ -148,10 +153,6 @@ class AbortError(Exception):
         self.detail = detail if detail is not None else {}
 
 
-#: A retained cell whose density falls below this fraction of the background ends the run (owner, 2026-09-23). In
-#: deviation form a cell's content is known to about `eps dV` absolute, so its density is `eps / rho` uncertain: ten per
-#: cent at 1e-15, one per cent at 1e-14, 2e-4 here, where the numerics can still be trusted.
-RHO_ABORT = 5e-13
 #: The switch-on tests whose failure means the trapped region is too narrow for the grid: under-resolution.
 RESOLUTION_TESTS = ("inside_horizon", "margin_positive", "three_trapped")
 
@@ -161,20 +162,15 @@ def rejection_payload(failure: StepFailure) -> dict[str, Any]:
     return {"cause": failure.cause.value, "stage": failure.stage, "index": failure.index, "value": failure.value}
 
 
-def check_resolved(accepted: AcceptedStep, xi: float, before: DerivsResult, layout: Layout) -> None:
-    """Abort if the state arrived at has a cell below `RHO_ABORT`, naming it and the last density that was resolved."""
-    rho = accepted.result.derived.rho[layout.cells]
-    c = int(np.argmin(rho))
-    if rho[c] < RHO_ABORT:
-        resolved = float(np.min(before.derived.rho[layout.cells]))
-        flag = " (below 100 eps: fewer than two digits)" if rho[c] < 100.0 * np.finfo(float).eps else ""
-        raise AbortError(
-            "rho",
-            layout.j_e + c,
-            float(rho[c]),
-            f"relative density {rho[c]:.3g} < {RHO_ABORT} in cell {layout.j_e + c}{flag}; "
-            f"the least density a step earlier, at xi = {xi:.6g}, was {resolved:.3g}",
-        )
+def clock_stalled(clock: Clock, dxi: float) -> AbortError:
+    """The abort of a step that leaves the clock where it was, compensated or not: the run cannot go on in time."""
+    return AbortError(
+        "clock_stalled",
+        -1,
+        dxi,
+        f"the clock stalled: a step of {dxi:.3g} no longer advances xi = {clock.xi!r} (carry {clock.carry:.3g}), "
+        "even compensated",
+    )
 
 
 def chart_case(j: int, accepted: DerivsResult, U: float, X: float, frw2: float) -> str:
@@ -244,7 +240,8 @@ class Run:
     """The state of a run in progress: everything the loop changes, and the operations that change it.
 
     The scheme, the layout and the packed deviation are replaced together by a switch-on or a re-excision; the
-    time, the step count and the formation time advance; the zones grow. `writer` is the evolution file.
+    time, the step count and the formation time advance; the zones grow. `writer` is the evolution file. `whole` marks
+    the cells stored whole (`storage.py`), which change only with the deviation; `carry` is the clock's (`Clock`).
     """
 
     config: RunConfig
@@ -260,6 +257,8 @@ class Run:
     last_refusal: list[str] = field(default_factory=lambda: list[str]())
     epoch: Epoch | None = None
     core: CoreWatch = field(default_factory=CoreWatch)
+    whole: BoolArray | None = None
+    carry: float = 0.0
     _state: tuple[Scheme, float, FloatArray, State] | None = field(default=None, repr=False)
 
     @property
@@ -271,24 +270,42 @@ class Run:
         """The state the deviation stands for, at the current time.
 
         Formed once for each scheme, time and deviation, which a step replaces together (the deviation is a new array,
-        never written in place), and kept: the step's record and the horizon row both read it.
+        never written in place, and the flags change only with it), and kept: the step's record and the horizon row
+        both read it.
         """
         kept = self._state
         if kept is not None and kept[0] is self.sch and kept[1] == self.xi and kept[2] is self.dy:
             return kept[3]
-        state = self.sch.whole_state(self.xi, self.layout.unpack(self.dy))
+        state = self.sch.whole_state(self.xi, self.layout.unpack(self.dy), self.whole)
         self._state = (self.sch, self.xi, self.dy, state)
         return state
 
     def evaluate(self) -> DerivsResult:
         """The rate at the current state."""
-        return self.sch.evaluate_deviation(self.xi, self.dy)
+        return self.sch.evaluate_deviation(self.xi, self.dy, self.whole)
 
     def snapshot(self) -> None:
-        """Write the current state as a snapshot; with `snapshots: none`, only the initial state."""
+        """Write the current state as a snapshot; with `snapshots: none`, only the initial state.
+
+        The clock's carry is dropped with it (at most half an ulp of `xi`), since a restart from it starts with none.
+        """
         if self.config.output.snapshots is SnapshotChoice.NONE and self.step > 0:
             return
-        self.writer.snapshot(self.step, self.xi, self.layout, self.dy, self.xi_form, self.zones)
+        dV = self.sch.frame(self.xi).geo.dV
+        self.writer.snapshot(self.step, self.xi, self.layout, self.dy, self.xi_form, self.zones, self.whole, dV)
+        self.carry = 0.0
+
+    def store(self, result: DerivsResult) -> DerivsResult:
+        """Move the cells across the storage lines at this step boundary (`storage.py`); the rate as they then stand.
+
+        A move changes no state, only how it is stored, but the stage forms a cell's fields from what is stored, so
+        the rate is evaluated again.
+        """
+        moved = storage.switched(self.dy, self.whole, result.derived.rho, self.sch.frame(self.xi).geo.dV, self.layout)
+        if moved is None:
+            return result
+        self.dy, self.whole = moved
+        return self.evaluate()
 
     def event(self, kind: str, payload: dict[str, Any]) -> None:
         """Record an event at the current step and time."""
@@ -304,7 +321,11 @@ class Run:
         """Replace the scheme, the layout and the deviation for `state` on the current zones; the rate there."""
         self.sch = self.config.scheme(run_map(self.config, self.zones), layout, self.sch.engine)
         geo = self.sch.frame(self.xi).geo
-        self.dy = packed_deviation(state, geo, layout, geo.dV)
+        if self.whole is not None:  # the cells stored whole stay so, the excised ones drop out
+            whole = self.whole.copy()
+            whole[: layout.j_e] = False
+            self.whole = storage.any_whole(whole)
+        self.dy = packed_deviation(state, geo, layout, geo.dV, self.whole)
         return self.evaluate()
 
     def switch_on(self, attempt: SwitchAttempt, state: State) -> DerivsResult:
@@ -661,18 +682,19 @@ def run(
             config,
             out,
             sch,
-            layout.pack(initial.deviation),
+            layout.pack(initial.stored),
             xi,
             initial.xi_form,
             initial.zones,
             far_zone_radius(initial),
             epoch=history,
             core=core if core is not None else CoreWatch(),
+            whole=initial.whole,
         )
         try:
             if not bool(np.all(np.isfinite(r.dy))):  # a failure at the accepted state is an abort, never a retry
                 raise AbortError("state", -1, float("nan"), "the initial state is not finite")
-            result, report, face = r.examine(r.state(), r.evaluate())
+            result, report, face = r.examine(r.state(), r.store(r.evaluate()))
             r.snapshot()
             read = r.read_mass(r.record_horizon(report, result, face))
             scheduled = output.snapshots is SnapshotChoice.ALL
@@ -692,20 +714,23 @@ def run(
                 layout = r.layout
                 before = StageFluxes.of(result, layout)
                 clipped = limit == "output_clip"
-                accepted = advance_checked(r.sch, r.xi, r.dy, dxi, result, landing if clipped else None)
+                land = landing if clipped else None
+                accepted = advance_checked(r.sch, r.xi, r.dy, dxi, result, land, r.carry, r.whole)
                 for failure in accepted.refused:
                     r.event("rejection", rejection_payload(failure))
                 if accepted.refused:
                     dxi, limit = accepted.dxi, "halved"
-                xi_new = landing if clipped and not accepted.refused else r.xi + dxi
+                clock, arrived = Clock(r.xi, r.carry), accepted.clock
+                if arrived == clock:
+                    raise clock_stalled(clock, dxi)
                 dy_new, stages = accepted.dy, accepted.stages
-                check_resolved(accepted, r.xi, result, layout)
                 result = accepted.result
-                # 3. the record of the step
+                # 3. the record of the step, after the cells are moved across the storage lines
                 r.step += 1
-                change = layout.pack(result.deviation_rate) - stages[-1].k
+                change = layout.pack(result.stored_rate) - stages[-1].k
                 rate_change = float(np.max(np.abs(change)))
-                r.xi, r.dy = xi_new, dy_new
+                r.xi, r.carry, r.dy = arrived.xi, arrived.carry, dy_new
+                result = r.store(result)
                 state_new = r.state()
                 at_snapshot = r.xi >= next_snapshot  # exactly on it when clipped, the first step past it when not
                 frame = r.sch.frame(r.xi)

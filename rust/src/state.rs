@@ -87,12 +87,6 @@ impl FrwReference {
     }
 }
 
-/// The state `y_FRW + delta y` from the unpacked deviation (`Scheme.whole_state`): `reference.state.plus(deviation)`.
-#[inline(never)] // kept out of line: see `calc_derivs`
-pub fn whole_state(reference: &FrwReference, deviation: &State) -> State {
-    reference.state.plus(deviation)
-}
-
 /// The deviation `state - y_FRW` recovered from a whole state (`deviation_from_frw`), with `W` copied.
 ///
 /// The Python forms `frw_state(geo, j_e, h)` afresh; the reference's state is that same object's values.

@@ -235,10 +235,26 @@ def theta_limited_faces(
         `(t, delta_in, delta_out)`: the scale factor of each cell, and the deviations `rho - 1` of its inner and outer
         face values.
     """
-    rho = 1.0 + delta_rho
+    t = theta_scale(1.0 + delta_rho, off_in, off_out, theta)
+    return t, delta_rho + t * off_in, delta_rho + t * off_out
+
+
+def theta_limited_whole(
+    rho: FloatArray, off_in: FloatArray, off_out: FloatArray, theta: float
+) -> tuple[FloatArray, FloatArray, FloatArray]:
+    """`theta_limited_faces` for cells stored whole (`storage.py`): formed on the densities themselves.
+
+    Returns:
+        `(t, rho_in, rho_out)`: the scale factor of each cell, and its inner and outer face values.
+    """
+    t = theta_scale(rho, off_in, off_out, theta)
+    return t, rho + t * off_in, rho + t * off_out
+
+
+def theta_scale(rho: FloatArray, off_in: FloatArray, off_out: FloatArray, theta: float) -> FloatArray:
+    """The theta-limiter's factor `t = min(1, (1 - theta) rho_c / m)` of cells of density `rho` (eq:num:theta)."""
     drop = -np.minimum(np.minimum(off_in, off_out), 0.0)  # the larger drop below the mean, >= 0
     allowed = (1.0 - theta) * rho
     # Where no face drops that far t = 1; the ratio is only ever taken of a drop above `allowed`, so it is never a
     # division by zero, nor by the subnormal drop of a cell barely off the reference, which would overflow.
-    t = np.where(drop > allowed, allowed / np.maximum(drop, allowed), 1.0)
-    return t, delta_rho + t * off_in, delta_rho + t * off_out
+    return np.where(drop > allowed, allowed / np.maximum(drop, allowed), 1.0)

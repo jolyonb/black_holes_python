@@ -42,8 +42,9 @@ with the bite that brought it.
 
 The states are generated at two equations of state, radiation `w = 1/3` and the stiff fluid `w = 1`, both exact
 Fractions, because the lemma's statements are general in `w` (the source `sigma = 3 alpha w`, the lapse exponent
-`-w/(1+w)` of the chords and of the theta bound). The near-vacuum cells reach down to `5e-13`, the owner's abort
-threshold (Section 7.6), in a third of the seeds, so the tolerances are calibrated where round-off is largest.
+`-w/(1+w)` of the chords and of the theta bound). The near-vacuum cells reach down to `5e-13`, where a content
+stored as its deviation is known only to `eps / rho` (Section 7.2), in a third of the seeds, so the tolerances are
+calibrated where round-off is largest.
 
 Layer 2's checked stepper (RK4 with a check of every stage input, every stage evaluation and the result; halving on
 a positivity or non-finite failure; the named aborts) is tested with the stepper, not here.
@@ -617,7 +618,7 @@ def test_the_generated_states_are_violent_and_admissible(w: str, family: str):
         jumps = np.abs(np.diff(res.derived.delta_U[max(case.layout.j_e, 1) :]))
         assert np.max(jumps) > 0.5  # an order-one velocity jump between neighbouring faces
         deepest = min(deepest, float(np.min(rho)))
-    assert deepest < 3e-12  # the deep seeds reach towards the 5e-13 abort threshold
+    assert deepest < 3e-12  # the deep seeds reach towards 5e-13, deep near-vacuum
     if family == "excised":
         chord_out = acoustic_open = 0
         for seed in SEEDS:

@@ -45,14 +45,15 @@ from pbh.summary import RunSummary
 
 GAMMA = 0.3558
 """The critical exponent of radiation, `M ~ (C - C_*)^GAMMA` (Koike, Hara and Adachi, Phys. Rev. Lett. 74, 5170
-(1995)). Kept, not measured: the criticality study (experiments/e10_criticality) finds 0.350 +- 0.006 above
-threshold and 0.348 +- 0.024 below, 1.1 and 0.3 sigma from it, the errors set by the correction to scaling, and
+(1995)). Kept, not measured: the criticality study (experiments/e10_criticality) finds 0.351 +- 0.005 above
+threshold and 0.348 +- 0.024 below, 1.0 and 0.3 sigma from it, the errors set by the correction to scaling, and
 neither is as precise."""
 
 K_TRUST = 1.27
 """The width of the trust sigmoid in units of the pair's threshold error: the largest over-prediction of the distance
-to threshold by the pair, 2.09 at the grid scale 3 (experiments/pair_constants, e10's pairs within 30 threshold
-errors at the scales 0.15-3), divided by the 95 per cent quantile 1.645, so that every one of them is covered; at
+to threshold by the pair, 2.09 at the grid scale 3 (experiments/pair_constants, e10's pairs between 1 and 30 threshold
+errors from threshold at the scales 0.15-3; pairs inside their own threshold error, which no verdict can trust, are
+left out), divided by the 95 per cent quantile 1.645, so that every one of them is covered; at
 the scale 0.3 alone e10 fits 0.95, which covers 3 of the 7 such pairs at scale 3. The thresholds the distances are
 measured from are the formation thresholds, between the largest compaction without a formation event and the
 smallest with one. Every calibration run started at `xi_start = -10` with the step cap at `1e-7`
