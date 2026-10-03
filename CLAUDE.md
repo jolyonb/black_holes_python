@@ -11,7 +11,7 @@ workspace map is `../CLAUDE.md`.
 |---|---|---|
 | `src/pbh/` | **The production code, being built** (since 2026-09-18) from paper sections 7-8 (`../analysis/v4/numerics.tex`, `numerics-excision.tex`) in reviewed bites. Module docstrings name the paper section and equations they implement. Pipeline: `maps`/`geometry`/`layout`/`state` (grid and variables) -> `stencils`/`kernels`/`derived`/`equations` (one stage, in deviation form) -> `outer` (SAT closure) -> `timestep` (RK4, checked stepper, step rules) -> `horizon`/`excision` -> `driver` (the `Run`), with `config`, `initial`/`profiles`, `records`/`output`/`h5`, `monitors`, `readout`/`summary`, `pair` (the N and N/2 pair's analysis), `causal`, `michel`, `cli`. | tracked |
 | `src/_old/` | **RETIRED** collocated code (the former `src/pbh`, moved 2026-09-18 with its unit tests deleted). Kept for reference, not run, not imported by `pbh`; still passes ruff and pyright strict. `ms.py` (Misner-Sharp EOMs, Eulerian and Lagrangian handlers), `base.py` (evolver + cached EOM handler), `derivs.py` (collocated stencils), `dopri5.py`, `initial.py` (2015 growing-mode data), `output.py`, `cli.py`. | tracked |
-| `tests/` | Flat pytest functions, one file per module; fast suite by default (911 with the Rust engine), evolutions `-m slow` (41). `whole_state.py` is the stage as printed, the cross-check of the deviation form. | tracked |
+| `tests/` | Flat pytest functions, one file per module; fast suite by default (931 with the Rust engine), evolutions `-m slow` (42). `whole_state.py` is the stage as printed, the cross-check of the deviation form. | tracked |
 | `benchmarks/` | `collapse.py`, the wall-clock benchmark of both engines (see Benchmarks below). | tracked |
 | `README.md` | The production code: worked example, configuration, the evolution file, module map. | tracked |
 | `../analysis/` | **Outside this repo.** Theory and numerics rebuild plus the paper sources; see `../analysis/CLAUDE.md`. | sibling repo |
@@ -60,8 +60,9 @@ cd ../analysis/phaseB && uv run --project ../../code python -m pytest tests -q -
 
 ## Benchmarks (for catching a slowdown)
 
-`uv run --group rust python benchmarks/collapse.py` times a supercritical collapse (Gaussian `A = 0.2`, `ell = 2`,
-`Rtilde_max = 30`, sinh scale 3, `snapshots: milestones`) from its initial data to the mass read-out on both engines,
+`uv run --group rust python benchmarks/collapse.py` times a supercritical collapse (Gaussian seed `A = 0.2`, `ell = 2`,
+peak compaction `0.5886`, `Rtilde_max = 30`, sinh scale 3, `snapshots: milestones`) from its initial data to the mass
+read-out on both engines,
 best of 3, and checks that the two engines' records are identical. Rerun it after a change that could cost time and
 compare on the same machine, idle (the owner's machine is sometimes loaded, which moves timings 5-25 per cent).
 
@@ -76,6 +77,13 @@ compare on the same machine, idle (the owner's machine is sometimes loaded, whic
 
 Since 2026-10-02 the step cap's default tolerance is `1e-7` (was `1e-5`): the same collapse takes 1743, 3556, 7080 and
 14090 steps (the cap rarely binds from a start at `xi = 0`); timings to be refreshed on an idle machine.
+
+Since the seed (2026-10-02) the datum is the Gaussian as the time-independent seed `delta_m0`, no longer the same
+Gaussian imposed at `xi = 0`, and it starts where `initial.epsilon2 = 1e-5` puts it, `xi = ln 8e-5 = -9.43`: 2006, 3829,
+7384 and 14562 steps at N = 200, 400, 800 and 1600 (263, 273, 304 and 472 more, the super-horizon e-folds under the
+cap and a slightly different collapse), records identical between the engines. Not idle: N = 200 best of 3, numpy
+2.17 s, Rust 0.48 s (1084 and 238 us a step); the others one repeat, numpy 4.39, 9.88 and 22.89 s, Rust 1.01, 2.50 and
+7.13 s.
 
 The same collapse that morning, before the day's speed work: Rust 2.08 s at N = 400 and 12.81 s at N = 1600, numpy
 4.38 s and 24.05 s.
@@ -97,3 +105,16 @@ chord-widened bounds, checked RK4 stepper, RK4 only, o1 only, switch-on in areal
 storage (2026-10-02, Section 7.6): a cell below a quarter of the background is stored whole (back as its deviation
 above a half; `storage.py`), the clock is compensated (`timestep.Clock`), and the 5e-13 density abort is gone; a run
 still aborts on a non-finite or non-positive stage, and on a clock stall. Bite 33 (a density floor) is dropped.
+
+Seed initial data (2026-10-02, uncommitted until the owner says): the datum is the growing mode of a time-independent
+seed `delta_m0` (`initial.Seed`; given as `delta_m0`, as `K` or as the compaction `X^2 delta_m0`), its start computed,
+`xi_0 = ln(epsilon2 r_m^2)` with `initial.epsilon2` (default `1e-5`) in the configuration, each mode grown exactly
+(`B_n = 9 b_n / k_n^2`) and the second-order terms added: `e^(2 xi)` times a quadratic form in `delta_m0`, and in the
+velocity eq:num:dUnl together with `-1/4` of that form (without it the velocity is off at `O(eps^2)`; measured).
+`pbh initial gaussian NAME --C C --ell L` replaces `--A`. `evolution.xi_start` is optional and normally absent: the
+driver fills it in from the initial data and saves it (`RunConfig.starting_at`). `GrowingMode.from_profile`, the former
+recipe, stays only because the analysis experiments e8, e9 and e10 call it. Radiation only (`seed_start` and
+`Seed.deviation` refuse other fluids). The paper prints the construction in Section 5.4 (eq:lin:xistart, seedmodes,
+seedQ, seeddata). The pair (`pair.py`) assumes seed data: the initial-data systematic is zero at `initial.epsilon2 <=
+1e-5` and a looser tolerance is a caveat (the former recipe's start systematic and start caveat are gone). `pbh run`
+refuses a snapshot as initial data unless the configuration gives `evolution.xi_start` (`pbh restart` passes it).

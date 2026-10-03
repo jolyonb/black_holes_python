@@ -4,9 +4,10 @@ Every command works on a run directory and a run name, and a run is its three fi
 `name.initial.h5` and `name.evolution.h5`:
 
     pbh validate CONFIG                              parse a configuration and print it with every default filled in
-    pbh initial gaussian NAME --config CONFIG --A A --ell ELL [--pair]
-                                                     write NAME.initial.h5: the growing mode of a Gaussian delta_m,
-                                                     given at the configuration's xi_start; with --pair also
+    pbh initial gaussian NAME --config CONFIG --C C --ell ELL [--pair]
+                                                     write NAME.initial.h5: the growing mode of a Gaussian seed
+                                                     delta_m0 of peak compaction C, at the start the seed and the
+                                                     configuration's initial.epsilon2 fix; with --pair also
                                                      NAME.half.initial.h5, the same datum on the grid with N halved
     pbh run CONFIG NAME [--engine E] [--pair]        run CONFIG from NAME.initial.h5, writing the other two files;
                                                      with --pair then run NAME.half at N/2 from NAME.half.initial.h5
@@ -45,7 +46,7 @@ from pbh.config import ConfigError, RunConfig, load
 from pbh.driver import RunPaths, RunResult, core_watch, epoch_history
 from pbh.driver import run as run_driver
 from pbh.eos import Background
-from pbh.initial import GrowingMode, IllPosedDataError, NotCompensatedError
+from pbh.initial import NotCompensatedError, Seed, seed_start
 from pbh.output import RunReader
 from pbh.pair import analyse, half_config, half_name
 from pbh.pair import as_json as pair_json
@@ -77,7 +78,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         return int(leaving.code or 0)
     except (
         ConfigError,
-        IllPosedDataError,
         NotCompensatedError,
         ValueError,
         FileNotFoundError,
@@ -102,55 +102,59 @@ def gaussian(
     name: Annotated[str, Parameter(help="The run whose initial file to write.")],
     *,
     config: Annotated[Path, Parameter(help="The configuration whose grid and fluid the data are made for.")],
-    A: Annotated[float, Parameter(name="--A", help="The amplitude of delta_m = A exp(-X^2 / 2 ell^2).")],
-    ell: Annotated[float, Parameter(help="The width.")],
+    C: Annotated[float, Parameter(name="--C", help="The peak compaction of the seed X^2 delta_m0, 2 ell^2 A / e.")],
+    ell: Annotated[float, Parameter(help="The width of delta_m0 = A exp(-X^2 / 2 ell^2).")],
     pair: PairChoice = False,
     dir: Directory = Path(),
 ) -> None:
-    """Write the growing mode of a Gaussian mass profile, the paper's standard perturbation (Section 7.9).
+    """Write the growing mode of a Gaussian seed, the paper's standard perturbation (Section 7.9).
 
-    The profile is given at the configuration's `evolution.xi_start`, where the run begins. With `--pair` the same
-    datum is also written on the grid of the configuration with `grid.N` halved, for the companion `NAME.half`.
+    The seed is `delta_m0 = A exp(-X^2 / 2 ell^2)`, a Gaussian in the curvature profile `K` (the literature's `q = 1`
+    family), whose compaction `X^2 delta_m0` peaks at `r_m = sqrt 2 ell` with the value `C = 2 ell^2 A / e`. The data
+    start at the latest time with `(R_H / r_m)^2` at or below the configuration's `initial.epsilon2`. With `--pair`
+    the same datum is also written on the grid of the configuration with `grid.N` halved, for the companion
+    `NAME.half`.
     """
     parsed = load(config)
-    made = [(RunPaths.of(dir, name), *gaussian_record(parsed, A, ell, {}))]
+    made = [(RunPaths.of(dir, name), gaussian_record(parsed, C, ell, {}))]
     if pair:  # both data are made before either is written, so a refused companion leaves nothing behind
-        half = gaussian_record(half_config(parsed), A, ell, {"half_of": name})
-        made.append((RunPaths.of(dir, half_name(name)), *half))
-    for paths, record, peak in made:
+        half = gaussian_record(half_config(parsed), C, ell, {"half_of": name})
+        made.append((RunPaths.of(dir, half_name(name)), half))
+    for paths, record in made:
         write_initial(paths.initial, record)
-        ratio = record.provenance["correction_ratio"]
-        print(f"wrote {paths.initial}: peak compaction {peak:.4f}, correction ratio {ratio:.2%}")
+        p = record.provenance
+        print(
+            f"wrote {paths.initial}: peak compaction {p['C']:.4f} at r_m = {p['r_m']:.4f}, "
+            f"start xi = {p['xi_0']:.4f} (eps0^2 = {p['epsilon0_2']:.1e})"
+        )
 
 
-def gaussian_record(parsed: RunConfig, A: float, ell: float, extra: dict[str, str]) -> tuple[StateRecord, float]:
-    """The Gaussian's growing mode on the configuration's grid, `extra` in its provenance, and its peak compaction."""
-    xi0 = parsed.evolution.xi_start
+def gaussian_record(parsed: RunConfig, C: float, ell: float, extra: dict[str, str]) -> StateRecord:
+    """The Gaussian seed's growing mode, peak compaction `C`, on the configuration's grid; `extra` in its record."""
     sch = parsed.scheme()
-    if not sch.eos.is_radiation:
-        raise ValueError("the growing-mode data of Section 7.9 exist for radiation only")
+    A = C * math.e / (2.0 * ell**2)
+    seed = Seed.of(Gaussian(A=A, ell=ell), "delta_m0", parsed.grid.Rtilde_max)
+    peak = seed.peak()
+    epsilon2 = parsed.initial.epsilon2
+    xi0 = seed_start(sch.eos, peak.r_m, epsilon2)
     bg_0 = Background.at(sch.eos, xi0)
-    mode, report = GrowingMode.from_profile(Gaussian(A=A, ell=ell), "m", parsed.grid.Rtilde_max, bg_0)
     geo = sch.frame(xi0).geo
-    deviation = mode.deviation(geo, bg_0)  # never the state: a perturbation below round-off of FRW must survive
-    ratio = mode.correction_ratio(geo, bg_0)
+    deviation = seed.deviation(geo, sch.eos, xi0)  # never the state: a perturbation below round-off of FRW must survive
     provenance = {
-        "method": "growing_mode",
-        "field": "m",
-        "profile": "gaussian",
+        "method": "seed",
+        "seed": "gaussian",
+        "form": "delta_m0",
+        "C": C,
         "A": A,
         "ell": ell,
+        "r_m": peak.r_m,
+        "q": peak.q,
+        "epsilon2": epsilon2,
         "xi_0": xi0,
-        "nonlinear_correction": True,
-        "power_fraction": report.power_fraction,
-        "amplified_fraction": report.amplified_fraction,
-        "distance_to_first_zero": report.distance_to_first_zero,
-        "edge_value": report.edge_value,
-        "correction_ratio": ratio,
+        "epsilon0_2": bg_0.Gammabar2 / peak.r_m**2,
         **extra,
     }
-    peak = 2.0 * ell**2 * A / (math.e * math.exp(xi0))  # Section 5.4: X^2 delta_m / Rtilde_H^2 at sqrt 2 ell, at xi0
-    return StateRecord.of_deviation(deviation, geo.X[: geo.N + 1], xi0, provenance), peak
+    return StateRecord.of_deviation(deviation, geo.X[: geo.N + 1], xi0, provenance)
 
 
 @app.command
@@ -195,10 +199,14 @@ def restart(
 ) -> None:
     """Start a new run from a snapshot of another, with its configuration unless another is given.
 
+    The run began when SOURCE did: another configuration that gives no `xi_start` takes SOURCE's.
+
     The engine is not inherited from SOURCE: it is this command's `--engine`, since the engines agree.
     """
     reader = RunReader(RunPaths.of(dir, source).evolution)
     parsed: RunConfig = load(config) if config is not None else reader.config
+    if parsed.evolution.xi_start is None:  # another configuration without a start: the run began with SOURCE's
+        parsed = parsed.starting_at(reader.config.evolution.began)
     record = reader.snapshot(snapshot % len(reader.snapshots))
     paths = RunPaths.of(dir, name)
     write_initial(paths.initial, record)

@@ -1,31 +1,44 @@
 """Tests of pbh.initial: the growing-mode datum of Sections 5.4 and 7.9 and its sampling on the grid."""
 
+from fractions import Fraction
+from pathlib import Path
+
 import numpy as np
 import pytest
 from modes import J1_ZEROS, single_mode
 from scipy.special import spherical_jn, spherical_yn
 
+from pbh.config import EvolutionConfig, GridConfig, OutputConfig, RunConfig, SnapshotChoice
 from pbh.derived import NotHyperbolicError, derive
+from pbh.driver import RunPaths, run
 from pbh.eos import RADIATION, Background, EquationOfState
 from pbh.geometry import Geometry
 from pbh.initial import (
+    K_TO_DELTA_M0,
     GrowingMode,
     IllPosedDataError,
     ModeExpansion,
     NotCompensatedError,
+    Seed,
     cell_contents,
     initial_deviation,
     initial_state,
     j1_over_x,
     j2_over_x2,
+    mass_series,
     nonlinear_correction,
     project,
+    second_order,
+    seed_start,
+    with_background,
 )
 from pbh.kernels import PRODUCTION_KERNELS
 from pbh.layout import Layout
 from pbh.maps import IdentityMap, SinhStretch
 from pbh.outer import characteristic_pair
+from pbh.output import RunReader
 from pbh.profiles import Gaussian
+from pbh.records import StateRecord, read_initial, write_initial
 from pbh.stencils import StencilWeights
 from pbh.types import FloatArray
 
@@ -102,6 +115,166 @@ def test_the_projection_returns_the_coefficients_of_a_known_series():
 
     assert project(density, "rho", k, Rtilde_max) == pytest.approx(c, abs=1e-13)
     assert project(mass, "m", k, Rtilde_max) == pytest.approx(c, abs=1e-13)
+
+
+# --- the seed: the production datum ---
+
+
+def gaussian_seed(C: float, ell: float, Rtilde_max: float = 12.0) -> Seed:
+    """The Gaussian seed delta_m0 of peak compaction C: X^2 delta_m0 peaks at sqrt 2 ell with 2 ell^2 A / e."""
+    return Seed.of(Gaussian(A=C * np.e / (2.0 * ell**2), ell=ell), "delta_m0", Rtilde_max)
+
+
+def test_the_seed_is_the_projection_of_its_profile_and_its_derivatives_are_the_profiles():
+    profile = Gaussian(A=0.05, ell=2.0)
+    seed = Seed.of(profile, "delta_m0", 12.0)
+    assert seed.Rtilde_max == 12.0
+    assert seed.k == pytest.approx(np.arange(1, 151) * np.pi / 12.0, rel=1e-15)
+    X = np.linspace(0.0, 10.0, 101)
+    d, first, second = seed.derivatives(X)
+    exact = profile(X)
+    assert d == pytest.approx(exact, abs=2e-7 * profile.A)  # 150 modes; the tail at 12 is 1.5e-8
+    assert first == pytest.approx(-X / 4.0 * exact, abs=2e-6 * profile.A)  # d' = -X d / ell^2
+    assert second == pytest.approx((X**2 / 16.0 - 0.25) * exact, abs=1e-4 * profile.A)  # d'' = (X^2/ell^4 - 1/ell^2) d
+    assert mass_series(seed.b, seed.k, X)[0] == pytest.approx(d, rel=0.0, abs=0.0)
+
+
+def test_the_three_forms_of_a_seed_are_the_same_seed():
+    # delta_m0 itself, the curvature profile K = (3/2) delta_m0 for radiation, the compaction C0 = X^2 delta_m0
+    profile = Gaussian(A=0.05, ell=2.0)
+    direct = Seed.of(profile, "delta_m0", 12.0)
+    curvature = Seed.of(lambda X: profile(X) / K_TO_DELTA_M0, "K", 12.0)
+    compaction = Seed.of(lambda X: X**2 * profile(X), "compaction", 12.0)
+    scale = float(np.max(np.abs(direct.b)))
+    assert K_TO_DELTA_M0 == 2.0 / 3.0
+    assert curvature.b == pytest.approx(direct.b, abs=1e-14 * scale)
+    assert compaction.b == pytest.approx(direct.b, abs=1e-14 * scale)
+
+
+def test_the_peak_of_a_gaussian_seed_is_at_sqrt_2_ell_with_q_one():
+    # Section 5.4: X^2 delta_m0 peaks at sqrt 2 ell with 2 ell^2 A / e; a Gaussian in K is the literature's q = 1
+    peak = gaussian_seed(0.515, 2.0, 30.0).peak()
+    assert peak.r_m == pytest.approx(np.sqrt(8.0), rel=1e-12)
+    assert peak.C_m == pytest.approx(0.515, rel=1e-12)
+    assert peak.q == pytest.approx(1.0, rel=1e-9)
+
+
+def test_the_shape_q_of_the_peak_is_the_exponent_of_the_literatures_basis():
+    # K proportional to exp[(1 - (r / r_m)^(2q)) / q] has its compaction peak at r_m, of value C_m and shape q
+    r_m, C_m, q = 2.0, 0.4, 2.0
+
+    def compaction(X: FloatArray) -> FloatArray:
+        return C_m * (X / r_m) ** 2 * np.exp((1.0 - (X / r_m) ** (2.0 * q)) / q)
+
+    peak = Seed.of(compaction, "compaction", 12.0).peak()
+    assert peak.r_m == pytest.approx(r_m, rel=1e-9)
+    assert peak.C_m == pytest.approx(C_m, rel=1e-9)
+    assert peak.q == pytest.approx(q, rel=1e-7)
+
+
+def test_a_seed_without_a_positive_compaction_peak_inside_the_box_is_refused():
+    with pytest.raises(ValueError, match="no positive peak inside the box"):
+        Seed.of(Gaussian(A=-0.05, ell=2.0), "delta_m0", 12.0).peak()  # an underdensity
+    with pytest.raises(ValueError, match="no positive peak inside the box"):
+        Seed(Rtilde_max=12.0, k=np.array([0.5]), b=np.zeros(1)).peak()  # no perturbation: the largest at the origin
+
+
+def test_the_start_is_the_latest_with_eps0_squared_at_the_tolerance():
+    xi = seed_start(RAD, np.sqrt(8.0), 1e-5)
+    assert xi == pytest.approx(np.log(8e-5), rel=1e-15)
+    assert Background.at(RAD, xi).Gammabar2 / 8.0 == pytest.approx(1e-5, rel=1e-14)  # eps0^2 = (R_H / r_m)^2
+    assert seed_start(RAD, 1.0, 1e-2) == pytest.approx(np.log(1e-2), rel=1e-15)
+    with pytest.raises(ValueError, match="radiation only"):
+        seed_start(EquationOfState(Fraction(1, 6)), 1.0, 1e-5)
+
+
+def test_a_single_mode_seed_grows_by_three_j1_over_z_and_is_the_seed_far_outside_the_horizon():
+    k, b = 0.7, 1e-3
+    seed = Seed(Rtilde_max=np.pi / k, k=np.array([k]), b=np.array([b]))
+    mode = seed.growing_mode()
+    assert mode.B == pytest.approx(np.array([9.0 * b / k**2]), rel=1e-15)  # the paper's normalisation
+    X = np.array([0.3, 1.0, 2.5])
+    basis = 3.0 * j1_over_x(k * X)
+    for xi in (-12.0, -4.0, 1.0):
+        bg = Background.at(RAD, xi)
+        z = k * bg.tau
+        growth = np.exp(xi) * 3.0 * spherical_jn(1, z) / z
+        assert mode.delta_m(bg, X) == pytest.approx(growth * b * basis, rel=1e-12)
+    bg = Background.at(RAD, -8.0)  # z^2 = k^2 e^xi / 3 = 5.5e-5
+    z2 = (k * bg.tau) ** 2
+    assert mode.delta_m(bg, X) == pytest.approx(np.exp(-8.0) * b * basis * (1.0 - z2 / 10.0), rel=1e-9)
+    assert mode.delta_U(bg, X) == pytest.approx(-0.25 * np.exp(-8.0) * b * basis * (1.0 - 0.3 * z2), rel=1e-9)
+
+
+def test_the_second_order_terms_are_the_printed_quadratic_form():
+    # the form with the division by X, and its derivatives taken directly from the Gaussian
+    X = np.array([0.4, 1.3, 2.8, 5.0])
+    A, ell = 0.07, 2.0
+    d = A * np.exp(-0.5 * (X / ell) ** 2)
+    first, second = -X / ell**2 * d, (X**2 / ell**4 - 1.0 / ell**2) * d
+    C0 = X**2 * d
+    printed = (
+        -C0 * (second + 4.0 * first / X) / 20.0
+        + 11.0 * d**2 / 20.0
+        + 3.0 * X * d * first / 10.0
+        + X**2 * first**2 / 30.0
+    )
+    assert second_order(X, d, first, second) == pytest.approx(printed, rel=1e-13)
+    assert second_order(np.zeros(1), d[:1], np.zeros(1), second[:1]) == pytest.approx(11.0 * d[:1] ** 2 / 20.0)
+    assert second_order(X, 2.0 * d, 2.0 * first, 2.0 * second) == pytest.approx(4.0 * printed, rel=1e-13)
+
+
+@pytest.mark.parametrize("m", [IdentityMap(12.0), SinhStretch(12.0, scale=3.0)])
+def test_the_seed_datum_is_the_grown_mode_plus_the_second_order_terms(m: IdentityMap | SinhStretch):
+    seed = gaussian_seed(0.515, 2.0)
+    xi = seed_start(RAD, seed.peak().r_m, 1e-2)
+    bg = Background.at(RAD, xi)
+    geo = Geometry.of(*m.radii(xi, 200))
+    N = geo.N
+    X = geo.X[: N + 1]
+    deviation = seed.deviation(geo, RAD, xi)
+    mode = seed.growing_mode()
+    linear, first, second = mode.delta_m_derivatives(bg, X)
+    quadratic = np.exp(2.0 * xi) * second_order(X, *seed.derivatives(X))
+    mass = 3.0 * np.cumsum(deviation.E) / X[1:] ** 3
+    assert mass == pytest.approx((linear + quadratic)[1:], rel=1e-12, abs=1e-15)  # eq:num:idata, exact
+    velocity = mode.delta_U(bg, X) - quadratic / 4.0 + nonlinear_correction(X, linear, first, second)
+    assert deviation.U[0] == 0.0
+    assert deviation.U[1:] == pytest.approx(X[1:] * velocity[1:], rel=1e-13)
+    delta_U_N, delta_rho_N_1 = deviation.U[N] / X[N], deviation.E[N - 1] / geo.dV[N - 1]
+    assert deviation.W == characteristic_pair(float(delta_U_N), float(delta_rho_N_1), float(X[N]), bg.c_s)[1]
+    # at eps0^2 = 1e-2 the second order is a few per cent of the first, as it should be
+    peak = int(np.argmin(np.abs(X - np.sqrt(8.0))))
+    assert 1e-3 < abs(quadratic[peak] / linear[peak]) < 0.1
+    derive(with_background(deviation, geo), geo, bg, RAD, StencilWeights.of(geo, Layout(N)), THETA)
+
+
+def test_a_seed_with_fine_structure_is_grown_where_the_former_recipe_refuses_it():
+    # ell = 0.5 has power far inside the sound horizon at xi = 0, where the profile at a start time is refused; the
+    # seed is grown mode by mode, never divided by j_1, at its own start and at that one
+    seed = gaussian_seed(0.3, 0.5)
+    with pytest.raises(IllPosedDataError):
+        GrowingMode.from_profile(Gaussian(A=0.3 * np.e / 0.5, ell=0.5), "m", 12.0, BG_0)
+    geo = Geometry.of(*SinhStretch(12.0, scale=3.0).radii(0.0, 200))
+    for xi in (seed_start(RAD, seed.peak().r_m, 1e-5), 0.0):
+        deviation = seed.deviation(geo, RAD, xi)
+        assert np.all(np.isfinite(deviation.E))
+        assert np.all(np.isfinite(deviation.U))
+
+
+def test_a_seed_that_is_not_compensated_is_refused():
+    seed = Seed.of(Gaussian(A=0.05, ell=2.0), "delta_m0", 6.0)  # delta_m0(6) / A = e^-4.5
+    geo = Geometry.of(*IdentityMap(6.0).radii(-5.0, 50))
+    with pytest.raises(NotCompensatedError, match="widen the box"):
+        seed.deviation(geo, RAD, -5.0)
+
+
+def test_the_seed_datum_is_refused_for_any_fluid_but_radiation():
+    # the guard sits where the radiation coefficients are used, not only in seed_start
+    seed = gaussian_seed(0.5, 2.0)
+    geo = Geometry.of(*IdentityMap(12.0).radii(-5.0, 50))
+    with pytest.raises(ValueError, match="radiation only"):
+        seed.deviation(geo, EquationOfState(Fraction(1, 6)), -5.0)
 
 
 # --- the growing mode from a profile ---
@@ -379,3 +552,48 @@ def test_data_given_as_a_deviation_go_through_the_same_door():
     assert initial_deviation(delta_E, delta_U, geo, BG_0, W=0.25).W == 0.25
     with pytest.raises(NotHyperbolicError, match="rho"):
         initial_deviation(-2.0 * geo.dV, delta_U, geo, BG_0)
+
+
+# --- the seed's datum is the growing solution ---
+
+
+@pytest.mark.slow
+def test_the_seed_datum_at_a_late_start_is_what_the_code_grows_from_an_early_one(tmp_path: Path):
+    # The seed of peak compaction 1/2 started at eps0^2 = 1e-7 and run by the code to eps^2 = 4e-2 (xi = -1.14), against
+    # the seed's own datum there: they agree to 8e-5 in the mass and 7e-5 in the velocity at N = 400 (the scheme's
+    # truncation error and the datum's O(eps^4)). Without the second order the mass is off by 9e-3, and without the
+    # linear companion -1/4 of the quadratic terms of delta_m the velocity by 2e-2, both falling as eps^2 (measured).
+    seed = gaussian_seed(0.5, 2.0, 30.0)
+    r_m = seed.peak().r_m
+    config = RunConfig(
+        grid=GridConfig(N=400, Rtilde_max=30.0, scale=3.0),
+        output=OutputConfig(snapshots=SnapshotChoice.MILESTONES),
+        evolution=EvolutionConfig(xi_end=seed_start(RAD, r_m, 4e-2)),
+    )
+    sch = config.scheme()
+    xi_0 = seed_start(RAD, r_m, 1e-7)
+    geo_0 = sch.frame(xi_0).geo
+    paths = RunPaths.of(tmp_path, "grown")
+    deviation = seed.deviation(geo_0, RAD, xi_0)
+    write_initial(paths.initial, StateRecord.of_deviation(deviation, geo_0.X[: geo_0.N + 1], xi_0, {}))
+    assert run(config, read_initial(paths.initial), paths).status == "completed"
+    reader = RunReader(paths.evolution)
+    end = reader.snapshot(len(reader.snapshots) - 1)
+    bg = Background.at(RAD, end.xi)
+    geo = sch.frame(end.xi).geo
+    X = geo.X[1 : geo.N + 1]
+
+    def errors(E: FloatArray, U: FloatArray) -> tuple[float, float]:
+        mass = np.max(np.abs(np.cumsum(end.delta_E - E))) / np.max(np.abs(np.cumsum(E)))
+        return float(mass), float(np.max(np.abs(end.delta_U[1:] - U[1:])) / np.max(np.abs(U[1:])))
+
+    datum = seed.deviation(geo, RAD, end.xi)
+    mass, velocity = errors(datum.E, datum.U)
+    assert mass < 2e-4
+    assert velocity < 2e-4
+    linear = seed.growing_mode().deviation(geo, bg, nonlinear=False)
+    assert errors(linear.E, linear.U)[0] > 5e-3
+    d = seed.derivatives(X)
+    without_quarter = datum.U.copy()
+    without_quarter[1:] += X * np.exp(2.0 * end.xi) * second_order(X, *d) / 4.0
+    assert errors(datum.E, without_quarter)[1] > 1e-2

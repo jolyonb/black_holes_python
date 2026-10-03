@@ -661,13 +661,13 @@ def test_sixty_checked_steps_are_the_same_on_both_engines(outer: OuterClosure, s
 @pytest.mark.slow
 def test_a_collapse_runs_to_its_read_out_through_the_same_events_on_both_engines(tmp_path: Path):
     readers: list[RunReader] = []
-    A = 0.515 * math.e / 8.0
     path = tmp_path / "collapse.yaml"
     path.write_text(
-        "grid: {N: 100, Rtilde_max: 12.0, scale: 3.0}\noutput: {snapshots: milestones}\nevolution: {xi_end: 9.0}\n"
+        "grid: {N: 100, Rtilde_max: 12.0, scale: 3.0}\noutput: {snapshots: milestones}\ninitial: {epsilon2: 0.125}\n"
+        "evolution: {xi_end: 9.0}\n"
     )
     for engine in Engine:
-        args = ["initial", "gaussian", engine.value, "--config", str(path), "--A", f"{A:.12g}", "--ell", "2.0"]
+        args = ["initial", "gaussian", engine.value, "--config", str(path), "--C", "0.515", "--ell", "2.0"]
         assert main([*args, "--dir", str(tmp_path)]) == 0
         assert main(["run", str(path), engine.value, "--engine", engine.value, "--dir", str(tmp_path)]) == 0
         paths = RunPaths.of(tmp_path, engine.value)

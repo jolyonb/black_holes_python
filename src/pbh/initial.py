@@ -1,70 +1,66 @@
-"""The initial data: a growing-mode perturbation from one profile (paper Sections 5.4 and 7.9).
+"""The initial data: the growing mode of a time-independent seed (paper Sections 5.4 and 7.9).
 
-How it is used. A production datum is one profile in and a `State` out, with two reports on the way:
+How it is used. A production datum is one seed in and a `State` out, the start time computed from the seed:
 
-    bg_0 = Background.at(eos, xi_0)
-    mode, report = GrowingMode.from_profile(Gaussian(A, ell), "m", Rtilde_max, bg_0)  # projection and guards
-    state = mode.state(geo, bg_0)                                 # sampled, corrected, admissible
-    ratio = mode.correction_ratio(geo, bg_0)                      # more than a few per cent: start earlier
+    seed = Seed.of(Gaussian(A, ell), "delta_m0", Rtilde_max)     # delta_m0 on the box's mass basis
+    peak = seed.peak()                                            # r_m, the peak compaction and its shape q
+    xi_0 = seed_start(eos, peak.r_m, epsilon2)                    # the latest start with eps0^2 <= epsilon2
+    deviation = seed.deviation(geo, eos, xi_0)                    # grown, second order added, admissible
 
-Linear data with both fields, and so possibly decaying content, are the general `ModeExpansion` of Section 5.4.1,
-of which the growing mode is the `C_n = 0` special case; they are carried to the start time by evaluating the
+The seed is the first-order profile of the growing solution, `delta_m = e^xi delta_m0(X) + O(eps^4)` outside the
+horizon (radiation), with `X` the scaled radius, the comoving radius in units of the Hubble radius at `xi = 0` and at
+leading order the areal coordinate. It fixes the pure growing mode: one free function, every order of the gradient
+expansion determined by it, no decaying mode as `t -> 0`. It is given as `delta_m0` itself, as the curvature profile
+`K` of the literature (`delta_m0 = K / (1 + alpha)`, `2 K / 3` for radiation) or as the compaction profile
+`C0 = X^2 delta_m0` (`SeedForm`). The datum follows from it in closed form:
+
+1. Projection (eq:lin:bn, its mass form). On `0 <= X <= Rtilde_max` the seed has coefficients `b_n` on the functions
+   `3 j_1(k_n X) / (k_n X)`, `k_n = n pi / Rtilde_max`, found without differentiating it (`project`).
+2. The start. `r_m` is the radius of the peak of `C0`, and `eps0^2 = e^(2 (1 - alpha) xi) / r_m^2`, the Hubble radius
+   in units of `r_m` squared, is the expansion parameter at the start; the start is the latest time with `eps0^2` at
+   or below a tolerance (`initial.epsilon2` of the configuration), `xi_0 = ln(epsilon2 r_m^2)` for radiation
+   (eq:lin:xistart).
+3. The linear growth, exact mode by mode (eq:lin:seedmodes): each coefficient is multiplied by its growth,
+   `e^xi 3 j_1(z_n) / z_n` with `z_n = k_n tau`, which is the growing mode of eq:lin:mode with `B_n = 9 b_n / k_n^2`
+   (the paper's normalisation), so that the density, the mass and the linear velocity follow from the same growing
+   branch (eq:lin:modepair).
+   Nothing is divided by `j_1`: a seed with structure inside the sound horizon at the start is grown, not
+   reconstructed, and the ill-posedness of the former recipe below does not arise.
+4. The second order (eq:lin:seed2). The linear gradient terms of the second order are already in the Bessel series;
+   what is added is the nonlinear part, `e^(2 xi)` times the quadratic form `second_order` (eq:lin:seedQ) of the seed
+   in `delta_m`, and in the velocity its linear companion `-1/4` of it together with the correction eq:num:dUnl
+   evaluated on the linear `delta_m`: the datum eq:lin:seeddata, which with the series is the second-order relation
+   eq:lin:relation2 (verified in sympy). It is the growing solution up to relative `O(eps0^4)`.
+5. Sampling (eq:num:idata). The cell contents are exact, `E_c = [X^3 (1 + delta_m)] / 3` across the cell, so the
+   cumulative sum returns `mt_j = 1 + delta_m(X_j)` exactly, and the face velocities are point values; the data are
+   formed as their deviation from FRW, so a perturbation below round-off of the background survives.
+
+Every datum then goes through `initial_deviation` (or `initial_state` for data known as fields): `U_0 = 0`, `W` at
+the discrete `u_-` so that the outer penalty starts at zero, and the admissibility check, `Gammabar^2 > 0` at every
+face and `rho > 0` in every cell. The data are also refused unless compensated, `delta_m(Rtilde_max) = 0` to a
+tolerance (eq:lin:compensated), since the exterior must be FRW for the outer boundary to mean anything. Everything
+here is for radiation, the only fluid with the exact outgoing-wave outer condition of Section 5, and so the only one
+for which the closed forms eq:lin:seedmodes, eq:lin:seedQ and eq:num:dUnl are printed; `seed_start` and
+`Seed.deviation` refuse any other equation of state.
+
+Linear data with both fields, and so possibly decaying content, are the general `ModeExpansion` of Section 5.4.1, of
+which the growing mode is the `C_n = 0` special case; they are carried to the start time by evaluating the
 expansion there, and sampled without the correction, which is derived for the growing solution:
 
     expansion = ModeExpansion.from_fields(delta_rho, delta_U, Rtilde_max, bg_i)   # never singular
     state = expansion.state(geo, bg_0)
 
-Everything here is for radiation: the mode functions are the Bessel functions of order one of eq:lin:mode, and
-eq:lin:idata and eq:num:dUnl are printed for radiation only; the generator refuses any other equation of state.
-
-Complete data from any other source, both fields already known on the grid, go through the same last door:
-
-    state = initial_state(E, U, geo, bg_0)                        # U_0 = 0, W, admissibility
-
-The generator of the initial-data file calls these and records the state with the specification, the `report` and
-the `ratio` that produced it; the driver reads that file and never calls this module.
-
-The production data are the compensated one-field growing mode of Section 5.4 with the nonlinear correction of its
-velocity (Section 7.9). One profile is the input, the density perturbation `delta_rho` or the mass perturbation
-`delta_m` at the start time as a function of radius, the `Profile` contract below (`profiles.py` holds the families),
-and everything else follows from it in closed form:
-
-1. Projection (eq:lin:bn). On `0 <= X <= Rtilde_max` the functions `j_0(k_n X)` with `k_n = n pi / Rtilde_max`
-   vanish at the edge and are orthogonal with weight `X^2`, so the profile has coefficients `b_n` on them; a mass
-   profile has the same coefficients on `3 j_1(k_n X) / (k_n X)`, found without differentiating it.
-2. The growing mode (eq:lin:idata). Matching the growing branch of eq:lin:mode, `C_n = 0`, at the start time gives
-   the amplitudes `B_n = b_n / (z_n j_1(z_n))`, `z_n = k_n tau_0`, from which the density, the mass and the linear
-   velocity follow at any time. The division is ill defined at every zero of `j_1`, the first at `z = 4.4934`, a
-   structure finer than about 1.4 sound horizons, so the construction reports the fraction of the power that the
-   modes with `z_n > 3` carry, which covers every zero, in the input and in the output velocity, and refuses the
-   data if either exceeds `1e-8`. The data are also refused unless compensated, `delta_m(Rtilde_max) = 0` to a
-   tolerance (eq:lin:compensated), since the exterior must be FRW for the outer boundary to mean anything.
-3. The nonlinear correction (eq:num:dUnl). What the linear recipe omits at the next order of the gradient
-   expansion is a quadratic form in `delta_m` with no explicit time dependence, added to the velocity.
-4. Sampling (eq:num:idata). The cell contents are exact, `E_c = [X^3 (1 + delta_m)] / 3` across the cell, so the
-   cumulative sum returns `mt_j = 1 + delta_m(X_j)` exactly, and the face velocities are point values.
-
-Whatever its source, every datum then goes through `initial_state`: `U_0 = 0`, `W` at the discrete `u_-` so that the
-outer penalty starts at zero, and the admissibility check, `Gammabar^2 > 0` at every face and `rho > 0` in every cell.
-Complete data from elsewhere, the two-field linear data of Section 5.4.1, or test data with velocities of their own
-use that door directly. For the growing mode the diagnostic `max |delta_U^nl / delta_U^lin|` is reported: it is the
-size of what a linear recipe would have omitted, and more than a few per cent is a signal to start earlier. All of it
-is for radiation, the only equation of state for which eq:lin:idata is printed.
-
-The guard of step 2 and the diagnostic are two thresholds on one parameter, the profile's scales against the horizon
-at the start (`z = k tau_0` mode by mode; `epsilon_0 = 1 / (H r_m)` at the compaction peak; the Hubble radius is `sqrt
-3 tau` for radiation). The linear recipe captures the linear evolution at every scale, including beyond the point
-where the gradient expansion breaks down: the diagnostic is the graded warning that the nonlinear terms it cannot
-contain are no longer small, since with the correction the datum is wrong at relative `O(epsilon_0^4)`. The guard is
-the cliff: once a mode is in the oscillatory regime one field no longer determines it, and no recipe of this kind can
-operate. The guard sees the finest scale present and the diagnostic the peak, so for a profile with a sharp feature on
-a broad core the guard can fail while the diagnostic is quiet, and only the two-field data of Section 5.4.1 can carry
-such a profile.
+The former recipe of Section 5.4, a profile of `delta_rho` or `delta_m` imposed at a chosen start time and read as the
+growing mode by dividing each mode by `z_n j_1(z_n)` (`GrowingMode.from_profile`, with the guard on the modes near the
+zeros of `j_1` and the diagnostic `correction_ratio`), is no longer printed and is kept for the recorded experiments of
+the analysis, whose harnesses call it. A profile imposed at a start time is a different perturbation from the same
+profile as a seed, at relative `O(eps0^2)` (Section 5.4).
 
 For test data given as a density alone, with a velocity that is not the growing mode's, `cell_contents` integrates
 the density over each cell by Gauss-Legendre quadrature, exact to round-off for smooth profiles.
 """
 
+import math
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal, Self
@@ -73,7 +69,7 @@ import numpy as np
 from scipy.special import spherical_jn, spherical_yn
 
 from pbh.derived import NotHyperbolicError, gammabar_squared
-from pbh.eos import Background
+from pbh.eos import Background, EquationOfState
 from pbh.geometry import Geometry, shell_volumes
 from pbh.outer import characteristic_pair
 from pbh.state import State
@@ -253,16 +249,9 @@ class ModeExpansion:
         return 3.0 * j1_over_x(np.multiply.outer(X, self.k)) @ a
 
     def delta_m_derivatives(self, bg: Background, X: FloatArray) -> tuple[FloatArray, FloatArray, FloatArray]:
-        """`(delta_m, delta_m', delta_m'')` at the radii `X`, primes in `X`.
-
-        From the identities `d/dx [j_1/x] = -x [j_2/x^2]` and `d/dx [j_2/x^2] = (j_1/x - 5 j_2/x^2) / x`.
-        """
+        """`(delta_m, delta_m', delta_m'')` at the radii `X`, primes in `X` (`mass_series`)."""
         a, _ = self._coefficients(bg)
-        kX = np.multiply.outer(X, self.k)
-        f1, f2 = j1_over_x(kX), j2_over_x2(kX)
-        first = -3.0 * (f2 * X[..., None]) @ (a * self.k**2)
-        second = -3.0 * (f1 - 4.0 * f2) @ (a * self.k**2)
-        return 3.0 * f1 @ a, first, second
+        return mass_series(a, self.k, X)
 
     def delta_U(self, bg: Background, X: FloatArray) -> FloatArray:
         """The linear velocity perturbation `U / X - 1` at the radii `X`."""
@@ -286,7 +275,7 @@ class ModeExpansion:
 
 @dataclass(frozen=True, init=False)
 class GrowingMode(ModeExpansion):
-    """The growing branch alone, `C_n = 0`: the production datum, reconstructed from one profile (Section 5.4)."""
+    """The growing branch alone, `C_n = 0` (Section 5.4): the linear part of the production datum (`Seed`)."""
 
     def __init__(self, k: FloatArray, B: FloatArray) -> None:
         super().__init__(k=k, B=B, C=np.zeros_like(B))
@@ -302,6 +291,12 @@ class GrowingMode(ModeExpansion):
         power_tolerance: float = 1e-8,
     ) -> tuple[Self, Projection]:
         """The growing mode whose `delta_rho` (`field = "rho"`) or `delta_m` (`field = "m"`) at `bg_0` is the profile.
+
+        The former recipe, kept for the recorded experiments of the analysis (`experiments/e8`, `e9`, `e10`), whose
+        harnesses call it; the production datum is a `Seed`. The amplitudes are `B_n = b_n / (z_n j_1(z_n))`, ill
+        defined at every zero of `j_1` (the first at `z = 4.4934`, a structure finer than about 1.4 sound horizons),
+        so the fraction of the power carried by the modes with `z_n > 3`, which covers every zero, is reported in the
+        input and in the output velocity and the data are refused if either exceeds `power_tolerance`.
 
         Raises:
             IllPosedDataError: If the modes with `z_n > 3` carry more than `power_tolerance` of the power, in the
@@ -344,7 +339,7 @@ class GrowingMode(ModeExpansion):
 
         The cell contents are exact and the face velocities carry the correction eq:num:dUnl unless `nonlinear` is
         off; the correction is derived for the growing solution, which is why it lives here and not on the general
-        expansion. Radiation only, as eq:lin:idata and eq:num:dUnl are.
+        expansion. Radiation only, as eq:lin:seedmodes and eq:num:dUnl are.
         """
         if not nonlinear:
             return super().deviation(geo, bg)
@@ -358,7 +353,7 @@ class GrowingMode(ModeExpansion):
         return with_background(self.deviation(geo, bg, nonlinear), geo)
 
     def correction_ratio(self, geo: Geometry, bg: Background) -> float:
-        """The diagnostic of Section 7.9: `max |delta_U^nl / delta_U^lin|` over the grid's faces.
+        """The former recipe's diagnostic, no longer printed: `max |delta_U^nl / delta_U^lin|` over the grid's faces.
 
         Taken over the radii where `|delta_U^lin|` exceeds `1e-3` of its maximum, so that a node of the linear
         velocity does not enter. It is the size of what a linear recipe would have omitted; more than a few per
@@ -372,7 +367,166 @@ class GrowingMode(ModeExpansion):
         return float(np.max(np.abs(correction[significant] / linear[significant])))
 
 
+# --- the seed: the production datum ---
+
+
+type SeedForm = Literal["delta_m0", "K", "compaction"]
+"""How a seed is given: `delta_m0` itself, the curvature profile `K`, or the compaction profile `C0 = X^2 delta_m0`."""
+
+K_TO_DELTA_M0 = 2.0 / 3.0
+"""`delta_m0 = K / (1 + alpha)`, the factor `2/3` for radiation, the only fluid the seed is built for."""
+
+
+def seed_profile(profile: Profile, form: SeedForm) -> Profile:
+    """The seed `delta_m0` of a profile given in the form `form` (`SeedForm`).
+
+    A compaction profile is divided by `X^2`, which the projection never evaluates at the origin.
+    """
+    if form == "K":
+        return lambda X: K_TO_DELTA_M0 * profile(X)
+    if form == "compaction":
+        return lambda X: profile(X) / X**2
+    return profile
+
+
+@dataclass(frozen=True)
+class CompactionPeak:
+    """The peak of a seed's compaction `C0 = X^2 delta_m0`.
+
+    Attributes:
+        r_m: Its radius, the scale against which the start is measured.
+        C_m: Its value, the peak compaction of the perturbation at leading order.
+        q: Its shape, `-C0''(r_m) r_m^2 / (4 C0(r_m))`, `1` for a Gaussian in `delta_m0` (or in `K`).
+    """
+
+    r_m: float
+    C_m: float
+    q: float
+
+
+@dataclass(frozen=True)
+class Seed:
+    """The time-independent seed `delta_m0` on the box's mass basis: `delta_m0 = sum b_n 3 j_1(k_n X) / (k_n X)`.
+
+    Attributes:
+        Rtilde_max: The outer edge of the box.
+        k: The wavenumbers `k_n = n pi / Rtilde_max`.
+        b: The coefficients `b_n`.
+    """
+
+    Rtilde_max: float
+    k: FloatArray
+    b: FloatArray
+
+    @classmethod
+    def of(cls, profile: Profile, form: SeedForm, Rtilde_max: float, n_modes: int = 150) -> Self:
+        """The seed of a profile given in the form `form`, projected on the box (eq:lin:bn in its mass form)."""
+        k = box_wavenumbers(Rtilde_max, n_modes)
+        return cls(Rtilde_max, k, project(seed_profile(profile, form), "m", k, Rtilde_max))
+
+    def derivatives(self, X: FloatArray) -> tuple[FloatArray, FloatArray, FloatArray]:
+        """`(delta_m0, delta_m0', delta_m0'')` at the radii `X`, primes in `X`, from the series (`mass_series`)."""
+        return mass_series(self.b, self.k, X)
+
+    def peak(self) -> CompactionPeak:
+        """The peak of `C0 = X^2 delta_m0` on the box: the largest of a sampling, then bisection on `C0'`.
+
+        Raises:
+            ValueError: If `C0` has no positive maximum inside the box.
+        """
+        X = np.linspace(0.0, self.Rtilde_max, 8 * self.k.size + 1)
+        C0 = X**2 * self.derivatives(X)[0]
+        i = int(np.argmax(C0))
+        if not (0 < i < X.size - 1 and C0[i] > 0.0):
+            raise ValueError("the seed's compaction X^2 delta_m0 has no positive peak inside the box")
+        lo, hi = float(X[i - 1]), float(X[i + 1])
+        for _ in range(60):  # C0' = X (2 delta_m0 + X delta_m0') changes sign once, from + to -, across the peak
+            mid = 0.5 * (lo + hi)
+            d, first, _ = self.derivatives(np.array([mid]))
+            if 2.0 * d[0] + mid * first[0] > 0.0:
+                lo = mid
+            else:
+                hi = mid
+        r_m = 0.5 * (lo + hi)
+        d, first, second = (float(f[0]) for f in self.derivatives(np.array([r_m])))
+        C_m = r_m**2 * d
+        curvature = 2.0 * d + 4.0 * r_m * first + r_m**2 * second  # C0''
+        return CompactionPeak(r_m=r_m, C_m=C_m, q=-curvature * r_m**2 / (4.0 * C_m))
+
+    def growing_mode(self) -> GrowingMode:
+        """The linear growing mode of the seed, eq:lin:seedmodes: `B_n = 9 b_n / k_n^2`.
+
+        Each coefficient then grows as `e^xi 3 j_1(z_n) / z_n` with `z_n = k_n tau` (`tau^2 = e^xi / 3`), so that
+        `delta_m -> e^xi delta_m0` as `xi -> -inf`.
+        """
+        return GrowingMode(self.k, 9.0 * self.b / self.k**2)
+
+    def deviation(self, geo: Geometry, eos: EquationOfState, xi: float) -> State:
+        """The growing solution of the seed at the time `xi`, sampled on the grid as its deviation from FRW.
+
+        eq:lin:seeddata: `delta_m` is the exact linear growth plus `e^(2 xi) second_order`; the velocity is the linear
+        velocity, the linear companion `-e^(2 xi) second_order / 4` of the quadratic part of `delta_m`, and
+        eq:num:dUnl on the linear `delta_m` (using the whole `delta_m` there changes it at `O(eps^6)`).
+
+        Raises:
+            ValueError: Unless the fluid is radiation, whose coefficients these are.
+            NotCompensatedError: Unless the linear data are compensated; and through the door the admissibility
+                errors.
+        """
+        require_radiation(eos)
+        bg = Background.at(eos, xi)
+        mode = self.growing_mode()
+        mode.check_compensated(bg, self.Rtilde_max)
+        X = geo.X[: geo.N + 1]
+        linear, first, second = mode.delta_m_derivatives(bg, X)
+        quadratic = bg.Gammabar2**2 * second_order(X, *self.derivatives(X))  # e^(2 xi) for radiation
+        delta_m = linear + quadratic
+        delta_U = mode.delta_U(bg, X) - 0.25 * quadratic + nonlinear_correction(X, linear, first, second)
+        return initial_deviation(np.diff(X**3 * delta_m) / 3.0, X * delta_U, geo, bg)
+
+
+def require_radiation(eos: EquationOfState) -> None:
+    """Refuse any fluid but radiation, the only one the seed is built for (the outer condition's scope)."""
+    if not eos.is_radiation:
+        raise ValueError("the seed's growing mode is built for radiation only (the outer condition's scope)")
+
+
+def seed_start(eos: EquationOfState, r_m: float, epsilon2: float) -> float:
+    """The latest start with `eps0^2 = e^(2 (1 - alpha) xi) / r_m^2` at or below `epsilon2`, eq:lin:xistart.
+
+    `ln(epsilon2 r_m^2)` for radiation; `2 (1 - alpha)` is the growth rate of the super-horizon growing mode.
+
+    Raises:
+        ValueError: Unless the fluid is radiation, the only one the seed is built for.
+    """
+    require_radiation(eos)
+    return math.log(epsilon2 * r_m**2) / eos.growing_mode_rate
+
+
+def second_order(X: FloatArray, d: FloatArray, first: FloatArray, second: FloatArray) -> FloatArray:
+    """The quadratic part `Q` of `delta_m` at second order in the gradient expansion, per `e^(2 xi)`, eq:lin:seedQ.
+
+    With `d = delta_m0` and primes in `X`, at areal radius `X`:
+    `[33 d^2 + 6 X d d' - 3 X^2 d d'' + 2 X^2 (d')^2] / 60`, which is
+    `-(1/20) C0 (d'' + 4 d'/X) + (11/20) d^2 + (3/10) X d d' + (1/30) X^2 (d')^2` with `C0 = X^2 d`, written without
+    the division by `X`. The linear part of that order, `(d'' + 4 d'/X) / 30`, is in the Bessel series.
+    """
+    return (33.0 * d**2 + 6.0 * X * d * first - 3.0 * X**2 * d * second + 2.0 * X**2 * first**2) / 60.0
+
+
 # --- the projection, the correction, and the door every datum goes through ---
+
+
+def mass_series(a: FloatArray, k: FloatArray, X: FloatArray) -> tuple[FloatArray, FloatArray, FloatArray]:
+    """`(f, f', f'')` at the radii `X` for `f = sum a_n 3 j_1(k_n X) / (k_n X)`, primes in `X`.
+
+    From the identities `d/dx [j_1/x] = -x [j_2/x^2]` and `d/dx [j_2/x^2] = (j_1/x - 5 j_2/x^2) / x`.
+    """
+    kX = np.multiply.outer(X, k)
+    f1, f2 = j1_over_x(kX), j2_over_x2(kX)
+    first = -3.0 * (f2 * X[..., None]) @ (a * k**2)
+    second = -3.0 * (f1 - 4.0 * f2) @ (a * k**2)
+    return 3.0 * f1 @ a, first, second
 
 
 def nonlinear_correction(X: FloatArray, delta_m: FloatArray, first: FloatArray, second: FloatArray) -> FloatArray:

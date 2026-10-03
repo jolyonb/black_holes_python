@@ -14,7 +14,7 @@ from pbh.cli import main
 from pbh.collapse import CollapseHistory
 from pbh.config import EvolutionConfig, GridConfig, MapFamily, RunConfig, load, save
 from pbh.monitors import MonitoredStep
-from pbh.output import RunWriter
+from pbh.output import RunReader, RunWriter
 from pbh.readout import Readings
 from pbh.records import StateRecord, read_initial, write_initial
 from pbh.summary import CoreSummary, EpochSummary, RunSummary
@@ -159,10 +159,10 @@ def test_the_mass_budget_adds_its_components_in_quadrature(monkeypatch: pytest.M
 
 
 def calibrated(N: int) -> RunConfig:
-    """A configuration at the settings of K_TRUST's calibration, so that the verdict carries no caveat."""
+    """A configuration at the cap of K_TRUST's calibration and the default start tolerance: no caveat."""
     return load_yaml(
         f"grid: {{N: {N}, Rtilde_max: 30.0, scale: 3.0}}\nstepping: {{cap_tolerance: 1.0e-7}}\n"
-        "evolution: {xi_start: -10.0, xi_end: 8.0}\n"
+        "initial: {epsilon2: 1.0e-5}\nevolution: {xi_end: 8.0}\n"
     )
 
 
@@ -210,17 +210,19 @@ def test_the_pair_is_described_and_exported():
     assert "threshold: untrusted, the run at N and the run at N/2 aborted" in text
 
 
-def test_a_looser_cap_or_a_later_start_than_the_calibration_s_is_named_in_the_verdict():
-    production = load_yaml(  # the former default cap, and a start after the calibration's
+def test_a_looser_cap_or_start_tolerance_is_named_in_the_verdict_and_a_late_start_is_not():
+    loose = load_yaml(  # the former default cap, a loose start tolerance, and a start later than the calibration's
         "grid: {N: 400, Rtilde_max: 30.0, scale: 3.0}\nstepping: {cap_tolerance: 1.0e-5}\n"
-        "evolution: {xi_start: -6.0, xi_end: 8.0}\n"
+        "initial: {epsilon2: 1.0e-3}\nevolution: {xi_start: -6.0, xi_end: 8.0}\n"
     )
-    analysed = pair.analyse(run_summary(M_est=10.0, formation=4.0), run_summary(M_est=10.03, formation=4.0), production)
+    analysed = pair.analyse(run_summary(M_est=10.0, formation=4.0), run_summary(M_est=10.03, formation=4.0), loose)
     assert len(analysed.caveats) == 2
     text = "\n".join(pair.describe(analysed))
     assert "    caveat: the step cap's tolerance 1e-05 is looser than the 1e-07 of K's calibration" in text
-    assert "    caveat: xi_start = -6 is later than the -10 of K's calibration" in text
+    assert "    caveat: initial.epsilon2 = 0.001 is looser than 1e-05: the seed's datum errs at relative" in text
+    assert "xi_start" not in text  # a seed's start moves the threshold only at O(epsilon2^2)
     assert pair.caveats(calibrated(400)) == ()
+    assert pair.SYSTEMATICS["initial_data"] == 0.0  # the seed's, not the former recipe's start
 
 
 # --- through the command line ---
@@ -228,12 +230,13 @@ def test_a_looser_cap_or_a_later_start_than_the_calibration_s_is_named_in_the_ve
 CONFIG = """
 grid: {N: 40, Rtilde_max: 12.0, scale: 3.0}
 output: {snapshot_spacing: 0.1, snapshot_spacing_min: 0.1}
+initial: {epsilon2: 0.125}
 evolution: {xi_end: 0.2}
 """
 
 
 def gaussian(tmp_path: Path, config: Path, *more: str) -> int:
-    args = ["initial", "gaussian", "g", "--config", str(config), "--A", "0.05", "--ell", "2.0", "--dir", str(tmp_path)]
+    args = ["initial", "gaussian", "g", "--config", str(config), "--C", "0.15", "--ell", "2.0", "--dir", str(tmp_path)]
     return main([*args, *more])
 
 
@@ -245,7 +248,7 @@ def test_a_pair_through_the_command_line(tmp_path: Path, capsys: pytest.CaptureF
     half_initial = read_initial(tmp_path / "g.half.initial.h5")
     assert half_initial.X.size == 21  # the faces of the grid with N halved
     assert half_initial.provenance["half_of"] == "g"
-    assert half_initial.provenance["A"] == 0.05
+    assert half_initial.provenance["C"] == 0.15
     assert "half_of" not in read_initial(tmp_path / "g.initial.h5").provenance
     assert main(["run", str(config), "g", "--pair", "--dir", str(tmp_path)]) == 0
     printed = capsys.readouterr().out
@@ -254,12 +257,14 @@ def test_a_pair_through_the_command_line(tmp_path: Path, capsys: pytest.CaptureF
     assert saved["provenance"]["half_of"] == "g"
     assert saved["grid"]["N"] == 20
     assert "half_of" not in yaml.safe_load((tmp_path / "g.config.yaml").read_text())["provenance"]
-    assert load(tmp_path / "g.half.config.yaml") == pair.half_config(load(config))
+    started = read_initial(tmp_path / "g.initial.h5").xi
+    assert half_initial.xi == started  # the seed fixes the start, whatever the grid
+    assert load(tmp_path / "g.half.config.yaml") == pair.half_config(load(config)).starting_at(started)
     export = tmp_path / "g.json"
     assert main(["summary", "g", "--dir", str(tmp_path), "--export", str(export)]) == 0
     printed = capsys.readouterr().out
     assert "pair: N = 40 undecided, N/2 = 20 undecided (agree)" in printed
-    assert "caveat: xi_start = 0 is later than" in printed  # the test's configuration is not the calibration's
+    assert "caveat: initial.epsilon2 = 0.125 is looser than 1e-05" in printed  # the start at eps0^2 = 1/8, xi ~ 0
     data = json.loads(export.read_text())
     assert data["pair"]["outcomes"] == ["undecided", "undecided"]
     assert data["status"] == "completed"
@@ -273,7 +278,7 @@ def test_a_pair_with_one_run_unfinished_summarises_the_finished_one(tmp_path: Pa
     assert gaussian(tmp_path, config) == 0
     assert main(["run", str(config), "g", "--dir", str(tmp_path)]) == 0
     capsys.readouterr()
-    parsed = load(config)
+    parsed = RunReader(tmp_path / "g.evolution.h5").config  # with the start the run took from its data
     half = pair.half_config(parsed)
     save(half, tmp_path / "g.half.config.yaml", half_of="g")
     with RunWriter(tmp_path / "g.half.evolution.h5", half, 20, row_type=MonitoredStep) as running:

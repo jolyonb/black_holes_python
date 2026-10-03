@@ -2,7 +2,9 @@
 
 A run is three files, `name.config.yaml`, `name.initial.h5` and `name.evolution.h5`, and this module is the first of
 them. The initial data are not configured here: they are the second file, which records the parameters that made them,
-so that the configuration describes the scheme and the run and nothing about the perturbation. The configuration is a
+so that the configuration describes the scheme and the run and nothing about the perturbation. One setting says how
+initial data are made from a seed, the tolerance that fixes their start (`initial.epsilon2`); the seed itself is not
+here. The configuration is a
 tree of frozen pydantic models, one per section of the file, and each section knows how to build the runtime object it
 describes: `FluidConfig.build()` is an `EquationOfState`, `GridConfig.build()` a `Map`, `OuterConfig.build()` an
 `OuterClosure`, `ShockConfig.build()` a `KernelSettings`, and `RunConfig.scheme()` the `Scheme` of `timestep.py`
@@ -38,11 +40,15 @@ assembled from all of them. The driver reads the file and never sees a raw strin
       snapshot_spacing_after: 0.02  # ... and every this much physical time, in Hubble times at formation, after
       flush_every: 1000             # steps buffered before the step record is written
       monitor_every_step: false     # the full monitor record every step, not only at snapshots
+    initial:
+      epsilon2: 1.0e-5              # a seed's data start at the latest time with (R_H / r_m)^2 at or below this
     evolution:
-      xi_start: 0.0                 # when the run began: its initial data are at this time (a restart's later)
+      xi_start: -9.43               # optional, normally absent: the start of the initial data, filled in by the run
       xi_end: 6.0
 
-Every key has the default shown except `N`, `Rtilde_max` and `xi_end`, which a run must state. A file
+Every key has the default shown except `N`, `Rtilde_max` and `xi_end`, which a run must state, and `xi_start`, which
+has none: a run's initial data say when it starts, and the run writes that time into the configuration it saves, so
+that a restart, which keeps its source's configuration, knows when the run began. A file
 may omit any key with a default and may contain nothing else: an unknown key, a wrong type, or a value outside its
 range is an error naming the key, never a warning. `save` writes the complete configuration with every default
 filled in, under a `provenance` section giving the code's git commit, the time of writing and, for a run, the engine
@@ -336,24 +342,45 @@ class OutputConfig(Section):
         return self
 
 
+class InitialConfig(Section):
+    """The `initial` section: how initial data are made from a seed (`initial.py`), not what they are."""
+
+    epsilon2: float = Field(default=1e-5, gt=0.0, lt=1.0)
+    """The tolerance on `eps0^2 = (R_H / r_m)^2`, the Hubble radius at the start in units of the radius of the seed's
+    compaction peak: the data start at the latest time it is met, `xi_0 = ln(epsilon2 r_m^2)` for radiation, and
+    are the growing solution to relative `O(eps0^4)`."""
+
+
 class EvolutionConfig(Section):
     """The `evolution` section: when the run began and when it ends.
 
     `xi_start` is the time of the run's initial data, and for a restart, which keeps its source's configuration, the
-    time the source began: the outer face has acted since then (`causal.py`). A run's initial state is at `xi_start`
-    or, continuing another, later.
+    time the source began: the outer face has acted since then (`causal.py`). It is normally absent from a file: the
+    run takes it from its initial data (`RunConfig.starting_at`) and saves it. Given, a run's initial state must be at
+    `xi_start` or, continuing another, later.
     """
 
-    xi_start: float = 0.0
+    xi_start: float | None = None
     xi_end: float
     stop_on_bounce: bool = False
     """End the run once the core's bounce is established (`collapse.py`), as a threshold study wants."""
 
     @model_validator(mode="after")
     def _the_run_ends_after_it_starts(self) -> Self:
-        if not self.xi_end > self.xi_start:
+        if self.xi_start is not None and not self.xi_end > self.xi_start:
             raise ValueError(f"xi_end = {self.xi_end} is not after xi_start = {self.xi_start}")
         return self
+
+    @property
+    def began(self) -> float:
+        """`xi_start`, once a run has taken it from its initial data.
+
+        Raises:
+            ValueError: If it has not been.
+        """
+        if self.xi_start is None:
+            raise ValueError("xi_start is not set: a run takes it from its initial data (RunConfig.starting_at)")
+        return self.xi_start
 
 
 class RunConfig(Section):
@@ -367,6 +394,7 @@ class RunConfig(Section):
     readout: ReadoutConfig = ReadoutConfig()
     stepping: SteppingConfig = SteppingConfig()
     output: OutputConfig = OutputConfig()
+    initial: InitialConfig = InitialConfig()
     evolution: EvolutionConfig
 
     def scheme(self, map: Map | None = None, layout: Layout | None = None, engine: Engine = Engine.PYTHON) -> Scheme:
@@ -382,6 +410,11 @@ class RunConfig(Section):
             self.shocks.build(),
             engine=engine,
         )
+
+    def starting_at(self, xi: float) -> Self:
+        """This configuration with `evolution.xi_start = xi`: a run's, once taken from its initial data."""
+        evolution = EvolutionConfig.model_validate({**self.evolution.model_dump(), "xi_start": xi})
+        return self.model_copy(update={"evolution": evolution})
 
 
 # --- the file ---

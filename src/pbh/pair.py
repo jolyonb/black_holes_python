@@ -21,8 +21,8 @@ a third of the difference, `(v_N - v_(N/2)) / 3`. Everything here is a pure func
   calibrated at that level, not a calibrated probability elsewhere. The resolution at which it reaches
   `TRUST_LEVEL` follows from `x ~ N^(-2)`: `N sqrt(z K_TRUST x / (3 GAMMA))`, `z` the quantile. Outcomes that differ
   between `N` and `N/2` are untrusted outright, and so is a pair either of whose runs aborted. `K_TRUST` was
-  calibrated with the step cap at `1e-7` and a start at `xi_start = -10`; at a looser cap or a later start the
-  threshold moves at `N` and `N/2` alike, which the pair cannot see and `P` does not contain, and the pair says so.
+  calibrated with the step cap at `1e-7`; at a looser cap the threshold moves at `N` and `N/2` alike, which the pair
+  cannot see and `P` does not contain, and the pair says so.
 * The mass error budget, each component separately and their sum in quadrature: the spatial error
   `F_COVERAGE |dM| / 3`, the read-out bar of the run at `N` (eq:exc:bar), the read-out window's bias, and the quoted
   systematics of the table (time step, viscosity, shock floor, outer boundary, initial data). The systematics hold
@@ -32,7 +32,9 @@ a third of the difference, `(v_N - v_(N/2)) / 3`. Everything here is a pure func
 
 The constants are calibrated by the campaigns of bite 26 (analysis experiments e8-e10, gathered and validated in
 experiments/pair_constants) on the Gaussian and flat-topped profiles of radiation on the sinh grid; each names its
-source.
+source. Those campaigns made their data by the former recipe of Section 5.4, a profile imposed at the start; the
+pair is for the data `pbh initial` writes, the growing solution of a seed, at whose start the threshold and the mass
+move only at `O(epsilon2^2)` (Section 5.4), and the constants that depended on the former recipe's start say so.
 """
 
 import math
@@ -56,9 +58,11 @@ errors from threshold at the scales 0.15-3; pairs inside their own threshold err
 left out), divided by the 95 per cent quantile 1.645, so that every one of them is covered; at
 the scale 0.3 alone e10 fits 0.95, which covers 3 of the 7 such pairs at scale 3. The thresholds the distances are
 measured from are the formation thresholds, between the largest compaction without a formation event and the
-smallest with one. Every calibration run started at `xi_start = -10` with the step cap at `1e-7`
-(`CALIBRATED_CAP_TOLERANCE`, `CALIBRATED_XI_START`); the scale-3 pairs rest on a threshold at `N = 400` bracketed by
-runs that trapped only the first face and never switched on."""
+smallest with one. Every calibration run had the step cap at `1e-7` (`CALIBRATED_CAP_TOLERANCE`) and data of the
+former recipe imposed at `xi_start = -10`, which realise the seed to `O(eps0^2)`, `5.7e-6` for the Gaussian of width
+2; the seed's threshold at `N = 800` agrees with theirs to `9.6e-8` in `C`, within the brackets' resolution
+(experiments/seed_check), so the width holds for seed data. The scale-3 pairs rest on a threshold at `N = 400`
+bracketed by runs that trapped only the first face and never switched on."""
 
 CALIBRATED_CAP_TOLERANCE = 1e-7
 """The step cap's tolerance of the runs that calibrated `K_TRUST`. The production `1e-5` moves the threshold at `N`
@@ -68,9 +72,9 @@ on the production scale 3 from -6 by about 4e-6, inferred from the mass (experim
 comparable with the pair's own threshold error at `N = 1600`; `P` does not contain it, and a looser cap is named in
 the verdict."""
 
-CALIBRATED_XI_START = -10.0
-"""The start of the runs that calibrated `K_TRUST`. A start at -6 moves the threshold by 3.3e-6 in `C` (cap `1e-7`,
-experiments/e10_criticality), at `N` and `N/2` alike; a later start is named in the verdict."""
+SEED_EPSILON2 = 1e-5
+"""The largest start tolerance `initial.epsilon2` at which the initial data's systematic is zero: the seed's datum
+errs at relative `O(epsilon2^2)`, the same at `N` and `N/2`; a looser one is named in the verdict."""
 
 F_COVERAGE = 1.53
 """The factor on the pair's spatial error of the mass, `F |dM| / 3`, that makes it cover the true error: the 95 per
@@ -99,12 +103,13 @@ SYSTEMATIC_OUTER_BOUNDARY = 0.0
 """The relative error of the mass from the outer boundary: zero, for moving it from `Rtilde_max` 30 to 45 changes the
 mass by 6.3e-7 (experiments/e9_systematics)."""
 
-SYSTEMATIC_INITIAL_DATA = 9.8e-5
-"""The relative error of the mass from the initial data: starting at `xi_start` -6 instead of -10, 9.76e-5 at 0.03
-above threshold, rounded up (experiments/e9_systematics, the step cap at `1e-7`). It grows as `1/(C - C_*)` nearer
-threshold, and with the cap at `1e-7` it falls with an earlier start (8e-9 in the threshold from -10 to -14); at the
-production cap an earlier start costs more in `SYSTEMATIC_TIME_STEP` than it saves here. A start near horizon entry
-changes what the amplitude labels and is not covered."""
+SYSTEMATIC_INITIAL_DATA = 0.0
+"""The relative error of the mass from the initial data: zero for a seed started at `initial.epsilon2 <= 1e-5`
+(`SEED_EPSILON2`). The datum is the growing solution to relative `O(eps0^4)`: against the code's own evolution of the
+seed from `eps0^2 = 1e-7` it errs by `6.1e-5` of the mass deviation at `eps^2 = 4e-2` and its velocity falls as
+`eps^4` (experiments/seed_check), so about `1e-11` at `1e-5`. The former recipe's `9.76e-5` at 0.03 above threshold,
+a profile imposed at `xi_start` -6 instead of -10 (experiments/e9_systematics), is an error of that recipe's start,
+which the seed does not have."""
 
 SYSTEMATICS = {
     "time_step": SYSTEMATIC_TIME_STEP,
@@ -282,7 +287,7 @@ def mass_budget(s: RunSummary, s_half: RunSummary) -> MassBudget | None:
 
 
 def caveats(config: RunConfig) -> tuple[str, ...]:
-    """The settings of the run at which `K_TRUST`'s calibration does not hold, each said in words."""
+    """The settings of the run at which `K_TRUST`'s calibration or a zero systematic does not hold, said in words."""
     found: list[str] = []
     tolerance = config.stepping.cap_tolerance
     if tolerance > CALIBRATED_CAP_TOLERANCE:
@@ -291,11 +296,11 @@ def caveats(config: RunConfig) -> tuple[str, ...]:
             "calibration: it moves the threshold at N and N/2 alike (by up to about 9e-6 in C, more for an earlier "
             "start), which P does not contain"
         )
-    xi_start = config.evolution.xi_start
-    if xi_start > CALIBRATED_XI_START:
+    epsilon2 = config.initial.epsilon2
+    if epsilon2 > SEED_EPSILON2:
         found.append(
-            f"xi_start = {xi_start:g} is later than the {CALIBRATED_XI_START:g} of K's calibration: the start moves "
-            "the threshold at N and N/2 alike (by 3.3e-6 in C from -6), which P does not contain"
+            f"initial.epsilon2 = {epsilon2:g} is looser than {SEED_EPSILON2:g}: the seed's datum errs at relative "
+            "O(epsilon2^2), at N and N/2 alike, which neither P nor the budget's initial-data term contains"
         )
     return tuple(found)
 
@@ -304,7 +309,7 @@ def caveats(config: RunConfig) -> tuple[str, ...]:
 class PairSummary:
     """Everything the pair says: the outcomes, the observables with their errors, the verdict, the mass budget.
 
-    `caveats` names the settings of the run at which the verdict's calibration does not hold.
+    `caveats` names the settings of the run at which the verdict's calibration or a zero systematic does not hold.
     """
 
     N: int

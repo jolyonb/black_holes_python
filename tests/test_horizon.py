@@ -255,17 +255,17 @@ def test_a_collapse_records_its_formation_and_its_horizon_history(tmp_path: Path
     )
     path = tmp_path / "bh.yaml"
     path.write_text(
-        "grid: {N: 200, Rtilde_max: 12.0, scale: 3.0}\noutput: {snapshot_spacing: 0.5}\nevolution: {xi_end: 6.0}\n"
-    )
-    A = 0.515 * math.e / 8.0  # peak compaction 0.515 at ell = 2: a few per cent above threshold
+        "grid: {N: 200, Rtilde_max: 12.0, scale: 3.0}\noutput: {snapshot_spacing: 0.5}\ninitial: {epsilon2: 0.125}\n"
+        "evolution: {xi_end: 6.0}\n"
+    )  # eps0^2 = 1/8 at ell = 2: the start at xi = 0
     args = [
         "initial",
         "gaussian",
         "bh",
         "--config",
         str(path),
-        "--A",
-        f"{A:.12g}",
+        "--C",
+        "0.515",  # peak compaction 0.515 at ell = 2: a few per cent above threshold
         "--ell",
         "2.0",
         "--dir",

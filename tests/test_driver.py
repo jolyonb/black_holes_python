@@ -1,5 +1,6 @@
 """Tests of pbh.driver: a run from initial data to its files, its schedule, its abort, and a bit-identical restart."""
 
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -16,6 +17,7 @@ from pbh.config import (
     ReadoutConfig,
     RunConfig,
     ShockConfig,
+    load,
 )
 from pbh.driver import (
     Run,
@@ -68,7 +70,9 @@ def test_a_run_writes_its_three_files_lands_on_its_schedule_and_keeps_its_books(
     assert paths.config.exists()
     assert paths.evolution.exists()
     reader = RunReader(paths.evolution)
-    assert reader.config == CONFIG
+    assert CONFIG.evolution.xi_start is None
+    assert reader.config == CONFIG.starting_at(0.0)  # the start taken from the initial data, in both files
+    assert load(paths.config) == reader.config
     steps = reader.steps
     xi = steps["xi"]
     assert isinstance(xi, np.ndarray)
@@ -132,7 +136,7 @@ def test_the_full_row_every_step_switch_and_the_restart_that_reproduces_the_run_
     assert middle.xi == 2 * 0.1
     again = RunPaths.of(tmp_path, "again")
     write_initial(again.initial, middle)
-    result = run(config, read_initial(again.initial), again)
+    result = run(whole.config, read_initial(again.initial), again)  # its saved start, as `pbh restart` passes it
     assert result.status == "completed"
     first, second = whole.snapshot(4), RunReader(again.evolution).snapshot(2)
     assert first.xi == second.xi == 4 * 0.1
@@ -182,6 +186,17 @@ def test_data_off_the_grid_or_after_the_end_are_refused(tmp_path: Path):
     ended = CONFIG.model_copy(update={"evolution": EvolutionConfig(xi_start=-1.0, xi_end=0.0)})  # a late restart
     with pytest.raises(ValueError, match="not before the end"):
         run(ended, initial, paths)
+
+
+def test_a_snapshot_is_refused_without_the_start_of_the_run_it_continues(tmp_path: Path):
+    # its time is not when that run began, which the causal bookkeeping counts from; `pbh restart` passes the start
+    paths = RunPaths.of(tmp_path, "again")
+    snapshot = replace(bessel_initial(paths), provenance={"source": "mode.evolution.h5", "step": 7, "snapshot": 1})
+    with pytest.raises(ValueError, match=r"a snapshot of mode\.evolution\.h5"):
+        run(CONFIG, snapshot, paths)
+    assert not paths.config.exists()
+    started = CONFIG.model_copy(update={"evolution": EvolutionConfig(xi_start=-1.0, xi_end=0.4)})
+    assert run(started, snapshot, paths).status == "completed"
 
 
 def test_the_far_zone_radius_is_the_first_face_beyond_the_perturbation(tmp_path: Path):
@@ -296,7 +311,7 @@ def horizon_report(*spheres: tuple[float, bool], M_AH: float) -> HorizonReport:
 def run_at(writer: RunWriter[MonitoredStep], config: RunConfig, xi: float) -> Run:
     """A run on FRW at `xi` whose horizon formed at `XI_FORM`: the read-out's bookkeeping, without an evolution."""
     sch = config.scheme()
-    return Run(config, writer, sch, np.zeros(sch.layout.size), xi, XI_FORM, (), far_zone=4.0)
+    return Run(config.starting_at(0.0), writer, sch, np.zeros(sch.layout.size), xi, XI_FORM, (), far_zone=4.0)
 
 
 def test_a_new_trapped_region_outside_the_apparent_horizon_starts_an_epoch(tmp_path: Path):

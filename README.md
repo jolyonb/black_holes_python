@@ -38,17 +38,17 @@ supercritical collapse from start to mass, in about ten seconds:
 
 ```
 cat > collapse.yaml <<EOF
-grid: {N: 200, Rtilde_max: 12.0, scale: 3.0}
-evolution: {xi_end: 8.0}
+grid: {N: 200, Rtilde_max: 30.0, scale: 3.0}
+evolution: {xi_end: 9.0}
 EOF
-uv run pbh validate collapse.yaml                                         # the configuration with every default
-uv run pbh initial gaussian collapse --config collapse.yaml --A 0.2 --ell 2   # the growing mode of a Gaussian
-uv run pbh run collapse.yaml collapse                                      # formation, excision, the mass
-uv run pbh summary collapse                                                # what the run says about its hole
+uv run pbh validate collapse.yaml                                           # the configuration with every default
+uv run pbh initial gaussian collapse --config collapse.yaml --C 0.5886 --ell 2   # a Gaussian seed, its start
+uv run pbh run collapse.yaml collapse                                        # formation, excision, the mass
+uv run pbh summary collapse                                                  # what the run says about its hole
 ```
 
-The run stops once the mass is read, here at `xi = 7.3`, 3.4 e-folds after formation, with `M_est = 11.14 R_H` and an
-error bar under one per cent. `pbh summary` recomputes everything from the evolution file (nothing derived is stored):
+The data start at `xi = -9.43` (below). The run stops once the mass is read, here at `xi = 7.3`, 3.5 e-folds after
+formation, with `M_est = 11.18 R_H` and an error bar under one per cent. `pbh summary` recomputes everything from the evolution file (nothing derived is stored):
 the core before any horizon (formed, bounced or undecided; the peak of the physical central density and the resolution
 there), the quoted reading, the long-run reference, when the bar crossed 5, 1 and 0.3 per cent, a fit of the accretion
 law, the enclosed-mass cross-check on spheres of fixed physical radius, the fold monitor's nearest approach after
@@ -56,9 +56,17 @@ excision, and the outer boundary's reach: the `Rtilde_max` that keeps the appare
 reading) and the origin (at the end) out of the boundary's sound and light cones, and whether the run's clears it.
 `--export FILE.json` writes it with its series.
 
-A profile may be given long before horizon entry, even far below round-off of the background (`evolution: {xi_start:
--30}` puts a collapse-sized Gaussian at `delta_m ~ 1e-14`): the data are built and recorded as their deviation from FRW,
-so nothing is lost, and the early steps are few, since there the step cap and not the sound speed sets them.
+The initial data are the growing mode of a time-independent seed, the first-order profile `delta_m0(X)` of the
+growing solution `delta_m = e^xi delta_m0 + O(eps^4)` (radiation; `initial.py`), here a Gaussian in `delta_m0`, which
+is a Gaussian in the curvature profile `K` of the literature (`delta_m0 = 2 K / 3`), its compaction `X^2 delta_m0`
+peaking at `r_m = sqrt 2 ell` with the value `C = 2 ell^2 A / e`. The seed fixes the start: the data begin at the latest
+time with `eps0^2 = (R_H / r_m)^2` at or below `initial.epsilon2` (default `1e-5`, `xi = ln 8e-5 = -9.43` here), each
+mode grown exactly from the seed and the second-order terms added, so they are the growing solution to relative
+`O(eps0^4)`. The run writes that start into its saved configuration as `evolution.xi_start`, which a configuration
+normally leaves out (but must give to `pbh run` a snapshot of another run as its initial file; `pbh restart` does it
+for you). However small the perturbation at the start (`initial: {epsilon2: 1.0e-14}` puts a collapse-sized
+Gaussian at `delta_m ~ 1e-14`), the data are built and recorded as their deviation from FRW, so nothing is lost, and the
+early steps are few, since there the step cap and not the sound speed sets them.
 
 `pbh restart SOURCE NAME [--snapshot K] [--config OTHER.yaml]` starts a new run from any snapshot of another, with its
 configuration or a different one: every snapshot is a restart point, and a restart carries the read-out's history.
@@ -72,7 +80,8 @@ run's companion (its provenance names `NAME`, its configuration is `NAME`'s with
 does); the mass at `N` and `N/2` with its calibrated error `F (v_N - v_(N/2))/3`, the peak central density with the
 bare third (uncalibrated), the formation and bounce times without one (they are sampled at the steps); whether the
 run is far enough from threshold to trust its side of it, with the probability and the `N` that would reach 95 per
-cent, and a caveat wherever the step cap or the start differ from the calibration's (`1e-7`, `-10`); and `M_est` with
+cent, and a caveat wherever the step cap is looser than the calibration's `1e-7` or the start tolerance
+`initial.epsilon2` looser than `1e-5` (the seed's start costs nothing below it); and `M_est` with
 its error budget, spatial, read-out bar and quoted systematics in quadrature, with what the total does not cover. The
 trust width, the coverage factor and the systematics are calibrated by the campaigns of bite 26; `pair.py` names the
 source of each.
@@ -154,7 +163,7 @@ src/pbh/
   horizon, excision                  the finder, the switch-on and re-excision, the pinned map's zones
   collapse                           the core before formation: the peak central density and the bounce
   driver, cli                        the run loop and the command line
-  config, initial, profiles          the configuration; initial data (the growing mode of a mass profile)
+  config, initial, profiles          the configuration; initial data (the growing mode of a seed)
   records, output, h5                initial and snapshot records; the evolution file
   monitors, readout, summary         per-step monitors; the mass read-out; the run summary
   pair                               the pair at N and N/2: spatial errors, threshold trust, the mass error budget

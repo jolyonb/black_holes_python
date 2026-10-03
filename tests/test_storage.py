@@ -400,7 +400,7 @@ def test_a_restart_from_inside_a_void_reproduces_the_run_bit_for_bit(tmp_path: P
     assert np.min(middle.E_whole[middle.whole] / reader.geometry(0.02).dV[middle.whole]) < 1e-5  # still deep
     again = RunPaths.of(tmp_path, "again")
     write_initial(again.initial, middle)
-    assert run(VOID_CONFIG, read_initial(again.initial), again).status == "completed"
+    assert run(reader.config, read_initial(again.initial), again).status == "completed"  # with its saved start
     first, second = reader.snapshot(5), RunReader(again.evolution).snapshot(3)
     assert first.xi == second.xi == 0.05
     assert first.E_whole is not None
@@ -434,7 +434,7 @@ def test_a_restart_from_a_snapshot_taken_with_a_carry_continues_it(tmp_path: Pat
     assert taken.xi == 0.012
     again = RunPaths.of(tmp_path, "again")
     write_initial(again.initial, taken)
-    assert run(config, read_initial(again.initial), again).status == "completed"
+    assert run(reader.config, read_initial(again.initial), again).status == "completed"  # with its saved start
     xi, xi_again = np.asarray(reader.steps["xi"]), np.asarray(RunReader(again.evolution).steps["xi"])
     assert np.array_equal(xi[xi > 0.012], xi_again)
     first, second = reader.snapshot(-1), RunReader(again.evolution).snapshot(-1)

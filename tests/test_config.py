@@ -12,6 +12,7 @@ from pbh.config import (
     ConfigError,
     EvolutionConfig,
     GridConfig,
+    InitialConfig,
     MapFamily,
     OuterChoice,
     OuterConfig,
@@ -52,7 +53,9 @@ def test_a_minimal_file_takes_every_default(tmp_path: Path):
     assert config.grid == GridConfig(N=40, Rtilde_max=4.0, scale=2.0)
     assert config.outer.closure is OuterChoice.OUTGOING_WAVE
     assert config.shocks.kernels is Kernels.PRODUCTION
+    assert config.initial.epsilon2 == 1e-5
     assert config.evolution == EvolutionConfig(xi_end=1.0)
+    assert config.evolution.xi_start is None
 
 
 def test_every_key_can_be_set(tmp_path: Path):
@@ -64,7 +67,8 @@ shocks: {kernels: centred, density_limiter: minmod, c_v: 0.5, theta: 0.3}
 excision: {eta: 0.75, tau_on: 0.4, c_t: 3.0, c_Delta: 1.0}
 stepping: {courant_number: 0.4, cap_tolerance: 1.0e-6, cap_efolds: 3.0}
 output: {snapshot_spacing: 0.1, snapshot_spacing_after: 0.02, flush_every: 50, monitor_every_step: true}
-evolution: {xi_end: 2.5}
+initial: {epsilon2: 1.0e-3}
+evolution: {xi_start: -4.0, xi_end: 2.5}
 """
     c = load(write(tmp_path, text))
     assert c.fluid.w == Fraction(1, 2)
@@ -76,7 +80,8 @@ evolution: {xi_end: 2.5}
     assert (c.stepping.cap_tolerance, c.stepping.cap_efolds) == (1e-6, 3.0)
     assert (c.output.snapshot_spacing, c.output.snapshot_spacing_after) == (0.1, 0.02)
     assert (c.output.flush_every, c.output.monitor_every_step) == (50, True)
-    assert c.evolution == EvolutionConfig(xi_end=2.5)
+    assert c.initial == InitialConfig(epsilon2=1e-3)
+    assert c.evolution == EvolutionConfig(xi_start=-4.0, xi_end=2.5)
 
 
 def test_an_integer_w_is_read_as_a_rational(tmp_path: Path):
@@ -108,6 +113,10 @@ def test_a_saved_error_names_the_file_and_every_bad_key(tmp_path: Path):
         ("output: {flush_every: 0}\n", "output.flush_every\n  Input should be greater than or equal to 1"),
         ("output: {snapshot_spacing: 0.1, snapshot_spacing_min: 0.2}\n", "snapshot_spacing_min = 0.2 exceeds"),
         ("excision: {eta: 1.0}\n", "excision.eta\n  Input should be less than 1"),
+        ("initial: {epsilon2: 0.0}\n", "initial.epsilon2\n  Input should be greater than 0"),
+        ("initial: {epsilon2: 1.0}\n", "initial.epsilon2\n  Input should be less than 1"),
+        ("initial: {epsilon2: 1e-5}\n", "initial.epsilon2\n  Input should be a valid number"),  # a string in YAML
+        ("initial: {A: 0.2}\n", "initial.A\n  Extra inputs are not permitted"),  # the seed is not configured
     ],
 )
 def test_bad_keys_and_values_are_refused_by_name(tmp_path: Path, extra: str, message: str):
@@ -164,6 +173,19 @@ def test_missing_and_inconsistent_keys_are_refused_by_name(tmp_path: Path, text:
 # --- writing ---
 
 
+def test_a_run_takes_its_start_from_its_data_and_the_start_is_validated(tmp_path: Path):
+    config = load(write(tmp_path, MINIMAL))
+    with pytest.raises(ValueError, match="xi_start is not set"):
+        _ = config.evolution.began
+    started = config.starting_at(-9.5)
+    assert started.evolution == EvolutionConfig(xi_start=-9.5, xi_end=1.0)
+    assert started.evolution.began == -9.5
+    assert started.grid == config.grid
+    assert config.evolution.xi_start is None  # a copy: the configuration read is unchanged
+    with pytest.raises(ValueError, match="is not after xi_start"):
+        config.starting_at(2.0)
+
+
 def test_a_saved_configuration_is_complete_carries_its_provenance_and_reloads_unchanged(tmp_path: Path):
     config = load(write(tmp_path, MINIMAL))
     out = tmp_path / "saved.config.yaml"
@@ -179,6 +201,7 @@ def test_a_saved_configuration_is_complete_carries_its_provenance_and_reloads_un
         "readout",
         "stepping",
         "output",
+        "initial",
     ]
     sections.append("evolution")
     assert list(document) == sections
@@ -186,6 +209,8 @@ def test_a_saved_configuration_is_complete_carries_its_provenance_and_reloads_un
     assert re.fullmatch(r"[0-9a-f]{12}(-dirty)?|unknown", document["provenance"]["code_commit"])
     assert document["provenance"]["written"].endswith("Z")
     assert document["fluid"] == {"w": "1/3"}
+    assert document["initial"] == {"epsilon2": 1e-5}
+    assert document["evolution"] == {"xi_end": 1.0, "stop_on_bounce": False}  # no start until a run takes one
     assert document["shocks"] == {
         "kernels": "production",
         "density_limiter": "mc",

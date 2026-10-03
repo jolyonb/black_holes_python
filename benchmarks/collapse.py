@@ -3,13 +3,16 @@
     uv run --group rust python benchmarks/collapse.py            # N = 200, 400, 800, 1600, best of 3
     uv run --group rust python benchmarks/collapse.py 400 1600 --repeats 5
 
-The collapse is the Gaussian `A = 0.2`, `ell = 2` on `Rtilde_max = 30` with the production sinh stretch (scale 3), run
-with `snapshots: milestones` until the mass is read. Each case is timed from `pbh run` to its end, the best of the
-repeats, and the two engines' records (events, step and horizon tables) are compared: they must be identical. The
-numbers depend on the machine and on its load; compare runs made on the same machine, idle.
+The collapse is the Gaussian seed `A = 0.2`, `ell = 2` (peak compaction `C = 1.6 / e = 0.5886`; until 2026-10-02 the
+same Gaussian was imposed at `xi = 0`) on `Rtilde_max = 30` with the production sinh stretch (scale 3), started where
+the default `initial.epsilon2 = 1e-5` puts it (`xi = ln 8e-5 = -9.43`) and run with `snapshots: milestones` until the
+mass is read. Each case is timed from `pbh run` to its end, the best of the repeats, and the two engines' records
+(events, step and horizon tables) are compared: they must be identical. The numbers depend on the machine and on its
+load; compare runs made on the same machine, idle.
 """
 
 import argparse
+import math
 import platform
 import subprocess
 import tempfile
@@ -48,7 +51,8 @@ def run(directory: Path, N: int, engine: Engine) -> float:
     name = f"n{N}_{engine.value}"
     config = directory / f"n{N}.yaml"
     config.write_text(CONFIG.format(N=N))
-    args = ["initial", "gaussian", name, "--config", str(config), "--A", "0.2", "--ell", "2.0", "--dir", str(directory)]
+    C = repr(2.0 * 4.0 * 0.2 / math.e)  # A = 0.2 at ell = 2
+    args = ["initial", "gaussian", name, "--config", str(config), "--C", C, "--ell", "2.0", "--dir", str(directory)]
     assert main(args) == 0
     start = time.perf_counter()
     assert main(["run", str(config), name, "--engine", engine.value, "--dir", str(directory)]) == 0

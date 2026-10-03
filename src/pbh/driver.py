@@ -2,7 +2,8 @@
 
 A run is `run(config, initial, paths)`. It builds the `Scheme` from the configuration and the initial record, which
 carries the map's zones and the formation time if it comes from a snapshot after formation, checks that the record
-sits on the grid that gives, saves the configuration with its provenance, and then steps:
+sits on the grid that gives, saves the configuration with its provenance (with `evolution.xi_start` filled in from the
+initial data when the configuration leaves it out, as a fresh run's normally does), and then steps:
 
 1. evaluate the rate at the state (the first stage of the step) and choose the step: the smaller of the Courant
    step and the cap (eq:num:cfl), clipped to land exactly on the next snapshot time and on the end;
@@ -313,7 +314,7 @@ class Run:
 
     def isolation(self, xi: float, r: float) -> dict[str, Any]:
         """The domains that keep the radius `r` out of the outer face's reach until `xi` (`causal.py`)."""
-        return isolation(self.sch.eos, self.config.evolution.xi_start, xi, r, self.config.grid.Rtilde_max)
+        return isolation(self.sch.eos, self.config.evolution.began, xi, r, self.config.grid.Rtilde_max)
 
     # --- the operations of Section 8.2 and 8.3 ---
 
@@ -651,8 +652,17 @@ def run(
     `history` is the epoch the initial state is in, with its series of `M_AH`, and `core` the core's watch
     (`core_watch`), when it continues another run. `engine` evaluates the stages, and is recorded in both files.
     `half_of` names the run this one is the half-resolution companion of (`pair.py`), recorded in the configuration's
-    provenance.
+    provenance. A configuration without `xi_start` takes it from the initial data, and the run's files record it; it
+    must then give one if the data are a snapshot of another run (their provenance names its `source`), since the
+    snapshot's time is not when that run began, which the causal bookkeeping counts from.
     """
+    if config.evolution.xi_start is None:  # a fresh run begins with its data; a restart passes its source's start
+        if "source" in initial.provenance:  # a snapshot: its time is not when the run it continues began
+            raise ValueError(
+                f"the initial state is a snapshot of {initial.provenance['source']} and the configuration gives no "
+                "evolution.xi_start: give the start of the run it continues, or use `pbh restart`, which passes it"
+            )
+        config = config.starting_at(initial.xi)
     if initial.j_e > 0 and not config.excision.enabled:
         raise ValueError(
             f"the initial state is excised (j_e = {initial.j_e}) but the configuration disables excision: an excised "
@@ -667,9 +677,9 @@ def run(
     xi_end = config.evolution.xi_end
     if not xi_end > xi:
         raise ValueError(f"the initial time {xi} is not before the end {xi_end}")
-    if xi < config.evolution.xi_start:
+    if xi < config.evolution.began:
         raise ValueError(
-            f"the initial time {xi} is before the configuration's xi_start = {config.evolution.xi_start}: a run starts "
+            f"the initial time {xi} is before the configuration's xi_start = {config.evolution.began}: a run starts "
             "at xi_start, or continues one that did"
         )
     save(config, paths.config, engine, half_of)

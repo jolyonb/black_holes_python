@@ -118,10 +118,10 @@ def test_a_sub_critical_collapse_bounces_and_the_run_stops_there(tmp_path: Path,
     # N = 100 keeps this in the fast suite (under a second); the core is resolved by 7 cells at the peak
     config_path = tmp_path / "sub.yaml"
     config_path.write_text(
-        "grid: {N: 100, Rtilde_max: 12.0, scale: 3.0}\nevolution: {xi_end: 9.0, stop_on_bounce: true}\n"
-    )
-    A = 0.49 * math.e / 8.0  # peak compaction 0.49 at ell = 2: just below threshold
-    initial = ["initial", "gaussian", "sub", "--config", str(config_path), "--A", f"{A:.12g}", "--ell", "2.0"]
+        "grid: {N: 100, Rtilde_max: 12.0, scale: 3.0}\ninitial: {epsilon2: 0.125}\n"
+        "evolution: {xi_end: 9.0, stop_on_bounce: true}\n"
+    )  # eps0^2 = 1/8 at ell = 2: the start at xi = 0
+    initial = ["initial", "gaussian", "sub", "--config", str(config_path), "--C", "0.49", "--ell", "2.0"]  # below C*
     assert main([*initial, "--dir", str(tmp_path)]) == 0
     assert main(["run", str(config_path), "sub", "--dir", str(tmp_path)]) == 0
     reader = RunReader(RunPaths.of(tmp_path, "sub").evolution)
@@ -173,10 +173,10 @@ def test_a_run_restarted_before_its_bounce_records_the_same_bounce_at_the_same_s
     # so the restarted run tests at the same steps and establishes the bounce where the uninterrupted run did.
     config_path = tmp_path / "sub.yaml"
     config_path.write_text(
-        "grid: {N: 100, Rtilde_max: 12.0, scale: 3.0}\nevolution: {xi_end: 9.0, stop_on_bounce: true}\n"
+        "grid: {N: 100, Rtilde_max: 12.0, scale: 3.0}\ninitial: {epsilon2: 0.125}\n"
+        "evolution: {xi_end: 9.0, stop_on_bounce: true}\n"
     )
-    A = 0.49 * math.e / 8.0
-    initial = ["initial", "gaussian", "sub", "--config", str(config_path), "--A", f"{A:.12g}", "--ell", "2.0"]
+    initial = ["initial", "gaussian", "sub", "--config", str(config_path), "--C", "0.49", "--ell", "2.0"]
     assert main([*initial, "--dir", str(tmp_path)]) == 0
     assert main(["run", str(config_path), "sub", "--dir", str(tmp_path)]) == 0
     whole = RunReader(RunPaths.of(tmp_path, "sub").evolution)
@@ -199,18 +199,19 @@ def test_a_milestones_run_writes_the_initial_state_the_formation_and_the_end_and
     config_path = tmp_path / "dev.yaml"
     config_path.write_text(
         "grid: {N: 100, Rtilde_max: 12.0, scale: 3.0}\noutput: {snapshots: milestones}\n"
-        "excision: {enabled: false}\nevolution: {xi_end: 5.0}\n"
-    )
-    A = 0.515 * math.e / 8.0  # forms at xi ~ 4.8
-    initial = ["initial", "gaussian", "dev", "--config", str(config_path), "--A", f"{A:.12g}", "--ell", "2.0"]
+        "excision: {enabled: false}\ninitial: {epsilon2: 0.125}\nevolution: {xi_end: 5.0}\n"
+    )  # the start at xi = 0
+    initial = ["initial", "gaussian", "dev", "--config", str(config_path), "--C", "0.515", "--ell", "2.0"]
     assert main([*initial, "--dir", str(tmp_path)]) == 0
     assert main(["run", str(config_path), "dev", "--dir", str(tmp_path)]) == 0
     reader = RunReader(RunPaths.of(tmp_path, "dev").evolution)
     formation = next(e for e in reader.events if e.kind == "formation")
-    assert [s.xi for s in reader.snapshots] == [0.0, formation.xi, 5.0]
+    start = reader.snapshots[0].xi
+    assert start == pytest.approx(0.0, abs=1e-7)  # ln(epsilon2 r_m^2) = ln 1, up to the series' r_m
+    assert [s.xi for s in reader.snapshots] == [start, formation.xi, 5.0]
     reach = formation.payload["isolation"]  # the apparent horizon at formation, against the boundary acting since 0
     assert reach["r"] == formation.payload["X_AH"]
-    assert reach["since"] == 0.0
+    assert reach["since"] == start
     assert reach["needed_sound"] == pytest.approx(reach["r"] + (math.exp(formation.xi / 2) - 1) / math.sqrt(3))
     end = reader.end
     assert end is not None
@@ -221,13 +222,14 @@ def test_a_milestones_run_writes_the_initial_state_the_formation_and_the_end_and
 def test_a_run_that_writes_no_snapshots_keeps_its_initial_state_and_its_records(tmp_path: Path):
     config_path = tmp_path / "bare.yaml"
     config_path.write_text(
-        "grid: {N: 40, Rtilde_max: 12.0, scale: 3.0}\noutput: {snapshots: none}\nevolution: {xi_end: 0.3}\n"
+        "grid: {N: 40, Rtilde_max: 12.0, scale: 3.0}\noutput: {snapshots: none}\ninitial: {epsilon2: 0.125}\n"
+        "evolution: {xi_end: 0.3}\n"
     )
-    initial = ["initial", "gaussian", "bare", "--config", str(config_path), "--A", "0.05", "--ell", "2.0"]
+    initial = ["initial", "gaussian", "bare", "--config", str(config_path), "--C", "0.15", "--ell", "2.0"]
     assert main([*initial, "--dir", str(tmp_path)]) == 0
     assert main(["run", str(config_path), "bare", "--dir", str(tmp_path)]) == 0
     reader = RunReader(RunPaths.of(tmp_path, "bare").evolution)
-    assert [s.xi for s in reader.snapshots] == [0.0]  # the initial state, and nothing after it
+    assert [s.xi for s in reader.snapshots] == [pytest.approx(0.0, abs=1e-7)]  # the initial state, nothing after it
     assert len(reader.steps["xi"]) > 0  # the step record is written as always
     assert main(["restart", "bare", "again", "--dir", str(tmp_path)]) == 0  # the run starts again from its start
     assert RunReader(RunPaths.of(tmp_path, "again").evolution).end is not None

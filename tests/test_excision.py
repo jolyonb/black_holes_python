@@ -50,7 +50,7 @@ from pbh.kernels import PRODUCTION_KERNELS
 from pbh.layout import Layout
 from pbh.maps import BlendMap, IdentityMap, SinhStretch, Zone
 from pbh.michel import michel_flow
-from pbh.output import RunReader
+from pbh.output import Event, RunReader
 from pbh.records import read_initial
 from pbh.state import frw_state
 from pbh.stencils import StencilWeights
@@ -74,17 +74,17 @@ def collapse(tmp_path_factory: pytest.TempPathFactory) -> tuple[RunReader, RunCo
         "grid: {N: 200, Rtilde_max: 12.0, scale: 3.0}\n"
         "output: {snapshot_spacing: 0.5, snapshot_spacing_after: 0.01}\n"
         "excision: {enabled: false}\n"
+        "initial: {epsilon2: 0.125}\n"
         "evolution: {xi_end: 6.0}\n"
     )
-    A = 0.515 * math.e / 8.0
     args = [
         "initial",
         "gaussian",
         "bh",
         "--config",
         str(path),
-        "--A",
-        f"{A:.12g}",
+        "--C",
+        "0.515",
         "--ell",
         "2.0",
         "--dir",
@@ -548,13 +548,18 @@ def excised(tmp_path_factory: pytest.TempPathFactory) -> tuple[RunReader, Path, 
     path.write_text(
         "grid: {N: 200, Rtilde_max: 12.0, scale: 3.0}\n"
         "output: {snapshot_spacing: 0.5, snapshot_spacing_after: 0.05}\n"
+        "initial: {epsilon2: 0.125}\n"
         "evolution: {xi_end: 6.5}\n"
     )
-    A = 0.515 * math.e / 8.0
-    args = ["initial", "gaussian", "bh", "--config", str(path), "--A", f"{A:.12g}", "--ell", "2.0"]
+    args = ["initial", "gaussian", "bh", "--config", str(path), "--C", "0.515", "--ell", "2.0"]
     assert main([*args, "--dir", str(directory)]) == 0
     assert main(["run", str(path), "bh", "--dir", str(directory)]) == 0
     return RunReader(RunPaths.of(directory, "bh").evolution), path, directory
+
+
+def switch_on(reader: RunReader) -> Event:
+    """The run's switch-on event."""
+    return next(e for e in reader.events if e.kind == "switch_on")
 
 
 def test_an_excised_collapse_runs_through_formation_and_far_beyond_it(excised: tuple[RunReader, Path, Path]):
@@ -565,12 +570,14 @@ def test_an_excised_collapse_runs_through_formation_and_far_beyond_it(excised: t
         end.payload["status"] == "completed"
     )  # unexcised, the same collapse dies a fifth of an e-fold after formation
     kinds = [e.kind for e in reader.events]
-    assert kinds[:2] == ["formation", "switch_on"]
+    assert kinds[:3] == ["formation", "switch_attempt", "switch_on"]
     assert kinds.count("re_excision") >= 3
     assert "zone_extension" in kinds
-    formation, switch = reader.events[0], reader.events[1]
+    formation, attempt, switch = reader.events[:3]
     assert 4.7 < formation.xi < 4.9
-    assert switch.xi == formation.xi  # thrown at first detection here: the three faces were already trapped
+    assert attempt.xi == formation.xi  # refused at first detection: fewer than three faces trapped yet ...
+    assert attempt.payload["failed"] == ["three_trapped"]
+    assert switch.step == formation.step + 1  # ... and thrown at the next step
     assert switch.payload["j_e"] == math.ceil(200 * switch.payload["x_e"])
     assert switch.payload["x_e"] == pytest.approx(0.7 * math.exp(-0.15) * switch.payload["x_AH_on"])
     assert switch.payload["x_t"] + switch.payload["Delta_t"] < 0.8
@@ -611,7 +618,7 @@ def test_the_excised_run_agrees_with_the_unexcised_continuation_outside_the_face
     # same grid, and dies where the unexcised collapse dies. Outside the face the two agree, the closure's error
     # confined to the first cells at the face and never propagating outward: that is what excision promises.
     reader, path, directory = excised
-    switch = reader.events[1]
+    switch = switch_on(reader)
     index = next(s.index for s in reader.snapshots if s.xi == switch.xi and s.j_e == 0)
     off = directory / "off.yaml"
     off.write_text(path.read_text().replace("xi_end: 6.5", "xi_end: 5.5") + "excision: {enabled: false}\n")
@@ -636,7 +643,7 @@ def test_the_excised_run_agrees_with_the_unexcised_continuation_outside_the_face
 
 def test_a_restart_from_an_excised_snapshot_reproduces_the_run_bit_for_bit(excised: tuple[RunReader, Path, Path]):
     reader, _, directory = excised
-    switch = reader.events[1]
+    switch = switch_on(reader)
     middle = next(s for s in reader.snapshots if s.j_e > 0 and s.xi > switch.xi + 0.5)
     assert main(["restart", "bh", "again", "--dir", str(directory), "--snapshot", str(middle.index)]) == 0
     again = RunReader(RunPaths.of(directory, "again").evolution)
@@ -672,7 +679,7 @@ def test_a_restart_from_the_switch_on_snapshot_throws_the_switch_again_with_the_
     excised: tuple[RunReader, Path, Path],
 ):
     reader, path, directory = excised
-    switch = reader.events[1]
+    switch = switch_on(reader)
     index = next(s.index for s in reader.snapshots if s.xi == switch.xi and s.j_e == 0)
     short = directory / "short.yaml"
     short.write_text(path.read_text().replace("xi_end: 6.5", "xi_end: 5.2"))
@@ -710,7 +717,7 @@ def always(report: HorizonReport, zones: tuple[Zone, ...], fraction: float) -> b
 
 
 def excised_index(reader: RunReader) -> int:
-    switch = reader.events[1]
+    switch = switch_on(reader)
     return next(s.index for s in reader.snapshots if s.j_e > 0 and s.xi > switch.xi + 0.3)
 
 
@@ -934,10 +941,10 @@ def test_the_excised_collapse_reads_its_mass_stops_and_a_restart_reads_the_same(
     path.write_text(
         "grid: {N: 200, Rtilde_max: 12.0, scale: 3.0}\n"
         "output: {snapshot_spacing: 0.5, snapshot_spacing_after: 0.05}\n"
+        "initial: {epsilon2: 0.125}\n"
         "evolution: {xi_end: 9.0}\n"
     )
-    A = 0.515 * math.e / 8.0
-    args = ["initial", "gaussian", "bh", "--config", str(path), "--A", f"{A:.12g}", "--ell", "2.0"]
+    args = ["initial", "gaussian", "bh", "--config", str(path), "--C", "0.515", "--ell", "2.0"]
     assert main([*args, "--dir", str(tmp_path)]) == 0
     assert main(["run", str(path), "bh", "--dir", str(tmp_path)]) == 0
     reader = RunReader(RunPaths.of(tmp_path, "bh").evolution)
@@ -948,7 +955,7 @@ def test_the_excised_collapse_reads_its_mass_stops_and_a_restart_reads_the_same(
     # read at the floor or later with its bar below one per cent, and the run stopped there rather than at xi_end
     assert p["xi_reading"] >= formation + 2.0
     assert p["bar"] < 0.01
-    assert p["M_est"] == pytest.approx(5.51, abs=0.02)  # the horizon mass is still growing from 5.2 there
+    assert p["M_est"] == pytest.approx(5.74, abs=0.02)  # the seed at eps0^2 = 1/8; 5.51 from the profile at xi = 0
     assert p["M_AH"] < p["M_est"]
     assert p["systematic"] < 1e-4
     assert not p["efficiency_flag"]  # within 20 per cent of Michel's by then
