@@ -176,10 +176,10 @@ def test_the_pair_is_described_and_exported():
     assert "pair: N = 400 formed, N/2 = 200 formed (agree)" in text
     assert "threshold: trusted above, P = 1.000 (x = 0.003); 95% needs N >= " in text
     assert "caveat" not in text
-    assert "M_est: 10 (N/2: 10.03), spatial error -0.0153 (F = 1.53)" in text
+    assert "M_est: 10 (N/2: 10.03), spatial error -0.0157 (F = 1.57)" in text
     assert "formation_xi: 4 (N/2: 4.01), sampled at the steps: no error estimate" in text
     assert "bounce_xi" not in text  # absent at both
-    assert "M_est = 10 +- 0.1 R_H (spatial 0.015, readout 0.1, window 0.01, time_step 0.0011, viscosity 0, " in text
+    assert "M_est = 10 +- 0.1 R_H (spatial 0.016, readout 0.1, window 0.01, time_step 0.0001, viscosity 0, " in text
     assert f"    {pair.BUDGET_CAVEAT}" in text  # the total does not cover the systematics' growth near threshold
     data = pair.as_json(trusted)
     assert data["trust"]["verdict"] == "trusted"

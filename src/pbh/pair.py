@@ -30,11 +30,11 @@ a third of the difference, `(v_N - v_(N/2)) / 3`. Everything here is a pure func
   bias of an early reading against the final mass, while the efficiency is still relaxing from its overshoot of the
   Michel value, is inside the bar, which is anchored on Michel (eq:exc:bar).
 
-The constants are calibrated by the campaigns of bite 26 (analysis experiments e8-e10, gathered and validated in
-experiments/pair_constants) on the Gaussian and flat-topped profiles of radiation on the sinh grid; each names its
-source. Those campaigns made their data by the former recipe of Section 5.4, a profile imposed at the start; the
-pair is for the data `pbh initial` writes, the growing solution of a seed, at whose start the threshold and the mass
-move only at `O(epsilon2^2)` (Section 5.4), and the constants that depended on the former recipe's start say so.
+The constants are calibrated on the Gaussian and flat-topped profiles of radiation on the sinh grid; each names its
+source. `K_TRUST`, `F_COVERAGE` and `SYSTEMATIC_TIME_STEP` come from the bite-24 campaign on seed data, the data
+`pbh initial` writes, with the step cap at `1e-7` (experiments/e15_calibration); the others from the campaigns of
+bite 26 (experiments e8-e10), which made their data by the former recipe of Section 5.4, a profile imposed at the
+start, and those that depended on that recipe's start say so.
 """
 
 import math
@@ -51,18 +51,16 @@ GAMMA = 0.3558
 threshold and 0.348 +- 0.024 below, 1.0 and 0.3 sigma from it, the errors set by the correction to scaling, and
 neither is as precise."""
 
-K_TRUST = 1.27
-"""The width of the trust sigmoid in units of the pair's threshold error: the largest over-prediction of the distance
-to threshold by the pair, 2.09 at the grid scale 3 (experiments/pair_constants, e10's pairs between 1 and 30 threshold
-errors from threshold at the scales 0.15-3; pairs inside their own threshold error, which no verdict can trust, are
-left out), divided by the 95 per cent quantile 1.645, so that every one of them is covered; at
-the scale 0.3 alone e10 fits 0.95, which covers 3 of the 7 such pairs at scale 3. The thresholds the distances are
-measured from are the formation thresholds, between the largest compaction without a formation event and the
-smallest with one. Every calibration run had the step cap at `1e-7` (`CALIBRATED_CAP_TOLERANCE`) and data of the
-former recipe imposed at `xi_start = -10`, which realise the seed to `O(eps0^2)`, `5.7e-6` for the Gaussian of width
-2; the seed's threshold at `N = 800` agrees with theirs to `9.6e-8` in `C`, within the brackets' resolution
-(experiments/seed_check), so the width holds for seed data. The scale-3 pairs rest on a threshold at `N = 400`
-bracketed by runs that trapped only the first face and never switched on."""
+K_TRUST = 1.5
+"""The width of the trust sigmoid in units of the pair's threshold error. The rule, the largest over-prediction of the
+distance to threshold by the pair divided by the 95 per cent quantile 1.645, gives 1.53 over the 27 pairs of seed data
+between 1 and 30 threshold errors from threshold on the grid scales 0.075 and 3 (experiments/e15_calibration; pairs
+inside their own threshold error, which no verdict can trust, are left out). Its worst pair, 2.52, is at the scale 3
+and `N = 800`, a grid too coarse at the centre for near-threshold work; without that grid's pairs the rule gives 1.09.
+1.5 covers 26 of the 27, all but that pair, and every one of its 28 trusted verdicts is correct; the former 1.27
+(bite 26's campaigns, data of the former recipe) covers the same 26. The thresholds the distances are measured from are
+the formation thresholds, between the largest compaction without a formation event and the smallest with one. Every
+calibration run had the step cap at `1e-7` (`CALIBRATED_CAP_TOLERANCE`)."""
 
 CALIBRATED_CAP_TOLERANCE = 1e-7
 """The step cap's tolerance of the runs that calibrated `K_TRUST`. The production `1e-5` moves the threshold at `N`
@@ -76,20 +74,18 @@ SEED_EPSILON2 = 1e-5
 """The largest start tolerance `initial.epsilon2` at which the initial data's systematic is zero: the seed's datum
 errs at relative `O(epsilon2^2)`, the same at `N` and `N/2`; a looser one is named in the verdict."""
 
-F_COVERAGE = 1.53
+F_COVERAGE = 1.57
 """The factor on the pair's spatial error of the mass, `F |dM| / 3`, that makes it cover the true error: the 95 per
-cent coverage factor of the 23 pairs of both families with `|dM/M| > 1e-4` (experiments/e8_mass_errors, 1.525;
-1.29 from the Gaussian alone). Below `1e-4` the step cap's floor, `SYSTEMATIC_TIME_STEP`, sets the error."""
+cent coverage factor of the 24 pairs of both families with `|dM/M| > 1e-4` (experiments/e15_calibration, 1.567; the
+flat top's 12 held out are covered 11 times by the Gaussian's alone). Below `1e-4` the step cap's floor,
+`SYSTEMATIC_TIME_STEP`, sets the error."""
 
-SYSTEMATIC_TIME_STEP = 1.1e-4
-"""The relative error of the mass from the time step, kept as a conservative bound: measured with the step cap at
-its former default tolerance `1e-5` against `1e-7` (the default since 2026-10-02, at which the cap's part vanishes;
-to be remeasured with the campaign rerun at `1e-7`, which also recalibrates `F_COVERAGE`),
-1.03e-4 at 0.03 above threshold, rounded up (experiments/e9_systematics); the Courant number alone, 0.75 against
-0.375, 4e-7. Measured at `xi_start = -6` on the sinh scale 3: it grows as `1/(C - C_*)` nearer threshold, it grows
-with an earlier start, since the cap's amplitude error accumulates over the super-horizon steps (the threshold moves
-by 4.3e-6 in `C` from -10 and 8.8e-6 from -14 on the scale 0.3, experiments/e10_criticality), and it vanishes with a
-tighter cap."""
+SYSTEMATIC_TIME_STEP = 1e-5
+"""The relative error of the mass from the time step, a conservative bound: the step cap at its default tolerance
+`1e-7` against `1e-9` moves the mass by at most 4.1e-6 from 0.03 to 0.3 above threshold and 7.4e-6 at 0.01; the
+Courant number alone, 0.75 against 0.375, by 1.5e-6 (experiments/e15_calibration). The quoted reading also jitters,
+by up to 6.8e-5 between pairs whose spatial error is below `1e-4`, as the reading's time moves with the steps; that
+part is the read-out bar's, not the time step's."""
 
 SYSTEMATIC_VISCOSITY = 0.0
 """The relative error of the mass from the viscosity `c_v`: zero, for `c_v` from 0.5 to 1.5 moves it by 4.3e-5 and
