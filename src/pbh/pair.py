@@ -51,16 +51,16 @@ GAMMA = 0.3558
 threshold and 0.348 +- 0.024 below, 1.0 and 0.3 sigma from it, the errors set by the correction to scaling, and
 neither is as precise."""
 
-K_TRUST = 1.5
+K_TRUST = 1.6
 """The width of the trust sigmoid in units of the pair's threshold error. The rule, the largest over-prediction of the
 distance to threshold by the pair divided by the 95 per cent quantile 1.645, gives 1.53 over the 27 pairs of seed data
 between 1 and 30 threshold errors from threshold on the grid scales 0.075 and 3 (experiments/e15_calibration; pairs
 inside their own threshold error, which no verdict can trust, are left out). Its worst pair, 2.52, is at the scale 3
 and `N = 800`, a grid too coarse at the centre for near-threshold work; without that grid's pairs the rule gives 1.09.
-1.5 covers 26 of the 27, all but that pair, and every one of its 28 trusted verdicts is correct; the former 1.27
-(bite 26's campaigns, data of the former recipe) covers the same 26. The thresholds the distances are measured from are
-the formation thresholds, between the largest compaction without a formation event and the smallest with one. Every
-calibration run had the step cap at `1e-7` (`CALIBRATED_CAP_TOLERANCE`)."""
+1.6 covers all 27 with four per cent to spare, and every one of its 28 trusted verdicts is correct, as at 1.53; the
+former 1.27 (bite 26's campaigns, data of the former recipe) covers 26. The thresholds the distances are measured
+from are the formation thresholds, between the largest compaction without a formation event and the smallest with
+one. Every calibration run had the step cap at `1e-7` (`CALIBRATED_CAP_TOLERANCE`)."""
 
 CALIBRATED_CAP_TOLERANCE = 1e-7
 """The step cap's tolerance of the runs that calibrated `K_TRUST`. The production `1e-5` moves the threshold at `N`
