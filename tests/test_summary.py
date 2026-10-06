@@ -17,7 +17,7 @@ from pbh.michel import hole_mass_tilde
 from pbh.monitors import MonitoredStep
 from pbh.output import RunReader, RunWriter
 from pbh.state import State
-from pbh.summary import RunSummary, as_json, describe, slope, spheres, summarise
+from pbh.summary import RunSummary, as_json, describe, epoch_series, slope, spheres, summarise
 
 N = 40
 CONFIG = RunConfig(grid=GridConfig(N=N, Rtilde_max=8.0, map=MapFamily.UNIFORM), evolution=EvolutionConfig(xi_end=8.0))
@@ -38,10 +38,10 @@ def row(step: int, xi: float, M_AH: float) -> HorizonRow:
     return HorizonRow.of(step, xi, report, None, NearZone(*[NAN] * 8))
 
 
-def synthetic_run(directory: Path, flagged: bool) -> Path:
-    """A run whose hole accretes steadily from `XI_FORM`, over an FRW background, with a larger trapped region
-    engulfing it at `XI_SECOND`: horizon rows every 0.01, snapshots every 0.1 carrying the hole's mass in the first
-    cell, a quoted reading, and the two epoch events."""
+def synthetic_run(directory: Path, flagged: bool, engulfed: bool = True) -> Path:
+    """A run whose hole accretes steadily from `XI_FORM`, over an FRW background, with (if `engulfed`) a larger trapped
+    region engulfing it at `XI_SECOND`: horizon rows every 0.01, snapshots every 0.1 carrying the hole's mass in the
+    first cell, a quoted reading, and the epoch events."""
     paths = RunPaths.of(directory, "synthetic")
     layout = Layout(N)
     with RunWriter(paths.evolution, CONFIG, N, row_type=MonitoredStep) as out:
@@ -51,10 +51,10 @@ def synthetic_run(directory: Path, flagged: bool) -> Path:
         times = XI_FORM + 0.01 * np.arange(301)
         for step, xi in enumerate(times):
             xi = float(xi)
-            engulfed = xi >= XI_SECOND
-            if engulfed and abs(xi - XI_SECOND) < 1e-9:
+            second = engulfed and xi >= XI_SECOND
+            if second and abs(xi - XI_SECOND) < 1e-9:
                 out.event(step, xi, "epoch", {"M_AH": 10.0})
-            out.horizon_row(row(step, xi, 10.0 * math.exp(0.01 * (xi - XI_SECOND)) if engulfed else hole(xi)))
+            out.horizon_row(row(step, xi, 10.0 * math.exp(0.01 * (xi - XI_SECOND)) if second else hole(xi)))
             if step % 10 == 0:
                 delta_E = np.zeros(N)
                 delta_E[0] = hole_mass_tilde(hole(xi), xi, EOS) / 3.0  # the hole's mass, as the cumulative sum counts
@@ -70,18 +70,19 @@ def synthetic_run(directory: Path, flagged: bool) -> Path:
 
 
 def test_the_summary_recovers_the_hole_the_file_was_made_from(tmp_path: Path):
-    reader = RunReader(synthetic_run(tmp_path, flagged=False))
+    reader = RunReader(synthetic_run(tmp_path, flagged=False, engulfed=False))
     summary = summarise(reader)
     assert summary.core is None  # the synthetic file has no steps before formation
     assert summary.fold is None  # nor any excised step
-    first, second = summary.epochs
+    (first,) = summary.epochs
     assert first.xi_start == XI_FORM
+    assert first.engulfed is None
     assert first.quoted is not None
     assert first.quoted["M_est"] == 3.0
     ref = first.reference
     assert ref is not None
     assert ref.M_ref == pytest.approx(M_INF, rel=1e-4)
-    assert ref.M_AH_end == hole(7.89)
+    assert ref.M_AH_end == hole(float((XI_FORM + 0.01 * np.arange(301))[-1]))
     assert ref.efficiency_end == pytest.approx(EFFICIENCY, rel=1e-2)
     assert abs(ref.Q_slope) < 1e-2  # constant efficiency: Q is flat
     assert summary.formation is not None
@@ -114,8 +115,22 @@ def test_the_summary_recovers_the_hole_the_file_was_made_from(tmp_path: Path):
         assert s.deficit == 54.0 / (2.0 * s.k) ** 3
     assert first.extrapolated is not None
     assert first.extrapolated == pytest.approx(M_INF, rel=0.05)
-    # the engulfed epoch is too short for anything but its start
+
+
+def test_an_engulfed_epoch_keeps_its_reading_and_says_when_it_was_engulfed(tmp_path: Path):
+    """The hole engulfed at `XI_SECOND` keeps the reading it quoted, and has no reference, fit or ladder: what engulfs
+    it feeds it first. The engulfing epoch is too short for anything but its start."""
+    summary = summarise(RunReader(synthetic_run(tmp_path, flagged=False)))
+    first, second = summary.epochs
+    assert first.engulfed == XI_SECOND
+    assert first.quoted is not None
+    assert first.quoted["M_est"] == 3.0
+    assert first.readings.xi.size > 0
+    assert (first.reference, first.fit, first.spheres, first.extrapolated) == (None, None, (), None)
+    assert "engulfed at xi = 7.9000 by a trapped region outside it" in describe(summary)
+    assert as_json(summary)["epochs"][0]["engulfed"] == XI_SECOND
     assert second.xi_start == XI_SECOND
+    assert second.engulfed is None
     assert (second.quoted, second.reference, second.fit, second.spheres) == (None, None, None, ())
 
 
@@ -127,10 +142,10 @@ def test_the_summary_prints_exports_and_says_when_nothing_formed(tmp_path: Path,
     assert "epoch 0: formed at xi = 5.0000" in printed
     assert "FLAGGED" in printed
     assert "no reading quoted" in printed  # the second epoch
-    assert "extrapolated" in printed
+    assert "engulfed at xi = 7.9000" in printed
     data = json.loads(export.read_text())
     epochs = data["epochs"]
-    assert epochs[0]["fit"]["efficiency"] == pytest.approx(EFFICIENCY, rel=1e-4)
+    assert epochs[0]["engulfed"] == XI_SECOND
     assert len(epochs[0]["series"]["M_est"]) == len(epochs[0]["series"]["xi"])
     assert epochs[1]["reference"] is None
     assert data["core"] is None
@@ -145,3 +160,34 @@ def test_a_ladder_off_the_grid_or_without_snapshots_gives_no_spheres(tmp_path: P
     assert spheres(reader, XI_FORM, 6.0, 1e6, series, EOS) == ((), None)  # radii far beyond the outer face
     assert spheres(reader, 7.05, 7.25, M_INF, series, EOS) == ((), None)  # two snapshots in the window: too few
     assert math.isnan(slope(np.array([1.0, 2.0]), np.array([1.0, 2.0])))
+
+
+def test_repeated_times_are_dropped_as_the_readout_drops_them_and_an_empty_epoch_is_kept(tmp_path: Path):
+    """In a deep void the compensated clock can advance by less than the spacing of xi, so the horizon table repeats a
+    time: the summary keeps the first row at each time, as `Epoch.add` does. A run interrupted right after its
+    formation event has an epoch with no rows: kept, with nothing to read."""
+    formed = {"M_AH": hole(XI_FORM), "isolation": isolation(EOS, 0.0, XI_FORM, 0.9, 12.0)}
+    times = [float(xi) for xi in XI_FORM + 0.01 * np.arange(301)]
+    paths = RunPaths.of(tmp_path, "repeats")
+    with RunWriter(paths.evolution, CONFIG, N, row_type=MonitoredStep) as out:
+        out.event(0, XI_FORM, "formation", formed)
+        for step, xi in enumerate(times):
+            out.horizon_row(row(step, xi, hole(xi)))
+            if 100 <= step < 110:  # ten times written three times, the copies wrong
+                out.horizon_row(row(step, xi, 2.0 * hole(xi)))
+                out.horizon_row(row(step, xi, 3.0 * hole(xi)))
+    ((start, xi, M_AH),) = epoch_series(RunReader(paths.evolution))
+    assert start == XI_FORM
+    assert np.array_equal(xi, times)
+    assert np.array_equal(M_AH, [hole(x) for x in times])
+    (epoch,) = summarise(RunReader(paths.evolution)).epochs
+    assert epoch.reference is not None
+
+    interrupted = RunPaths.of(tmp_path, "interrupted")
+    with RunWriter(interrupted.evolution, CONFIG, N, row_type=MonitoredStep) as out:
+        out.event(0, XI_FORM, "formation", formed)
+    summary = summarise(RunReader(interrupted.evolution))
+    (empty,) = summary.epochs
+    assert empty.xi_start == XI_FORM
+    assert empty.readings.xi.size == 0
+    assert (empty.quoted, empty.reference, empty.fit, empty.spheres) == (None, None, None, ())

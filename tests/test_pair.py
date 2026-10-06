@@ -35,7 +35,7 @@ def run_summary(
     """A summary with only what the pair reads: the status, the core's outcome and history, and the epochs."""
     history = CollapseHistory(1.0, rho_max, rho_max, 0.5, 1.0, bounce)
     quoted = None if M_est is None else {"M_est": M_est, "bar": 0.01, "systematic": 0.001}
-    epochs = [] if formation is None else [EpochSummary(formation, EMPTY, quoted, None, None, (), None)]
+    epochs = [] if formation is None else [EpochSummary(formation, EMPTY, quoted, None, None, (), None, None)]
     return RunSummary(CoreSummary(outcome, history, None) if core else None, epochs, status=status)
 
 

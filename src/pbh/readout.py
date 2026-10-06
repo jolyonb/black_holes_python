@@ -136,8 +136,10 @@ def resample(xi: FloatArray, M_AH: FloatArray, spacing: float) -> tuple[FloatArr
         spacing: The spacing of the uniform times.
 
     Returns:
-        `(times, ln M_AH at them)`.
+        `(times, ln M_AH at them)`, both empty for an empty series.
     """
+    if xi.size == 0:
+        return nan_array(0), nan_array(0)
     if np.any(np.diff(xi) <= 0.0):
         raise ValueError("the times of the series must increase strictly")
     start, span = float(xi[0]), float(xi[-1] - xi[0])

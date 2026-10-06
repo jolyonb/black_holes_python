@@ -118,7 +118,9 @@ class EpochSummary:
 
     The readings and the bars are recomputed with the bar of the code that summarises; `quoted` is the reading as the
     run made it, under the bar of the code that ran it, and the two can differ for a file written before a change of
-    the bar.
+    the bar. An epoch engulfed by a later one (`engulfed`, the later one's start) has no long-run reference, fit or
+    enclosed-mass ladder: before the engulfing, what engulfs it is already feeding the hole, so its late series is
+    not the hole's own.
     """
 
     xi_start: float
@@ -128,10 +130,15 @@ class EpochSummary:
     fit: AccretionFit | None
     spheres: tuple[Sphere, ...]
     extrapolated: float | None
+    engulfed: float | None
 
 
 def epoch_series(reader: RunReader) -> list[tuple[float, FloatArray, FloatArray]]:
-    """Each epoch's start and its series `(xi, M_AH)`, from the horizon table split at `formation` and `epoch`."""
+    """Each epoch's start and its series `(xi, M_AH)`, from the horizon table split at `formation` and `epoch`.
+
+    A row whose time is not after the last kept one is dropped, as the read-out's `Epoch.add` drops it: in a deep void
+    the compensated clock can advance by less than the spacing of `xi`, so the table repeats a time.
+    """
     starts = [e.xi for e in reader.events if e.kind in ("formation", "epoch")]
     h = reader.horizon
     xi, M = np.asarray(h["xi"], dtype=float), np.asarray(h["M_AH"], dtype=float)
@@ -139,7 +146,10 @@ def epoch_series(reader: RunReader) -> list[tuple[float, FloatArray, FloatArray]
     for n, start in enumerate(starts):
         end = starts[n + 1] if n + 1 < len(starts) else math.inf
         keep = (xi >= start) & (xi < end) & np.isfinite(M)
-        series.append((start, xi[keep], M[keep]))
+        x, m = xi[keep], M[keep]
+        later = np.ones(x.size, dtype=bool)
+        later[1:] = x[1:] > np.maximum.accumulate(x)[:-1]
+        series.append((start, x[later], m[later]))
     return series
 
 
@@ -408,13 +418,16 @@ def epoch_summaries(reader: RunReader) -> list[EpochSummary]:
     out: list[EpochSummary] = []
     epochs = epoch_series(reader)
     for n, (start, xi, M_AH) in enumerate(epochs):
-        end = epochs[n + 1][0] if n + 1 < len(epochs) else math.inf
+        engulfed = epochs[n + 1][0] if n + 1 < len(epochs) else None
         r = readings(xi, M_AH, eos, settings)
-        ref = reference(r, start, float(M_AH[-1]), settings)
-        fit = fit_accretion(xi, M_AH, eos, settings)
-        ladder, extrapolated = spheres(reader, start, end, ref.M_ref, (xi, M_AH), eos) if ref else ((), None)
         own = [e.payload for e in quoted if e.payload["epoch_start"] == start]
-        out.append(EpochSummary(start, r, own[0] if own else None, ref, fit, ladder, extrapolated))
+        if engulfed is not None:
+            out.append(EpochSummary(start, r, own[0] if own else None, None, None, (), None, engulfed))
+            continue
+        ref = reference(r, start, float(M_AH[-1]) if M_AH.size else math.nan, settings)  # no rows if interrupted
+        fit = fit_accretion(xi, M_AH, eos, settings)
+        ladder, extrapolated = spheres(reader, start, math.inf, ref.M_ref, (xi, M_AH), eos) if ref else ((), None)
+        out.append(EpochSummary(start, r, own[0] if own else None, ref, fit, ladder, extrapolated, None))
     return out
 
 
@@ -437,6 +450,7 @@ def as_json(summary: RunSummary) -> dict[str, Any]:
                 "fit": None if s.fit is None else s.fit.__dict__,
                 "spheres": [sphere.__dict__ for sphere in s.spheres],
                 "extrapolated": s.extrapolated,
+                "engulfed": s.engulfed,
                 "series": series,
             }
         )
@@ -536,6 +550,11 @@ def describe(summary: RunSummary) -> str:
             )
         else:
             lines.append("  no reading quoted")
+        if s.engulfed is not None:
+            lines.append(
+                f"  engulfed at xi = {s.engulfed:.4f} by a trapped region outside it: no long-run reference, fit or "
+                "enclosed-mass ladder, the hole being fed by what engulfs it"
+            )
         ref = s.reference
         if ref is not None:
             below = ", ".join(f"{100 * k:g}%: {'-' if v is None else f'+{v:.2f}'}" for k, v in ref.bar_below.items())

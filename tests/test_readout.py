@@ -54,6 +54,8 @@ def test_resampling_is_uniform_from_the_first_sample_to_the_last():
     assert ln_M == pytest.approx(times)  # ln M is linear in xi here, so the interpolation is exact
     with pytest.raises(ValueError, match="increase strictly"):
         resample(np.array([1.0, 1.0, 1.1]), np.ones(3), 0.01)
+    empty_times, empty_ln_M = resample(np.zeros(0), np.zeros(0), 0.01)
+    assert empty_times.size == empty_ln_M.size == 0
 
 
 def test_the_settings_refuse_nonsense():

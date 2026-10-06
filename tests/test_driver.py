@@ -337,12 +337,23 @@ def test_a_new_trapped_region_outside_the_apparent_horizon_starts_an_epoch(tmp_p
         assert second is not first
         assert second.xi_start == XI_FORM + 0.2
         assert second.M_AH == [2.5]
+        # the step's first report told a new epoch, and a re-excision then jumped the gap: the report of the new
+        # layout shows the new region alone, and the epoch is still recorded, once
+        r.xi, r.step = XI_FORM + 0.3, 3
+        r.new_epoch = True
+        r.record_horizon(horizon_report((4.0, True), M_AH=4.0), result, None)
+        third = r.epoch
+        assert third is not None
+        assert third is not second
+        assert third.xi_start == XI_FORM + 0.3
+        assert not r.new_epoch
     events = RunReader(path).events
-    assert [e.kind for e in events if e.kind == "epoch"] == ["epoch"]
-    (epoch,) = [e for e in events if e.kind == "epoch"]
+    assert [e.kind for e in events if e.kind == "epoch"] == ["epoch", "epoch"]
+    epoch, last = [e for e in events if e.kind == "epoch"]
     assert epoch.payload["M_AH_previous"] == 1.02
-    # a restart at the end is handed the epoch that began with the engulfing, and its series before the restart
-    history = epoch_history(RunReader(path), XI_FORM + 0.3)
+    assert last.payload["M_AH_previous"] == 2.5
+    # a restart before the last is handed the epoch that began with the engulfing, and its series before the restart
+    history = epoch_history(RunReader(path), XI_FORM + 0.25)
     assert history is not None
     assert history.xi_start == XI_FORM + 0.2
     assert history.M_AH == [2.5]

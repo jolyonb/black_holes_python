@@ -211,3 +211,19 @@ def test_no_eigenvalue_of_the_held_face_operator_grows_faster_than_the_growing_m
     L, _, _, lay = linearise_about_frw(SinhStretch(4.0, scale=2.0), eos)
     lam = np.linalg.eigvals(interior(L, lay.N))
     assert np.max(lam.real) <= 1.0 + 1e-8
+
+
+def test_a_nearly_empty_central_cell_is_never_stepped_through_zero():
+    """Each energy is stepped by a fraction of its own content: a central cell at 1e-12 of its background content on a
+    stretched grid (whose central cells are far smaller than its outer ones) stays positive at every evaluation."""
+    geo = Geometry.of(*SinhStretch(3.0, scale=0.1).radii(0.5, 16))
+    assert geo.dV[0] < 1e-5 * np.max(geo.dV)  # a global floor of 1e-3 of the largest entry would dwarf this cell
+    eos = EquationOfState(RADIATION)
+    bg, lay = Background.at(eos, 0.5), Layout(16)
+    w = StencilWeights.of(geo, lay)
+    s = frw_state(geo)
+    s.E[0] *= 1e-12
+    J = jacobian(s, geo, bg, eos, w, HELD, CENTRED_SCHEME)
+    assert np.all(np.isfinite(J))
+    J_b = jacobian(s, geo, bg, eos, w, HELD, CENTRED_SCHEME, relative_step=2e-3)
+    assert np.max(np.abs(J[:, 0] - J_b[:, 0])) < 1e-6 * np.max(np.abs(J[:, 0]))

@@ -257,6 +257,7 @@ class Run:
     F_N_integral: float = 0.0
     last_refusal: list[str] = field(default_factory=lambda: list[str]())
     epoch: Epoch | None = None
+    new_epoch: bool = False
     core: CoreWatch = field(default_factory=CoreWatch)
     whole: BoolArray | None = None
     carry: float = 0.0
@@ -389,13 +390,14 @@ class Run:
         self.writer.horizon_row(row)
         a = report.apparent
         if a is not None:
-            if self.epoch is not None and starts_new_epoch(report, self.epoch.X_AH):
+            if self.epoch is not None and (self.new_epoch or starts_new_epoch(report, self.epoch.X_AH)):
                 previous = {"M_AH_previous": self.epoch.M_AH[-1], "X_AH_previous": self.epoch.X_AH}
                 self.event("epoch", {"M_AH": report.M_AH, "X_AH": a.X, **previous})
                 self.epoch = Epoch(xi_start=self.xi)
             if self.epoch is None:
                 self.epoch = Epoch(xi_start=self.xi_form if self.xi_form is not None else self.xi)
             self.epoch.add(self.xi, report.M_AH, a.X)
+        self.new_epoch = False
         if face is not None:
             try:
                 check_fold(face.fold)
@@ -491,6 +493,9 @@ class Run:
         and the face's monitors if excised.
         """
         report = self.find(state, result)
+        # A new epoch is told on this report, before a re-excision can jump the face across the untrapped gap and leave
+        # the report of the new layout with one trapped region only.
+        self.new_epoch = self.epoch is not None and starts_new_epoch(report, self.epoch.X_AH)
         if report.outer_face_trapped:
             raise AbortError("outer_face_trapped", self.layout.N, float(report.h[-1]), "the outer face is trapped")
         if self.xi_form is None and report.trapped_faces > 0:

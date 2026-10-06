@@ -135,7 +135,7 @@ def test_the_physical_sound_margin_at_the_recommended_face_is_the_printed_value(
 # --- the accretion rate on exact data (row 2) ---
 
 
-def test_the_mass_law_returns_the_accretion_law_on_exact_data_at_first_order():
+def test_the_mass_law_returns_the_accretion_law_on_exact_data_at_second_order():
     rates: list[float] = []
     for dX in (0.05, 0.025):
         sch, _, state = excised_scheme(R_e=1.5, dX=dX)
@@ -144,7 +144,7 @@ def test_the_mass_law_returns_the_accretion_law_on_exact_data_at_first_order():
         rate = result.rate.M_e / state.M_e - (2.0 - 3.0 * ALPHA)  # d ln M / dxi - (2 - 3 alpha) = lambda_c epsilon
         rates.append(abs(rate / (LAMBDA_C * EPSILON) - 1.0))
     assert rates[1] < 1.2e-2  # the table's tolerance at dX = 0.025 M
-    assert rates[0] > 1.5 * rates[1]  # first order with the production rows
+    assert math.log2(rates[0] / rates[1]) >= 1.8  # second order: measured 2.4e-3, 6.3e-4 (and 1.6e-4 at 0.0125 M)
 
 
 # --- the closure held for thirty masses (row 1), slow ---
@@ -178,8 +178,8 @@ def test_the_closure_holds_the_flow_for_thirty_masses_at_the_three_face_radii(
         assert float(result.speeds.Theta[layout.j_e] + result.speeds.a[layout.j_e]) < 0.0  # c_+ < 0 at the face
         assert np.all(final.E[layout.j_e :] > 0.0)
     L1, worst = errors[0.05]
-    assert L1 <= L1_bound  # measured: 3.5e-4, 2.6e-4, 1.6e-3 at the three radii
-    assert worst <= max_bound  # measured: 3.4e-3, 5.4e-3, 2.1e-2
+    assert L1 <= L1_bound  # measured: 3.0e-4, 2.3e-4, 1.8e-3 at the three radii
+    assert worst <= max_bound  # measured: 2.3e-3, 5.9e-3, 2.2e-2
     assert math.log2(errors[0.05][0] / errors[0.025][0]) >= 1.8  # second order in L1 ...
     assert errors[0.025][1] < errors[0.05][1]  # ... and the maximum norm falls, first order at the face
 
@@ -200,15 +200,15 @@ def test_a_steep_infalling_slab_leaves_through_the_face_without_leaking_upstream
     U[layout.j_e :][in_slab_faces] *= 1.2  # ... with an inward kick
     slab = State(E=E, U=U, W=0.0, M_e=exact.M_e)
     final = evolve(sch, slab, XI, XI + THIRTY_MASSES / 3.0)  # ten masses: the slab has crossed the face
+    unperturbed = evolve(sch, exact, XI, XI + THIRTY_MASSES / 3.0)
     rho = final.E[layout.j_e :] / geo.dV[layout.j_e :]
-    rho_exact = exact.E[layout.j_e :] / geo.dV[layout.j_e :]
-    amplitude = 2.0 * float(np.max(rho_exact[in_slab_cells]))
-    leak = np.abs(rho - rho_exact) / amplitude
-    # Beyond the sonic point nothing from the supersonic zone can arrive physically; numerically the centred parts
-    # of the stencils let a trace through that decays with distance: 8e-6 beyond 3.2 M and 2.5e-6 beyond 4 M,
-    # measured. The paper's row says 1e-6 upstream; its measure is to be re-established.
-    assert np.max(leak[r_cells > 3.2]) <= 1e-5
-    assert np.max(leak[r_cells > 4.0]) <= 5e-6
+    rho_unperturbed = unperturbed.E[layout.j_e :] / geo.dV[layout.j_e :]
+    amplitude = 2.0 * float(np.max(exact.E[layout.j_e :][in_slab_cells] / geo.dV[layout.j_e :][in_slab_cells]))
+    leak = np.abs(rho - rho_unperturbed) / amplitude
+    # Beyond the sonic point nothing from the supersonic zone can arrive, and nothing does: against the same flow
+    # evolved without the slab the difference beyond 3.2 M is 1.1e-14 of the slab (measured). Against the exact flow it
+    # would be 7.7e-6, the closure's own steady error, which is the same with the slab and without it.
+    assert np.max(leak[r_cells > 3.2]) <= 1e-12
     assert np.all(rho > 0.0)
     assert np.max(leak[in_slab_cells]) < 0.05  # the slab is gone
 

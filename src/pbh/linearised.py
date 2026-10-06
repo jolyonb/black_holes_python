@@ -40,7 +40,7 @@ from pbh.geometry import Geometry
 from pbh.kernels import KernelSettings
 from pbh.layout import Layout
 from pbh.outer import OuterClosure
-from pbh.state import State
+from pbh.state import State, frw_state
 from pbh.stencils import StencilWeights
 from pbh.types import FloatArray
 
@@ -72,7 +72,13 @@ def jacobian(
     """
     layout = w.layout
     y0 = layout.pack(state)
-    scale = np.maximum(np.abs(y0), np.max(np.abs(y0)) * 1e-3)  # a floor for entries that happen to be near zero
+    # Each cell's energy is stepped by a fraction of its own content, which is positive, so no step takes a cell through
+    # zero however small it is (a global floor did, at the central cells of a stretched grid). The velocities, `W` and
+    # `M_e` may pass through zero, and are floored at their background scale: `X_j`, `X_N` and `X_{j_e}^3`.
+    frw = frw_state(geo, layout.j_e)
+    natural = np.abs(layout.pack(State(E=frw.E, U=frw.U, W=float(geo.X[-1]), M_e=frw.M_e)))
+    energy = layout.pack(State(E=np.ones_like(frw.E), U=np.zeros_like(frw.U), W=0.0, M_e=0.0)) != 0.0
+    scale = np.where(energy, np.abs(y0), np.maximum(np.abs(y0), natural))
 
     def rate(y: FloatArray) -> FloatArray:
         return layout.pack(calc_derivs(layout.unpack(y), geo, bg, eos, w, outer, settings).rate)

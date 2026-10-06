@@ -448,16 +448,23 @@ def re_excision_face(report: HorizonReport, layout: Layout, eta_r: float) -> int
     """The face to advance to by re-excision, or `None` if the face stays (Section 8.3).
 
     `ceil(N eta_r x_AH)` if it exceeds `j_e`, or as far as leaves the three faces from the new face trapped; with no
-    ramp factor, the map being pinned by then.
+    ramp factor, the map being pinned by then. The target is never inside the trapped region that the apparent
+    horizon bounds: when a new one forms outside an untrapped gap (a new epoch), the target is its innermost face at
+    least, and the face jumps the gap, which lies inside the new trapped surface.
     """
     apparent = report.apparent
     if apparent is None:
         return None
     N, j_e = layout.N, layout.j_e
+    h = report.h
     target = math.ceil(N * eta_r * apparent.x)
+    inner = apparent.j  # the innermost face of the trapped block that ends at the apparent horizon
+    while inner - 1 > j_e and h[inner - 1] < 0.0:
+        inner -= 1
+    if inner - 1 > j_e:  # an untrapped face separates that block from the face: a new epoch's trapped region
+        target = max(target, inner)
     if target <= j_e:
         return None
-    h = report.h
     for j in range(min(target, N - 3), j_e, -1):
         if h[j] < 0.0 and h[j + 1] < 0.0 and h[j + 2] < 0.0:
             return j

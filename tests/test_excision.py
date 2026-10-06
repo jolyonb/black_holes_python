@@ -496,21 +496,28 @@ def test_re_excision_advances_to_the_target_or_as_far_as_the_stencil_stays_trapp
     assert re_excision_face(synthetic_report(h, 0.60), layout, eta_r=0.7) == 42  # ceil(100 * 0.7 * 0.6)
     assert re_excision_face(synthetic_report(h, 0.60), Layout(N, j_e=42), eta_r=0.7) is None  # already there
     assert re_excision_face(synthetic_report(h, 0.60), layout, eta_r=0.3) is None  # the target is behind the face
-    h[45:48] = 1.0  # an untrapped gap in the way: the face stops where three faces are still trapped
-    assert re_excision_face(synthetic_report(h, 0.60), layout, eta_r=0.7) == 42
-    assert re_excision_face(synthetic_report(h, 0.60), Layout(N, j_e=44), eta_r=0.7) is None
     assert re_excision_face(synthetic_report(h, None), layout, eta_r=0.7) is None
-    # a horizon far outside, a new trapped region beyond an untrapped gap: the face jumps across the gap once the
-    # target lands inside the new region, and until then goes as far as the old region allows
+    # a horizon far outside, a new trapped region beyond an untrapped gap (a new epoch): the face jumps the gap to the
+    # new region's innermost face, whatever eta_r, or further if the target lies further in
     h = np.ones(N + 1)
     h[20:31] = -1.0
     h[70:91] = -1.0
-    assert re_excision_face(synthetic_report(h, 0.90), layout, eta_r=0.7) == 28  # the target 63 sits in the gap
+    assert re_excision_face(synthetic_report(h, 0.90), layout, eta_r=0.7) == 70  # the target 63 sits in the gap
     assert re_excision_face(synthetic_report(h, 0.90), layout, eta_r=0.8) == 72  # the target 72 is trapped
-    # nothing trapped between the face and the target: the face stays
+    # the same with the gap only three faces wide: the apparent horizon's region starts beyond it
     h = np.ones(N + 1)
-    h[90:] = -1.0
-    assert re_excision_face(synthetic_report(h, 0.95), Layout(N, j_e=40), eta_r=0.7) is None
+    h[20:61] = -1.0
+    h[45:48] = 1.0
+    assert re_excision_face(synthetic_report(h, 0.60), layout, eta_r=0.7) == 48
+    # the new region too narrow for three trapped faces: the face goes as far as the old region allows
+    h = np.ones(N + 1)
+    h[20:31] = -1.0
+    h[88:90] = -1.0
+    assert re_excision_face(synthetic_report(h, 0.89), layout, eta_r=0.7) == 28
+    # fewer than three trapped faces beyond the face: it stays
+    h = np.ones(N + 1)
+    h[20:28] = -1.0
+    assert re_excision_face(synthetic_report(h, 0.27), layout, eta_r=0.99) is None
 
 
 def test_a_zone_is_extended_when_the_horizon_reaches_the_fraction_of_its_inner_edge():
